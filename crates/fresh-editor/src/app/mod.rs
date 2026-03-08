@@ -728,6 +728,9 @@ pub struct Editor {
     /// Maps directory path to last known modification time
     dir_mod_times: HashMap<PathBuf, std::time::SystemTime>,
 
+    /// Whether a file tree poll task is currently running in the background
+    file_tree_poll_in_progress: bool,
+
     /// Tracks rapid file change events for debouncing
     /// Maps file path to (last event time, event count)
     file_rapid_change_counts: HashMap<PathBuf, (std::time::Instant, u32)>,
@@ -1475,6 +1478,7 @@ impl Editor {
             last_file_tree_poll: time_source.now(),
             file_mod_times: HashMap::new(),
             dir_mod_times: HashMap::new(),
+            file_tree_poll_in_progress: false,
             file_rapid_change_counts: HashMap::new(),
             file_open_state: None,
             file_browser_layout: None,
@@ -4539,6 +4543,19 @@ impl Editor {
                 }
                 AsyncMessage::FileExplorerExpandedToPath(view) => {
                     self.handle_file_explorer_expanded_to_path(view);
+                }
+                AsyncMessage::FileTreePollResult(changed_dirs) => {
+                    self.handle_file_tree_poll_result(changed_dirs);
+                }
+                AsyncMessage::FileExplorerToggleComplete {
+                    view,
+                    node_id,
+                    result,
+                } => {
+                    self.handle_file_explorer_toggle_complete(view, node_id, result);
+                }
+                AsyncMessage::FileExplorerAsyncRefreshComplete { view, result } => {
+                    self.handle_file_explorer_async_refresh_complete(view, result);
                 }
                 AsyncMessage::Plugin(plugin_msg) => {
                     use fresh_core::api::{JsCallbackId, PluginAsyncMessage};

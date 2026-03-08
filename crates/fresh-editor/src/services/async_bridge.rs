@@ -167,6 +167,23 @@ pub enum AsyncMessage {
     /// File explorer node refresh completed
     FileExplorerRefreshNode(NodeId),
 
+    /// File tree poll completed — contains directories whose mtime changed
+    /// Each tuple is (node_id, path, new_mtime)
+    FileTreePollResult(Vec<(NodeId, std::path::PathBuf, std::time::SystemTime)>),
+
+    /// File explorer toggle completed — contains the updated view and toggle result
+    FileExplorerToggleComplete {
+        view: FileTreeView,
+        node_id: NodeId,
+        result: Result<(), String>,
+    },
+
+    /// File explorer async refresh completed — contains the updated view
+    FileExplorerAsyncRefreshComplete {
+        view: FileTreeView,
+        result: Result<(), String>,
+    },
+
     /// File explorer expand to path completed
     /// Contains the updated FileTreeView with the path expanded and selected
     FileExplorerExpandedToPath(FileTreeView),

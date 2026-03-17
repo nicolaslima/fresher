@@ -3168,8 +3168,24 @@ impl Editor {
         self.software_cursor_only = enabled;
     }
 
-    /// Set the session name for display in status bar
+    /// Set the session name for display in status bar.
+    ///
+    /// When a session name is set, the recovery service is reinitialized
+    /// to use a session-scoped recovery directory so each named session's
+    /// recovery data is isolated.
     pub fn set_session_name(&mut self, name: Option<String>) {
+        if let Some(ref session_name) = name {
+            let base_recovery_dir = self.dir_context.recovery_dir();
+            let scope = crate::services::recovery::RecoveryScope::Session {
+                name: session_name.clone(),
+            };
+            let recovery_config = RecoveryConfig {
+                enabled: self.recovery_service.is_enabled(),
+                ..RecoveryConfig::default()
+            };
+            self.recovery_service =
+                RecoveryService::with_scope(recovery_config, &base_recovery_dir, &scope);
+        }
         self.session_name = name;
     }
 

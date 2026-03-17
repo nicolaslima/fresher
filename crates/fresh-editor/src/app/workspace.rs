@@ -346,7 +346,13 @@ impl Editor {
         self.save_all_global_file_states();
 
         let workspace = self.capture_workspace();
-        workspace.save()
+
+        // For named sessions, save to session-scoped workspace file
+        if let Some(ref session_name) = self.session_name {
+            workspace.save_session(session_name)
+        } else {
+            workspace.save()
+        }
     }
 
     /// Save global file states for all open file buffers
@@ -455,7 +461,15 @@ impl Editor {
     /// Returns true if a workspace was successfully loaded and applied.
     pub fn try_restore_workspace(&mut self) -> Result<bool, WorkspaceError> {
         tracing::debug!("Attempting to restore workspace for {:?}", self.working_dir);
-        match Workspace::load(&self.working_dir)? {
+
+        // For named sessions, load from session-scoped workspace file
+        let workspace = if let Some(ref session_name) = self.session_name {
+            Workspace::load_session(session_name, &self.working_dir)?
+        } else {
+            Workspace::load(&self.working_dir)?
+        };
+
+        match workspace {
             Some(workspace) => {
                 tracing::info!("Found workspace, applying...");
                 self.apply_workspace(&workspace)?;

@@ -52,7 +52,7 @@
 mod storage;
 pub mod types;
 
-pub use storage::RecoveryStorage;
+pub use storage::{RecoveryScope, RecoveryStorage};
 pub use types::{
     generate_buffer_id, path_hash, ChunkMeta, ChunkedRecoveryData, ChunkedRecoveryIndex,
     InplaceWriteRecovery, RecoveryChunk, RecoveryEntry, RecoveryMetadata, RecoveryResult,
@@ -134,6 +134,26 @@ impl RecoveryService {
     pub fn with_config_and_dir(config: RecoveryConfig, storage_dir: PathBuf) -> Self {
         Self {
             storage: RecoveryStorage::with_dir(storage_dir),
+            config,
+            last_save_times: HashMap::new(),
+            session_started: false,
+        }
+    }
+
+    /// Create a new recovery service scoped to a session or working directory.
+    ///
+    /// Performs one-time migration of old flat-layout recovery files if needed.
+    pub fn with_scope(
+        config: RecoveryConfig,
+        base_recovery_dir: &Path,
+        scope: &RecoveryScope,
+    ) -> Self {
+        // Attempt migration of old flat layout
+        if let Err(e) = RecoveryStorage::migrate_flat_layout(base_recovery_dir, scope) {
+            tracing::warn!("Failed to migrate recovery files: {}", e);
+        }
+        Self {
+            storage: RecoveryStorage::with_scope(base_recovery_dir, scope),
             config,
             last_save_times: HashMap::new(),
             session_started: false,

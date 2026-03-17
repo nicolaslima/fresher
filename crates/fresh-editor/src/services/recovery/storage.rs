@@ -13,6 +13,17 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+/// Determines which recovery directory to use.
+#[derive(Debug, Clone)]
+pub enum RecoveryScope {
+    /// Standalone mode: recovery scoped by working directory.
+    /// Directory: `recovery/default/{cwd_hash}/`
+    Standalone { working_dir: PathBuf },
+    /// Named session mode (`fresh -a NAME`): recovery scoped by session name.
+    /// Directory: `recovery/sessions/{name}/`
+    Session { name: String },
+}
+
 /// Recovery storage manager
 ///
 /// Handles all file I/O for the recovery system with atomic operations.
@@ -30,7 +41,7 @@ impl RecoveryStorage {
     /// Session lock file name
     const SESSION_LOCK: &'static str = "session.lock";
 
-    /// Create a new recovery storage manager
+    /// Create a new recovery storage manager (legacy flat layout)
     pub fn new() -> io::Result<Self> {
         let recovery_dir = Self::get_recovery_dir()?;
         Ok(Self { recovery_dir })
@@ -41,10 +52,93 @@ impl RecoveryStorage {
         Self { recovery_dir }
     }
 
+    /// Create a recovery storage scoped to a session or working directory.
+    pub fn with_scope(base_recovery_dir: &Path, scope: &RecoveryScope) -> Self {
+        let recovery_dir = match scope {
+            RecoveryScope::Standalone { working_dir } => {
+                let hash = crate::workspace::encode_path_for_filename(working_dir);
+                base_recovery_dir.join("default").join(hash)
+            }
+            RecoveryScope::Session { name } => {
+                // Sanitize session name for filesystem safety
+                let safe_name: String = name
+                    .chars()
+                    .map(|c| {
+                        if c.is_alphanumeric() || c == '-' || c == '_' || c == '.' {
+                            c
+                        } else {
+                            '_'
+                        }
+                    })
+                    .collect();
+                base_recovery_dir.join("sessions").join(safe_name)
+            }
+        };
+        Self { recovery_dir }
+    }
+
     /// Get the recovery directory path
     pub fn get_recovery_dir() -> io::Result<PathBuf> {
         let data_dir = get_data_dir()?;
         Ok(data_dir.join("recovery"))
+    }
+
+    /// Migrate old flat-layout recovery files into a scoped directory.
+    ///
+    /// If recovery files exist directly in `base_dir` (old layout), moves them
+    /// into the provided scoped subdirectory. This is a one-time migration.
+    pub fn migrate_flat_layout(base_recovery_dir: &Path, scope: &RecoveryScope) -> io::Result<()> {
+        // Check if old-style session.lock exists at the flat level
+        let old_lock = base_recovery_dir.join(Self::SESSION_LOCK);
+        if !old_lock.exists() {
+            return Ok(());
+        }
+
+        // Check that the new layout dirs don't already exist
+        let default_dir = base_recovery_dir.join("default");
+        let sessions_dir = base_recovery_dir.join("sessions");
+        if default_dir.exists() || sessions_dir.exists() {
+            // Already migrated (or partially migrated)
+            return Ok(());
+        }
+
+        // Determine destination directory
+        let dest = match scope {
+            RecoveryScope::Standalone { working_dir } => {
+                let hash = crate::workspace::encode_path_for_filename(working_dir);
+                base_recovery_dir.join("default").join(hash)
+            }
+            RecoveryScope::Session { name } => {
+                let safe_name: String = name
+                    .chars()
+                    .map(|c| {
+                        if c.is_alphanumeric() || c == '-' || c == '_' || c == '.' {
+                            c
+                        } else {
+                            '_'
+                        }
+                    })
+                    .collect();
+                base_recovery_dir.join("sessions").join(safe_name)
+            }
+        };
+
+        fs::create_dir_all(&dest)?;
+
+        // Move all files (not directories) from base_recovery_dir to dest
+        for entry in fs::read_dir(base_recovery_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_file() {
+                let file_name = path.file_name().unwrap();
+                let dest_path = dest.join(file_name);
+                // Copy then delete (safer than rename across filesystems)
+                fs::copy(&path, &dest_path)?;
+                fs::remove_file(&path)?;
+            }
+        }
+
+        Ok(())
     }
 
     /// Ensure the recovery directory exists

@@ -597,6 +597,29 @@ pub fn get_workspace_path(working_dir: &Path) -> io::Result<PathBuf> {
     Ok(get_workspaces_dir()?.join(filename))
 }
 
+/// Get the session-workspaces directory
+pub fn get_session_workspaces_dir() -> io::Result<PathBuf> {
+    Ok(get_data_dir()?.join("session-workspaces"))
+}
+
+/// Get the workspace file path for a named session
+pub fn get_session_workspace_path(session_name: &str) -> io::Result<PathBuf> {
+    let dir = get_session_workspaces_dir()?;
+    std::fs::create_dir_all(&dir)?;
+    // Sanitize session name for filesystem safety
+    let safe_name: String = session_name
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' || c == '.' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    Ok(dir.join(format!("{}.json", safe_name)))
+}
+
 /// Workspace error types
 #[derive(Debug)]
 pub enum WorkspaceError {
@@ -749,6 +772,71 @@ impl Workspace {
         std::fs::rename(&temp_path, &path)?;
         tracing::info!("Workspace saved to {:?}", path);
 
+        Ok(())
+    }
+
+    /// Load workspace for a named session (if exists)
+    pub fn load_session(
+        session_name: &str,
+        working_dir: &Path,
+    ) -> Result<Option<Workspace>, WorkspaceError> {
+        let path = get_session_workspace_path(session_name)?;
+        tracing::debug!("Looking for session workspace at {:?}", path);
+
+        if !path.exists() {
+            return Ok(None);
+        }
+
+        let content = std::fs::read_to_string(&path)?;
+        let workspace: Workspace = serde_json::from_str(&content)?;
+
+        // For session workspaces, skip working_dir validation — the session
+        // always restores its own workspace regardless of CWD.
+        if workspace.version > WORKSPACE_VERSION {
+            return Err(WorkspaceError::VersionTooNew {
+                version: workspace.version,
+                max_supported: WORKSPACE_VERSION,
+            });
+        }
+
+        // If working_dir changed, log but still load (session owns its layout)
+        let found = workspace
+            .working_dir
+            .canonicalize()
+            .unwrap_or_else(|_| workspace.working_dir.clone());
+        let expected = working_dir
+            .canonicalize()
+            .unwrap_or_else(|_| working_dir.to_path_buf());
+        if expected != found {
+            tracing::info!(
+                "Session '{}' workspace was saved from {:?}, now loading from {:?}",
+                session_name,
+                found,
+                expected
+            );
+        }
+
+        Ok(Some(workspace))
+    }
+
+    /// Save workspace for a named session using atomic write
+    pub fn save_session(&self, session_name: &str) -> Result<(), WorkspaceError> {
+        let path = get_session_workspace_path(session_name)?;
+        tracing::debug!("Saving session workspace to {:?}", path);
+
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let content = serde_json::to_string_pretty(self)?;
+        let temp_path = path.with_extension("json.tmp");
+        {
+            let mut file = std::fs::File::create(&temp_path)?;
+            file.write_all(content.as_bytes())?;
+            file.sync_all()?;
+        }
+        std::fs::rename(&temp_path, &path)?;
+        tracing::info!("Session workspace saved to {:?}", path);
         Ok(())
     }
 

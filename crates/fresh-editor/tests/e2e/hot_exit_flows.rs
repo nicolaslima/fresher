@@ -987,3 +987,291 @@ fn test_hot_exit_disabled_no_recovery() {
         harness.assert_screen_not_contains("SHOULD_NOT_RECOVER");
     }
 }
+
+// =========================================================================
+// Hot exit restore focus: after editing a buffer and quitting with discard,
+// restoring should focus the last-active buffer, not the first tab.
+// =========================================================================
+
+/// Reproduces the focus-after-hot-exit-restore bug:
+///
+/// 1. Open multiple files, quit → workspace saved.
+/// 2. Restore → workspace restored (focus on last-active buffer from session 1).
+/// 3. Switch to a *different* buffer via keyboard (Ctrl+PageUp), make an edit,
+///    then quit via Ctrl+Q → 'd' (discard) → Enter.
+/// 4. Restore → the last-active buffer (the one edited in step 3) should
+///    have focus, not the buffer that was active in session 1.
+#[test]
+fn test_hot_exit_restore_focus_to_last_edited_buffer() {
+    let temp_dir = TempDir::new().unwrap();
+    let project_dir = temp_dir.path().join("project");
+    std::fs::create_dir(&project_dir).unwrap();
+
+    let file1 = project_dir.join("alpha.txt");
+    let file2 = project_dir.join("beta.txt");
+    let file3 = project_dir.join("gamma.txt");
+    std::fs::write(&file1, "Alpha file content").unwrap();
+    std::fs::write(&file2, "Beta file content").unwrap();
+    std::fs::write(&file3, "Gamma file content").unwrap();
+
+    let dir_context = DirectoryContext::for_testing(temp_dir.path());
+
+    // --- Session 1: open three files (gamma ends up active), quit cleanly ---
+    {
+        let mut config = Config::default();
+        config.editor.hot_exit = true;
+
+        let mut harness = EditorTestHarness::create(
+            100,
+            24,
+            HarnessOptions::new()
+                .with_config(config)
+                .with_working_dir(project_dir.clone())
+                .with_shared_dir_context(dir_context.clone())
+                .without_empty_plugins_dir(),
+        )
+        .unwrap();
+
+        harness.editor_mut().set_session_mode(true);
+        harness.open_file(&file1).unwrap();
+        harness.open_file(&file2).unwrap();
+        harness.open_file(&file3).unwrap();
+        harness.render().unwrap();
+
+        // Verify gamma is active (last opened)
+        harness.assert_screen_contains("Gamma file content");
+
+        harness.shutdown(true).unwrap();
+    }
+
+    // --- Session 2: restore, switch to beta via keyboard, edit it, quit ---
+    {
+        let mut config = Config::default();
+        config.editor.hot_exit = true;
+
+        let mut harness = EditorTestHarness::create(
+            100,
+            24,
+            HarnessOptions::new()
+                .with_config(config)
+                .with_working_dir(project_dir.clone())
+                .with_shared_dir_context(dir_context.clone())
+                .without_empty_plugins_dir(),
+        )
+        .unwrap();
+
+        let restored = harness.startup(true, &[]).unwrap();
+        assert!(restored, "Session 2: workspace should be restored");
+        harness.render().unwrap();
+
+        // Gamma should still be active after restore
+        harness.assert_screen_contains("Gamma file content");
+
+        // Switch to previous tab (beta) using Ctrl+PageUp
+        harness
+            .send_key(KeyCode::PageUp, KeyModifiers::CONTROL)
+            .unwrap();
+        harness.render().unwrap();
+        harness.assert_screen_contains("Beta file content");
+
+        // Make an edit so the buffer is modified
+        harness.send_key(KeyCode::End, KeyModifiers::NONE).unwrap();
+        harness.type_text(" EDITED").unwrap();
+        harness.render().unwrap();
+        harness.assert_screen_contains("Beta file content EDITED");
+
+        // Quit via Ctrl+Q — should show the modified-buffers prompt
+        harness
+            .send_key(KeyCode::Char('q'), KeyModifiers::CONTROL)
+            .unwrap();
+        harness.render().unwrap();
+        harness.assert_screen_contains("unsaved changes");
+
+        // Press 'd' then Enter to discard and quit
+        harness
+            .send_key(KeyCode::Char('d'), KeyModifiers::NONE)
+            .unwrap();
+        harness
+            .send_key(KeyCode::Enter, KeyModifiers::NONE)
+            .unwrap();
+        harness.render().unwrap();
+        assert!(
+            harness.should_quit(),
+            "Editor should quit after pressing 'd' to discard"
+        );
+
+        // Now perform the actual shutdown cleanup (end recovery + save workspace)
+        harness.shutdown(true).unwrap();
+    }
+
+    // --- Session 3: restore → beta should be focused ---
+    {
+        let mut config = Config::default();
+        config.editor.hot_exit = true;
+
+        let mut harness = EditorTestHarness::create(
+            100,
+            24,
+            HarnessOptions::new()
+                .with_config(config)
+                .with_working_dir(project_dir.clone())
+                .with_shared_dir_context(dir_context.clone())
+                .without_empty_plugins_dir(),
+        )
+        .unwrap();
+
+        let restored = harness.startup(true, &[]).unwrap();
+        assert!(restored, "Session 3: workspace should be restored");
+        harness.render().unwrap();
+
+        // Beta was the last active buffer — it must have focus after restore.
+        // Use the correct status bar row (height - BOTTOM_RESERVED_ROWS)
+        let status_row = (24 - layout::BOTTOM_RESERVED_ROWS) as u16;
+        let status_bar = harness.screen_row_text(status_row);
+        assert!(
+            status_bar.contains("beta.txt"),
+            "After restore, beta.txt should be the active buffer (it was edited and active \
+             when session 2 ended).\nStatus bar: {status_bar}\nFull screen:\n{}",
+            harness.screen_to_string()
+        );
+        harness.assert_screen_contains("Beta file content");
+    }
+}
+
+/// Same scenario as above but with hot_exit disabled.
+/// The quit prompt shows (d)iscard instead of (q)uit (recoverable).
+/// After discarding and restoring, the last-active buffer should still have focus.
+#[test]
+fn test_restore_focus_after_discard_no_hot_exit() {
+    let temp_dir = TempDir::new().unwrap();
+    let project_dir = temp_dir.path().join("project");
+    std::fs::create_dir(&project_dir).unwrap();
+
+    let file1 = project_dir.join("alpha.txt");
+    let file2 = project_dir.join("beta.txt");
+    let file3 = project_dir.join("gamma.txt");
+    std::fs::write(&file1, "Alpha file content").unwrap();
+    std::fs::write(&file2, "Beta file content").unwrap();
+    std::fs::write(&file3, "Gamma file content").unwrap();
+
+    let dir_context = DirectoryContext::for_testing(temp_dir.path());
+
+    // --- Session 1: open three files (gamma ends up active), quit cleanly ---
+    {
+        let mut config = Config::default();
+        config.editor.hot_exit = false;
+
+        let mut harness = EditorTestHarness::create(
+            100,
+            24,
+            HarnessOptions::new()
+                .with_config(config)
+                .with_working_dir(project_dir.clone())
+                .with_shared_dir_context(dir_context.clone())
+                .without_empty_plugins_dir(),
+        )
+        .unwrap();
+
+        harness.editor_mut().set_session_mode(true);
+        harness.open_file(&file1).unwrap();
+        harness.open_file(&file2).unwrap();
+        harness.open_file(&file3).unwrap();
+        harness.render().unwrap();
+        harness.assert_screen_contains("Gamma file content");
+
+        harness.shutdown(true).unwrap();
+    }
+
+    // --- Session 2: restore, switch to beta, edit it, quit with 'd' (discard) ---
+    {
+        let mut config = Config::default();
+        config.editor.hot_exit = false;
+
+        let mut harness = EditorTestHarness::create(
+            100,
+            24,
+            HarnessOptions::new()
+                .with_config(config)
+                .with_working_dir(project_dir.clone())
+                .with_shared_dir_context(dir_context.clone())
+                .without_empty_plugins_dir(),
+        )
+        .unwrap();
+
+        let restored = harness.startup(true, &[]).unwrap();
+        assert!(restored, "Session 2: workspace should be restored");
+        harness.render().unwrap();
+        harness.assert_screen_contains("Gamma file content");
+
+        // Switch to previous tab (beta) using Ctrl+PageUp
+        harness
+            .send_key(KeyCode::PageUp, KeyModifiers::CONTROL)
+            .unwrap();
+        harness.render().unwrap();
+        harness.assert_screen_contains("Beta file content");
+
+        // Make an edit
+        harness.send_key(KeyCode::End, KeyModifiers::NONE).unwrap();
+        harness.type_text(" EDITED").unwrap();
+        harness.render().unwrap();
+        harness.assert_screen_contains("Beta file content EDITED");
+
+        // Quit via Ctrl+Q → 'd' (discard) → Enter
+        harness
+            .send_key(KeyCode::Char('q'), KeyModifiers::CONTROL)
+            .unwrap();
+        harness.render().unwrap();
+        harness.assert_screen_contains("unsaved changes");
+        // With hot_exit=false, prompt should show (d)iscard
+        harness.assert_screen_contains("iscard");
+
+        harness
+            .send_key(KeyCode::Char('d'), KeyModifiers::NONE)
+            .unwrap();
+        harness
+            .send_key(KeyCode::Enter, KeyModifiers::NONE)
+            .unwrap();
+        harness.render().unwrap();
+        assert!(
+            harness.should_quit(),
+            "Editor should quit after pressing 'd' to discard"
+        );
+
+        harness.shutdown(true).unwrap();
+    }
+
+    // --- Session 3: restore → beta should be focused (even though edits were discarded) ---
+    {
+        let mut config = Config::default();
+        config.editor.hot_exit = false;
+
+        let mut harness = EditorTestHarness::create(
+            100,
+            24,
+            HarnessOptions::new()
+                .with_config(config)
+                .with_working_dir(project_dir.clone())
+                .with_shared_dir_context(dir_context.clone())
+                .without_empty_plugins_dir(),
+        )
+        .unwrap();
+
+        let restored = harness.startup(true, &[]).unwrap();
+        assert!(restored, "Session 3: workspace should be restored");
+        harness.render().unwrap();
+
+        // Beta was the last active buffer — it must have focus after restore,
+        // even though the edits were discarded.
+        let status_row = (24 - layout::BOTTOM_RESERVED_ROWS) as u16;
+        let status_bar = harness.screen_row_text(status_row);
+        assert!(
+            status_bar.contains("beta.txt"),
+            "After restore, beta.txt should be the active buffer (it was the last active \
+             when session 2 ended, even though edits were discarded).\nStatus bar: {status_bar}\nFull screen:\n{}",
+            harness.screen_to_string()
+        );
+        // Content should be the original (edits were discarded)
+        harness.assert_screen_contains("Beta file content");
+        harness.assert_screen_not_contains("EDITED");
+    }
+}

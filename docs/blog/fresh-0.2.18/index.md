@@ -57,6 +57,14 @@ The theme editor now uses virtual scrolling and mouse support for smooth navigat
   <img src="./theme-editor/showcase.gif" alt="Theme Editor Redesign demo" />
 </div>
 
+## Hot Exit
+
+All buffers — including unnamed scratch buffers — persist across sessions automatically. Quit the editor, reopen it, and your unsaved notes are right where you left them. No save prompts, no lost work. Controlled by the `hot_exit` config option (default: on).
+
+<div class="showcase-demo">
+  <img src="./hot-exit/showcase.gif" alt="Hot Exit demo" />
+</div>
+
 ## Also New
 
 ### Editing
@@ -66,7 +74,6 @@ The theme editor now uses virtual scrolling and mouse support for smooth navigat
 - **Separate auto-close config** — `auto_close` toggle to independently control bracket/quote auto-close, skip-over, and pair deletion. Per-language overrides via `languages.<lang>.auto_close`.
 - **Read-only mode** — files without write permission and library/toolchain paths automatically open as read-only with a `[RO]` indicator. Override with "Toggle Read Only".
 - **Open File jump syntax** — `path:line[:col]` in Open File and Quick Open prompts to jump directly.
-- **Hot exit** — all buffers including unnamed scratch buffers persist across sessions automatically.
 
 ### Broad LSP Support
 

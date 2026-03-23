@@ -12,7 +12,7 @@
 
 use crate::common::blog_showcase::BlogShowcase;
 use crate::common::fixtures::TestFixture;
-use crate::common::harness::{copy_plugin, copy_plugin_lib, EditorTestHarness};
+use crate::common::harness::{copy_plugin, copy_plugin_lib, EditorTestHarness, HarnessOptions};
 use crossterm::event::{KeyCode, KeyModifiers};
 use lsp_types::FoldingRange;
 use std::fs;
@@ -1588,10 +1588,10 @@ fn process_item(item: &str, _config: &HashMap<String, String>) {
     fs::write(
         project_root.join("src/utils.rs"),
         r#"pub fn process_batch(items: &[&str]) -> Vec<String> {
-    items.iter().map(|item| item.to_uppercase()).collect()
+    items.iter().map(|item| process_item(item)).collect()
 }
 
-pub fn process_single(item: &str) -> String {
+pub fn process_item(item: &str) -> String {
     item.to_uppercase()
 }
 "#,
@@ -1614,9 +1614,15 @@ mod tests {
     )
     .unwrap();
 
-    let mut h =
-        EditorTestHarness::with_config_and_working_dir(100, 30, Default::default(), project_root)
-            .unwrap();
+    let mut h = EditorTestHarness::create(
+        100,
+        30,
+        HarnessOptions::new()
+            .with_working_dir(project_root)
+            .with_full_grammar_registry()
+            .without_empty_plugins_dir(),
+    )
+    .unwrap();
     h.open_file(&temp_dir.path().join("project/src/main.rs"))
         .unwrap();
 
@@ -1652,12 +1658,11 @@ mod tests {
         h.render().unwrap();
         snap(&mut h, &mut s, Some(&ch.to_string()), 50);
     }
-    hold(&mut h, &mut s, 4, 100);
 
-    // Tab to replacement field
-    h.send_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+    // Press Enter to confirm search and move to replace field
+    h.send_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
     h.render().unwrap();
-    snap(&mut h, &mut s, Some("Tab"), 150);
+    snap(&mut h, &mut s, Some("Enter"), 150);
 
     // Type replacement
     for ch in "handle_item".chars() {
@@ -1665,7 +1670,20 @@ mod tests {
         h.render().unwrap();
         snap(&mut h, &mut s, Some(&ch.to_string()), 50);
     }
-    hold(&mut h, &mut s, 4, 100);
+    hold(&mut h, &mut s, 2, 100);
+
+    // Press Enter to confirm replacement and trigger the search
+    h.send_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+    h.render().unwrap();
+    snap(&mut h, &mut s, Some("Enter"), 150);
+
+    // Wait for streaming search results to arrive
+    h.wait_until_stable(|h| {
+        let screen = h.screen_to_string();
+        screen.contains("[v]") || screen.contains("matches")
+    })
+    .unwrap();
+    hold(&mut h, &mut s, 6, 100);
 
     // Alt+Enter to replace all
     h.send_key(KeyCode::Enter, KeyModifiers::ALT).unwrap();
@@ -1700,8 +1718,16 @@ fn blog_showcase_fresh_0_2_18_inline_diagnostics() {
     let mut config = fresh::config::Config::default();
     config.editor.diagnostics_inline_text = true;
 
-    let mut h =
-        EditorTestHarness::with_config_and_working_dir(100, 30, config, project_root).unwrap();
+    let mut h = EditorTestHarness::create(
+        100,
+        30,
+        HarnessOptions::new()
+            .with_config(config)
+            .with_working_dir(project_root)
+            .with_full_grammar_registry()
+            .without_empty_plugins_dir(),
+    )
+    .unwrap();
     h.open_file(&rs_path).unwrap();
 
     // Inject fake diagnostics via the proper API
@@ -1788,22 +1814,31 @@ fn blog_showcase_fresh_0_2_18_surround_selection() {
     let project_root = temp_dir.path().join("project");
     fs::create_dir(&project_root).unwrap();
 
-    let rs_path = project_root.join("example.rs");
+    let rs_path = project_root.join("main.rs");
     fs::write(
         &rs_path,
-        r#"fn greet(name: &str) {
-    println!("Hello, " + name);
-    let msg = format! + name;
-    let wrapped = name;
-    let quoted = world;
+        r#"fn render_page(title: &str, items: &[Item]) -> String {
+    let header = format!("Welcome to {}", title);
+    let count = items.len().to_string();
+    let body = items.iter()
+        .map(|item| item.name.clone())
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{}\n{} items: {}", header, count, body)
 }
 "#,
     )
     .unwrap();
 
-    let mut h =
-        EditorTestHarness::with_config_and_working_dir(80, 24, Default::default(), project_root)
-            .unwrap();
+    let mut h = EditorTestHarness::create(
+        80,
+        24,
+        HarnessOptions::new()
+            .with_working_dir(project_root)
+            .with_full_grammar_registry()
+            .without_empty_plugins_dir(),
+    )
+    .unwrap();
     h.open_file(&rs_path).unwrap();
 
     let mut s = BlogShowcase::new(
@@ -1814,56 +1849,64 @@ fn blog_showcase_fresh_0_2_18_surround_selection() {
 
     hold(&mut h, &mut s, 4, 100);
 
-    // Go to line 4: "let wrapped = name;"
-    for _ in 0..3 {
+    // Go to line 3: "let count = items.len().to_string();"
+    // We'll select "items.len()" and wrap it with parentheses — a common
+    // pattern when you want to add a method call on a sub-expression.
+    for _ in 0..2 {
         h.send_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
     }
     h.render().unwrap();
 
-    // Move to start of "name"
+    // Move to start of "items.len()" (column 16)
     h.send_key(KeyCode::Home, KeyModifiers::NONE).unwrap();
-    for _ in 0..18 {
+    for _ in 0..16 {
         h.send_key(KeyCode::Right, KeyModifiers::NONE).unwrap();
     }
     h.render().unwrap();
     snap(&mut h, &mut s, None, 150);
 
-    // Select "name" with Shift+Right x4
-    for _ in 0..4 {
+    // Select "items.len()" with Shift+Right x11
+    for _ in 0..11 {
         h.send_key(KeyCode::Right, KeyModifiers::SHIFT).unwrap();
     }
     h.render().unwrap();
     snap(&mut h, &mut s, Some("Select"), 200);
     hold(&mut h, &mut s, 3, 100);
 
-    // Type ( to surround with parentheses
+    // Type ( to surround — result: (items.len())
     h.send_key(KeyCode::Char('('), KeyModifiers::NONE).unwrap();
     h.render().unwrap();
     snap(&mut h, &mut s, Some("("), 400);
-    hold_key(&mut h, &mut s, "(name)", 4, 150);
+    hold_key(&mut h, &mut s, "(items.len())", 4, 150);
 
-    // Now demonstrate with quotes on line 5
-    h.send_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+    // Now demonstrate with quotes on line 6: wrap "body" in braces
+    // Go to line 7: ".join(", ");"
+    for _ in 0..3 {
+        h.send_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+    }
+    h.render().unwrap();
+
+    // Move to the ", " argument (find the quote after .join()
     h.send_key(KeyCode::Home, KeyModifiers::NONE).unwrap();
-    for _ in 0..18 {
+    for _ in 0..14 {
         h.send_key(KeyCode::Right, KeyModifiers::NONE).unwrap();
     }
     h.render().unwrap();
     snap(&mut h, &mut s, None, 150);
 
-    // Select "world"
-    for _ in 0..5 {
+    // Select ", " (2 chars)
+    for _ in 0..2 {
         h.send_key(KeyCode::Right, KeyModifiers::SHIFT).unwrap();
     }
     h.render().unwrap();
     snap(&mut h, &mut s, Some("Select"), 200);
     hold(&mut h, &mut s, 2, 100);
 
-    // Type " to surround with quotes
+    // Type " to surround with quotes — wrapping a string in quotes
     h.send_key(KeyCode::Char('"'), KeyModifiers::NONE).unwrap();
     h.render().unwrap();
     snap(&mut h, &mut s, Some("\""), 400);
-    hold_key(&mut h, &mut s, "\"world\"", 4, 150);
+    hold_key(&mut h, &mut s, "\", \"", 4, 150);
 
     hold(&mut h, &mut s, 3, 100);
 
@@ -1893,8 +1936,16 @@ fn blog_showcase_fresh_0_2_18_whitespace_indicators() {
     config.editor.whitespace_tabs_inner = true;
     config.editor.whitespace_tabs_trailing = true;
 
-    let mut h =
-        EditorTestHarness::with_config_and_working_dir(80, 24, config, project_root).unwrap();
+    let mut h = EditorTestHarness::create(
+        80,
+        24,
+        HarnessOptions::new()
+            .with_config(config)
+            .with_working_dir(project_root)
+            .with_full_grammar_registry()
+            .without_empty_plugins_dir(),
+    )
+    .unwrap();
     h.open_file(&py_path).unwrap();
 
     let mut s = BlogShowcase::new(
@@ -2088,11 +2139,13 @@ pkgs.mkShell {
     )
     .unwrap();
 
-    let mut h = EditorTestHarness::with_config_and_working_dir(
+    let mut h = EditorTestHarness::create(
         100,
         30,
-        Default::default(),
-        project_root.clone(),
+        HarnessOptions::new()
+            .with_working_dir(project_root.clone())
+            .with_full_grammar_registry()
+            .without_empty_plugins_dir(),
     )
     .unwrap();
 
@@ -2121,6 +2174,69 @@ pkgs.mkShell {
         snap(&mut h, &mut s, Some("↓"), 60);
     }
     hold(&mut h, &mut s, 5, 100);
+
+    s.finalize().unwrap();
+}
+
+/// Hot Exit: unnamed buffer content persists across editor restarts
+#[test]
+#[ignore]
+fn blog_showcase_fresh_0_2_18_hot_exit() {
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let project_root = temp_dir.path().join("project");
+    fs::create_dir(&project_root).unwrap();
+
+    let dir_context = fresh::config_io::DirectoryContext::for_testing(temp_dir.path());
+
+    let mut h = EditorTestHarness::create(
+        80,
+        24,
+        HarnessOptions::new()
+            .with_shared_dir_context(dir_context.clone())
+            .with_working_dir(project_root.clone())
+            .without_empty_plugins_dir(),
+    )
+    .unwrap();
+
+    let mut s = BlogShowcase::new(
+        "fresh-0.2.18/hot-exit",
+        "Hot Exit",
+        "Unnamed scratch buffers persist across editor restarts — never lose your quick notes.",
+    );
+
+    // Type some quick notes into the unnamed buffer
+    let notes = "TODO before release:\n- run full test suite\n- update changelog\n- tag v0.2.18\n- build release artifacts";
+    for ch in notes.chars() {
+        if ch == '\n' {
+            h.send_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        } else {
+            h.send_key(KeyCode::Char(ch), KeyModifiers::NONE).unwrap();
+        }
+    }
+    h.render().unwrap();
+    hold(&mut h, &mut s, 8, 100);
+
+    // Quit the editor (Ctrl+Q)
+    h.shutdown(true).unwrap();
+    snap(&mut h, &mut s, Some("Ctrl+Q"), 400);
+    hold_key(&mut h, &mut s, "quit", 4, 150);
+
+    // ---- Restart the editor in a new harness ----
+    let mut h2 = EditorTestHarness::create(
+        80,
+        24,
+        HarnessOptions::new()
+            .with_shared_dir_context(dir_context)
+            .with_working_dir(project_root)
+            .without_empty_plugins_dir(),
+    )
+    .unwrap();
+
+    h2.startup(true, &[]).unwrap();
+    h2.render().unwrap();
+
+    // Show the restored buffer — notes are back!
+    hold(&mut h2, &mut s, 10, 100);
 
     s.finalize().unwrap();
 }

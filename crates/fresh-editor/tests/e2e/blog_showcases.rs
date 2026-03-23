@@ -1834,6 +1834,7 @@ fn blog_showcase_fresh_0_2_18_surround_selection() {
         80,
         24,
         HarnessOptions::new()
+            .with_config(fresh::config::Config::default())
             .with_working_dir(project_root)
             .with_full_grammar_registry()
             .without_empty_plugins_dir(),
@@ -1857,9 +1858,10 @@ fn blog_showcase_fresh_0_2_18_surround_selection() {
     }
     h.render().unwrap();
 
-    // Move to start of "items.len()" (column 16)
+    // Move to start of "items.len()" — SmartHome goes to first non-ws (col 4),
+    // then 12 right to reach col 16 where "items" starts
     h.send_key(KeyCode::Home, KeyModifiers::NONE).unwrap();
-    for _ in 0..16 {
+    for _ in 0..12 {
         h.send_key(KeyCode::Right, KeyModifiers::NONE).unwrap();
     }
     h.render().unwrap();
@@ -1879,34 +1881,35 @@ fn blog_showcase_fresh_0_2_18_surround_selection() {
     snap(&mut h, &mut s, Some("("), 400);
     hold_key(&mut h, &mut s, "(items.len())", 4, 150);
 
-    // Now demonstrate with quotes on line 6: wrap "body" in braces
-    // Go to line 7: ".join(", ");"
-    for _ in 0..3 {
+    // Now demonstrate with braces: select "body" on the format! line and wrap with {
+    // Go to line 8: "    format!(..., header, count, body)"
+    for _ in 0..5 {
         h.send_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
     }
     h.render().unwrap();
 
-    // Move to the ", " argument (find the quote after .join()
-    h.send_key(KeyCode::Home, KeyModifiers::NONE).unwrap();
-    for _ in 0..14 {
-        h.send_key(KeyCode::Right, KeyModifiers::NONE).unwrap();
+    // Move to start of "body" — last arg in format! macro
+    h.send_key(KeyCode::End, KeyModifiers::NONE).unwrap();
+    // back past ")" at EOL
+    for _ in 0..5 {
+        h.send_key(KeyCode::Left, KeyModifiers::NONE).unwrap();
     }
     h.render().unwrap();
     snap(&mut h, &mut s, None, 150);
 
-    // Select ", " (2 chars)
-    for _ in 0..2 {
+    // Select "body" (4 chars)
+    for _ in 0..4 {
         h.send_key(KeyCode::Right, KeyModifiers::SHIFT).unwrap();
     }
     h.render().unwrap();
     snap(&mut h, &mut s, Some("Select"), 200);
     hold(&mut h, &mut s, 2, 100);
 
-    // Type " to surround with quotes — wrapping a string in quotes
-    h.send_key(KeyCode::Char('"'), KeyModifiers::NONE).unwrap();
+    // Type { to surround with braces
+    h.send_key(KeyCode::Char('{'), KeyModifiers::NONE).unwrap();
     h.render().unwrap();
-    snap(&mut h, &mut s, Some("\""), 400);
-    hold_key(&mut h, &mut s, "\", \"", 4, 150);
+    snap(&mut h, &mut s, Some("{"), 400);
+    hold_key(&mut h, &mut s, "{body}", 4, 150);
 
     hold(&mut h, &mut s, 3, 100);
 

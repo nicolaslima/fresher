@@ -7,7 +7,7 @@ outline: false
 
 *March 23, 2026*
 
-A roundup of everything that landed since the [0.2.9 release](../fresh-0.2.9/) — eight point releases spanning project-wide search & replace, inline diagnostics, 30 new syntax grammars, broad LSP coverage, and a long tail of editing refinements and bug fixes.
+A roundup of everything that landed since the [0.2.9 release](../fresh-0.2.9/) — eight point releases spanning project-wide search & replace, inline diagnostics, 30 new syntax grammars, a ground-up Windows input rewrite, broad LSP coverage, and a long tail of editing refinements and bug fixes.
 
 ## Project-Wide Search & Replace
 
@@ -65,6 +65,18 @@ All buffers — including unnamed scratch buffers — persist across sessions au
   <img src="./hot-exit/showcase.gif" alt="Hot Exit demo" />
 </div>
 
+## Windows Input Overhaul
+
+Windows Terminal support used to be a minefield. Moving the mouse rapidly would dump garbled VT escape sequences — things like `[<35;50;21M` — straight into your document as literal text. The culprit: crossterm's Windows mouse handling replaces the entire console mode with legacy Win32 flags, removing `ENABLE_VIRTUAL_TERMINAL_INPUT` and breaking VT sequence parsing. This made bracketed paste, SGR mouse reporting, and all VT-based input features mutually exclusive with mouse support on Windows.
+
+We replaced crossterm's input layer on Windows with a new `fresh-winterm` crate that uses the same approach as [Microsoft Edit](https://github.com/microsoft/edit): `ENABLE_VIRTUAL_TERMINAL_INPUT` for all input, VT mouse tracking sequences for mouse support, and no legacy `ENABLE_MOUSE_INPUT`. A dedicated reader thread continuously drains the console buffer to prevent overflow under high event rates.
+
+The investigation took several wrong turns. We initially blamed a [known conhost 4KB buffer boundary bug](https://github.com/microsoft/terminal/pull/17738), but that applies to ConPTY pipe input, not direct VT reads. Reading Neovim's and libuv's source code revealed the actual root causes: Windows coalesces repeated `KEY_EVENT` records via `wRepeatCount` under heavy input, and our reader was treating each record as a single byte instead of N bytes. This corrupted the VT byte stream at the parser level. On top of that, mode 1003 (all-motion mouse tracking) generates ~15 KEY_EVENT records per pixel of mouse movement — thousands per second — overwhelming the console input buffer.
+
+The fix has three parts: correct `wRepeatCount` handling, a `strip_corrupt_mouse()` function that detects and discards VT mouse sequences missing their ESC byte (an unambiguous corruption signal, since a human could never type that pattern in a single console read), and a dual mouse mode where Windows defaults to mode 1002 (cell-motion, lower event volume) while macOS and Linux use mode 1003 (full hover tracking). Users can opt into mode 1003 on Windows via the `mouse_hover_enabled` setting.
+
+Bracketed paste, SGR mouse coordinates, and UTF-16 surrogate pairs now all work reliably on Windows Terminal.
+
 ## Also New
 
 ### Editing
@@ -83,7 +95,6 @@ Added LSP configs and helper plugins (with install instructions) for **30+ langu
 
 - **macOS native GUI** (early work-in-progress) — exploring a concept of Fresh shipping without a terminal while remaining fully compatible with terminal mode. Currently includes a native menu bar with dynamic conditions, Cmd keybindings, app icon, and `.app` bundle.
 - **Linux desktop integration** — icons and `.desktop` files for deb, rpm, Flatpak, and AppImage packages.
-- **Windows input overhaul** — bracketed paste on Windows Terminal, new `fresh-winterm` crate replacing crossterm's input handling, with corrupt mouse sequence detection and UTF-16 surrogate support.
 
 ### Performance
 

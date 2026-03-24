@@ -1,116 +1,54 @@
 # Investigation: E2E Test Does Not Reproduce Large File Highlighting Bug
 
-## Goal
+## Resolution
 
-Make the e2e test in `crates/fresh-editor/tests/e2e/syntax_highlighting_embedded_offset.rs`
-(`test_large_file_highlighting_survives_navigation`) reproduce the exact same
-user-visible behavior as the real editor running in tmux.
+**There was no discrepancy.** Both tmux and the e2e test behaved identically:
+0 highlight spans at EOF on both first and second Ctrl+End visits.
 
-## The Bug (tmux reproduction — works)
+The doc's claim that "tmux shows 210 spans, green strings visible" on the first
+Ctrl+End was incorrect. Re-testing at commit `c606febc` with debug logging
+confirmed that tmux also gets `slice_bytes_len=0` and all-white text at EOF.
 
-Using commit `c606febc` on branch `syntax-highlight-markers`, with the debug
-binary and `/tmp/large_test.rs` (11MB Rust file, 270K lines of
-`let var_N = "hello world N";`):
+### Root cause
 
-1. Open file, Ctrl+End → **210 highlight spans**, green strings visible
-2. Ctrl+Home → correct highlighting at top
-3. Ctrl+End again → **0 highlight spans**, all white text — **BUG**
+`find_parse_resume_point` used `query_range(0, desired_start + 1)` — an
+unbounded search that found a checkpoint at byte ~12KB (from the initial
+top-of-file parse on file open). It then called
+`buffer.slice_bytes(12169..11387835)`, but the buffer uses lazy loading:
+only ~24KB near the cursor (at EOF) was loaded by `ensure_visible`. The
+range `12169..~11371835` contained `Unloaded` buffer pieces, so
+`get_text_range` (immutable) returned `None`, and `slice_bytes` returned
+an empty vec via `.unwrap_or_default()`.
 
-The bug is caused by `find_parse_resume_point` in
-`crates/fresh-editor/src/primitives/highlight_engine.rs` doing an unbounded
-`query_range(0, desired_start+1)` which finds a distant checkpoint at byte ~12KB
-(created during the HOME visit) and tries to parse from there to byte 11MB. The
-resulting 11MB parse produces wrong/no highlights.
+With 0 bytes of content, `full_parse` produced 0 spans.
 
-### Tmux reproduction command
+### The fix (commit 88717d1, re-applied in fe7fb71)
 
-```bash
-cargo build  # debug build at commit c606febc
-tmux new-session -d -s test -x 120 -y 40
-tmux send-keys -t test "/path/to/target/debug/fresh /tmp/large_test.rs 2>/tmp/log" Enter
-sleep 5
-tmux send-keys -t test C-End    # step 1: first visit to end
-sleep 5
-tmux capture-pane -t test -e -p | sed -n '4p'   # shows [38;5;2m green colors
-tmux send-keys -t test C-Home   # step 2: go home
-sleep 3
-tmux send-keys -t test C-End    # step 3: second visit to end
-sleep 15
-tmux capture-pane -t test -e -p | sed -n '4p'   # shows [38;5;15m all white — BUG
-```
+Two changes to `find_parse_resume_point`:
 
-## The Problem (e2e test — doesn't match)
+1. **Bounded checkpoint search**: `query_range(desired_start - MAX_PARSE_BYTES, desired_start + 1)`
+   instead of `query_range(0, desired_start + 1)`. With no nearby checkpoint,
+   the fallback starts fresh at `desired_start`, and `slice_bytes` only needs
+   ~13KB of data that IS loaded by `ensure_visible`.
 
-The e2e test opens the SAME file (`/tmp/large_test.rs`), does the same
-Ctrl+End / Ctrl+Home / Ctrl+End sequence, but:
+2. **Enable checkpoint creation in fallback**: Changed `create_checkpoints=false`
+   to `true`, so the first visit creates checkpoints near EOF. The second visit
+   reuses them, parsing only ~13KB instead of starting fresh again.
 
-- **Step 1 (first Ctrl+End): 0 spans, 0 highlight colors** — tmux shows 210 spans
-- Step 2 (Ctrl+Home): 5 highlight colors — matches tmux
-- Step 3 (second Ctrl+End): 0 spans — matches tmux but trivially (both are 0)
+### Key data (after fix)
 
-The test can't detect the regression because step 1 already has no colors.
+| Step | spans | bytes_parsed | highlight_colors |
+|------|-------|-------------|-----------------|
+| First Ctrl+End | 204 | 12,886 | 2 (green, blue) |
+| Ctrl+Home | 278 | 12,402 | 5 |
+| Second Ctrl+End | 204 | 12,886 | 2 |
 
-### Key diagnostic data
-
-Both tmux and the test harness call `full_parse` with nearly identical viewport
-ranges for the END visit:
-
-| | tmux | test harness |
-|---|---|---|
-| viewport | `11384863..11387835` | `11384949..11387835` |
-| desired_parse | `11374863..11387835` | `11374949..11387835` |
-| `has_highlighter` | true | true |
-| spans returned | **210** | **0** |
-
-Same binary. Same file. Same `highlight_viewport` code. Same viewport byte
-ranges (within ~100 bytes). Yet tmux gets 210 spans and the test gets 0.
-
-### What we added to investigate
-
-An `eprintln!` at the end of `full_parse` that prints the span count:
-```rust
-eprintln!("full_parse: returning {} spans for vp={}..{}", result.len(), viewport_start, viewport_end);
-```
-
-## Test file
-
-Generate `/tmp/large_test.rs` (must exist before running the test):
-```bash
-python3 -c "
-with open('/tmp/large_test.rs', 'w') as f:
-    f.write('// Large test file\n')
-    f.write('fn main() {\n')
-    for i in range(270000):
-        f.write(f'    let var_{i} = \"hello world {i}\";\n')
-    f.write('    println!(\"done\");\n')
-    f.write('}\n')
-"
-```
-
-## Where to look next
-
-1. **Buffer content at the viewport**: Does `buffer.slice_bytes(actual_start..parse_end)`
-   return the same content in both cases? The test harness may load the large file
-   differently (chunked/lazy loading might not have the END chunks loaded).
-
-2. **Theme**: The test harness and real editor might use different themes. Check if
-   `highlight_color(category, theme)` returns different colors.
-
-3. **`scope_to_category` mapping**: Even if syntect produces the same scope stack,
-   the category mapping might differ if the scope strings are different.
-
-4. **`actual_start` in full_parse**: Both should start from `desired_parse_start`
-   (the large file fallback). If the test's `actual_start` differs from tmux's,
-   that explains the span count difference. The debug log shows this.
-
-5. **Large file mode**: Check if `Buffer::load_from_file` with
-   `large_file_threshold_bytes` results in a different buffer state than what the
-   real editor uses after the user confirms the "large file" dialog.
+The test now asserts that both visits to EOF produce highlighting and that
+the second visit parses < 1MB (was 11MB before the fix).
 
 ## Files involved
 
 - `crates/fresh-editor/src/primitives/highlight_engine.rs` — `TextMateEngine::full_parse`, `find_parse_resume_point`
 - `crates/fresh-editor/tests/e2e/syntax_highlighting_embedded_offset.rs` — test `test_large_file_highlighting_survives_navigation`
-- `crates/fresh-editor/tests/common/harness.rs` — `EditorTestHarness`, `open_file`, `send_key`, `render`
-- `crates/fresh-editor/src/app/buffer_management.rs` — file loading with `large_file_threshold_bytes`
-- `crates/fresh-editor/src/model/buffer.rs` — `Buffer::load_from_file`, `slice_bytes`
+- `crates/fresh-editor/src/model/buffer.rs` — `Buffer::load_from_file`, `slice_bytes`, `get_text_range` (returns None for Unloaded pieces)
+- `crates/fresh-editor/src/view/viewport.rs` — `ensure_visible` loads ~24KB around cursor via `get_text_range_mut`

@@ -45,10 +45,6 @@ const BINARY_EXTENSIONS: &[&str] = &[
     "DS_Store", "swp", "swo",
 ];
 
-/// Maximum file size (in bytes) to search. Files larger than this are skipped
-/// to prevent hangs on very large files that slip past the binary-extension check.
-const MAX_SEARCH_FILE_SIZE: u64 = 10 * 1024 * 1024; // 10 MB
-
 /// Returns true if the file path has an extension known to be binary.
 fn is_binary_extension(path: &std::path::Path) -> bool {
     path.extension()
@@ -2020,12 +2016,6 @@ impl Editor {
                 }
             } else {
                 // Not open — search via FileSystem trait
-                // Skip files that exceed the size limit to avoid hangs on large files
-                if let Ok(meta) = self.filesystem.metadata(file_path) {
-                    if meta.size > MAX_SEARCH_FILE_SIZE {
-                        continue;
-                    }
-                }
                 let fs_opts_file =
                     make_search_opts(fixed_string, case_sensitive, whole_words, remaining);
                 let mut cursor = crate::model::filesystem::FileSearchCursor::new();
@@ -2271,12 +2261,6 @@ impl Editor {
                         }
                     } else {
                         // Search via FileSystem trait
-                        // Skip files that exceed the size limit
-                        if let Ok(meta) = fs.metadata(&file_path) {
-                            if meta.size > MAX_SEARCH_FILE_SIZE {
-                                return;
-                            }
-                        }
                         let fs_opts = crate::model::filesystem::FileSearchOptions {
                             fixed_string,
                             case_sensitive,

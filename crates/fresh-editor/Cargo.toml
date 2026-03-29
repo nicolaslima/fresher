@@ -74,6 +74,10 @@ runtime = [
     "syntect/default-themes",
 
     "dep:ureq",
+    "dep:flate2",
+    "dep:tar",
+    "dep:zip",
+    "dep:xz2",
     "dep:alacritty_terminal",
     "dep:portable-pty",
     "dep:trash",
@@ -159,6 +163,10 @@ arboard = { version = "3.6", default-features = false, features = ["wayland-data
 syntect = { version = "5.3", default-features = false, optional = true }
 
 ureq = { version = "3.1.4", default-features = false, features = ["rustls"], optional = true }
+flate2 = { version = "1.1", optional = true }
+tar = { version = "0.4", optional = true }
+zip = { version = "2.4", default-features = false, features = ["deflate"], optional = true }
+xz2 = { version = "0.1", optional = true }
 # Unicode handling - always needed for primitives
 unicode-width = { version = "0.2" }
 unicode-segmentation = { version = "1.12" }

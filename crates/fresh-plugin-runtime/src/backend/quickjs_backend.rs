@@ -3856,6 +3856,155 @@ impl JsEditorApi {
         });
         id
     }
+
+    // ==================== Tool Manager API ====================
+
+    /// Get platform context (OS, arch, libc, etc.)
+    #[plugin_api(ts_return = "PlatformContext")]
+    pub fn get_platform<'js>(&self, ctx: rquickjs::Ctx<'js>) -> rquickjs::Result<Value<'js>> {
+        let platform = fresh_core::api::PlatformContext::detect();
+        let json = serde_json::to_string(&platform).unwrap_or_else(|_| "{}".to_string());
+        ctx.json_parse(json)
+    }
+
+    /// Download a file from a URL with optional SHA-256 verification (async)
+    #[plugin_api(async_promise, js_name = "downloadFile", ts_return = "string")]
+    #[qjs(rename = "_downloadFileStart")]
+    pub fn download_file_start(
+        &self,
+        _ctx: rquickjs::Ctx<'_>,
+        url: String,
+        dest: String,
+        expected_sha256: rquickjs::function::Opt<String>,
+    ) -> u64 {
+        let id = {
+            let mut id_ref = self.next_request_id.borrow_mut();
+            let id = *id_ref;
+            *id_ref += 1;
+            self.callback_contexts
+                .borrow_mut()
+                .insert(id, self.plugin_name.clone());
+            id
+        };
+        let _ = self.command_sender.send(PluginCommand::DownloadFile {
+            download_id: id,
+            url,
+            dest: PathBuf::from(dest),
+            expected_sha256: expected_sha256.0,
+            callback_id: JsCallbackId::new(id),
+        });
+        id
+    }
+
+    /// Extract an archive to a directory (async)
+    #[plugin_api(async_promise, js_name = "extractArchive", ts_return = "boolean")]
+    #[qjs(rename = "_extractArchiveStart")]
+    pub fn extract_archive_start(
+        &self,
+        _ctx: rquickjs::Ctx<'_>,
+        archive_path: String,
+        dest_dir: String,
+        strip_components: rquickjs::function::Opt<u32>,
+    ) -> u64 {
+        let id = {
+            let mut id_ref = self.next_request_id.borrow_mut();
+            let id = *id_ref;
+            *id_ref += 1;
+            self.callback_contexts
+                .borrow_mut()
+                .insert(id, self.plugin_name.clone());
+            id
+        };
+        let _ = self.command_sender.send(PluginCommand::ExtractArchive {
+            archive_path: PathBuf::from(archive_path),
+            dest_dir: PathBuf::from(dest_dir),
+            strip_components: strip_components.0.unwrap_or(0),
+            callback_id: JsCallbackId::new(id),
+        });
+        id
+    }
+
+    /// Create an executable shim in the tool bin directory
+    pub fn create_tool_shim(&self, shim_name: String, target_path: String) {
+        let _ = self.command_sender.send(PluginCommand::CreateToolShim {
+            shim_name,
+            target_path: PathBuf::from(target_path),
+        });
+    }
+
+    /// Remove a tool (shim + install directory + inventory entry) (async)
+    #[plugin_api(async_promise, js_name = "removeTool", ts_return = "boolean")]
+    #[qjs(rename = "_removeToolStart")]
+    pub fn remove_tool_start(
+        &self,
+        _ctx: rquickjs::Ctx<'_>,
+        tool_name: String,
+        version: String,
+    ) -> u64 {
+        let id = {
+            let mut id_ref = self.next_request_id.borrow_mut();
+            let id = *id_ref;
+            *id_ref += 1;
+            self.callback_contexts
+                .borrow_mut()
+                .insert(id, self.plugin_name.clone());
+            id
+        };
+        let _ = self.command_sender.send(PluginCommand::RemoveTool {
+            tool_name,
+            version,
+            callback_id: JsCallbackId::new(id),
+        });
+        id
+    }
+
+    /// Set a file as executable (chmod +x). No-op on Windows.
+    pub fn set_executable(&self, path: String) {
+        let _ = self.command_sender.send(PluginCommand::SetExecutable {
+            path: PathBuf::from(path),
+        });
+    }
+
+    /// Register a tool in the inventory database
+    pub fn register_tool_installation(
+        &self,
+        tool_name: String,
+        version: String,
+        install_dir: String,
+        installed_by: String,
+    ) {
+        let _ = self
+            .command_sender
+            .send(PluginCommand::RegisterToolInstallation {
+                tool_name,
+                version,
+                install_dir: PathBuf::from(install_dir),
+                installed_by,
+            });
+    }
+
+    /// Query the inventory for installed tools (async)
+    #[plugin_api(
+        async_promise,
+        js_name = "getInstalledTools",
+        ts_return = "InstalledToolInfo[]"
+    )]
+    #[qjs(rename = "_getInstalledToolsStart")]
+    pub fn get_installed_tools_start(&self, _ctx: rquickjs::Ctx<'_>) -> u64 {
+        let id = {
+            let mut id_ref = self.next_request_id.borrow_mut();
+            let id = *id_ref;
+            *id_ref += 1;
+            self.callback_contexts
+                .borrow_mut()
+                .insert(id, self.plugin_name.clone());
+            id
+        };
+        let _ = self.command_sender.send(PluginCommand::GetInstalledTools {
+            callback_id: JsCallbackId::new(id),
+        });
+        id
+    }
 }
 
 // =============================================================================

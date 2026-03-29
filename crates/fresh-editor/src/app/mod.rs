@@ -4793,6 +4793,26 @@ impl Editor {
                         PluginAsyncMessage::PluginResponse(response) => {
                             self.handle_plugin_response(response);
                         }
+                        PluginAsyncMessage::DownloadProgress {
+                            download_id,
+                            bytes_downloaded,
+                            total_bytes,
+                        } => {
+                            // Forward download progress to plugin as a streaming callback
+                            let json = format!(
+                                r#"{{"downloadId":{},"bytesDownloaded":{},"totalBytes":{}}}"#,
+                                download_id,
+                                bytes_downloaded,
+                                total_bytes
+                                    .map(|b| b.to_string())
+                                    .unwrap_or_else(|| "null".to_string()),
+                            );
+                            self.plugin_manager.call_streaming_callback(
+                                JsCallbackId::from(download_id),
+                                json,
+                                false,
+                            );
+                        }
                         PluginAsyncMessage::GrepStreamingProgress {
                             search_id,
                             matches_json,
@@ -6893,6 +6913,57 @@ impl Editor {
                 callback_id,
             } => {
                 self.handle_replace_in_buffer(file_path, matches, replacement, callback_id);
+            }
+
+            // ==================== Tool Manager Commands ====================
+            PluginCommand::DownloadFile {
+                download_id,
+                url,
+                dest,
+                expected_sha256,
+                callback_id,
+            } => {
+                self.handle_tool_download(download_id, url, dest, expected_sha256, callback_id);
+            }
+            PluginCommand::ExtractArchive {
+                archive_path,
+                dest_dir,
+                strip_components,
+                callback_id,
+            } => {
+                self.handle_tool_extract(archive_path, dest_dir, strip_components, callback_id);
+            }
+            PluginCommand::CreateToolShim {
+                shim_name,
+                target_path,
+            } => {
+                self.handle_create_tool_shim(&shim_name, &target_path);
+            }
+            PluginCommand::RemoveTool {
+                tool_name,
+                version,
+                callback_id,
+            } => {
+                self.handle_remove_tool(tool_name, version, callback_id);
+            }
+            PluginCommand::SetExecutable { path } => {
+                self.handle_set_executable(&path);
+            }
+            PluginCommand::RegisterToolInstallation {
+                tool_name,
+                version,
+                install_dir,
+                installed_by,
+            } => {
+                self.handle_register_tool_installation(
+                    &tool_name,
+                    &version,
+                    &install_dir,
+                    &installed_by,
+                );
+            }
+            PluginCommand::GetInstalledTools { callback_id } => {
+                self.handle_get_installed_tools(callback_id);
             }
         }
         Ok(())

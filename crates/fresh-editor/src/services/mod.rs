@@ -24,5 +24,7 @@ pub mod telemetry;
 pub mod terminal;
 pub mod terminal_modes;
 pub mod time_source;
+#[cfg(feature = "runtime")]
+pub mod tool_manager;
 pub mod tracing_setup;
 pub mod warning_log;

@@ -96,6 +96,118 @@ impl Default for CommandRegistry {
     }
 }
 
+// =============================================================================
+// Platform Context
+// =============================================================================
+
+/// Compile-time + runtime platform information.
+///
+/// Exposed to plugins as `editor.platform`. Detected once at startup.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct PlatformContext {
+    /// Operating system: "linux", "macos", "windows"
+    pub os: String,
+    /// CPU architecture: "x86_64", "aarch64", "arm", "x86"
+    pub arch: String,
+    /// C library variant (Linux only): "gnu", "musl", or null
+    pub libc: Option<String>,
+    /// Executable file extension: "" on Unix, ".exe" on Windows
+    pub exe_ext: String,
+    /// Archive preference: "tar.gz" on Unix, "zip" on Windows
+    pub archive_ext: String,
+    /// Rust target triple: e.g. "x86_64-unknown-linux-gnu"
+    pub target_triple: String,
+}
+
+impl PlatformContext {
+    /// Detect platform context from compile-time and runtime information.
+    pub fn detect() -> Self {
+        let os = if cfg!(target_os = "linux") {
+            "linux"
+        } else if cfg!(target_os = "macos") {
+            "macos"
+        } else if cfg!(target_os = "windows") {
+            "windows"
+        } else {
+            "unknown"
+        };
+
+        let arch = if cfg!(target_arch = "x86_64") {
+            "x86_64"
+        } else if cfg!(target_arch = "aarch64") {
+            "aarch64"
+        } else if cfg!(target_arch = "arm") {
+            "arm"
+        } else if cfg!(target_arch = "x86") {
+            "x86"
+        } else {
+            "unknown"
+        };
+
+        let libc = Self::detect_libc();
+
+        let target_triple = format!(
+            "{}-{}",
+            arch,
+            if cfg!(target_os = "linux") {
+                if libc.as_deref() == Some("musl") {
+                    "unknown-linux-musl"
+                } else {
+                    "unknown-linux-gnu"
+                }
+            } else if cfg!(target_os = "macos") {
+                "apple-darwin"
+            } else if cfg!(target_os = "windows") {
+                "pc-windows-msvc"
+            } else {
+                "unknown"
+            }
+        );
+
+        PlatformContext {
+            os: os.to_string(),
+            arch: arch.to_string(),
+            libc,
+            exe_ext: if cfg!(windows) { ".exe" } else { "" }.to_string(),
+            archive_ext: if cfg!(windows) { "zip" } else { "tar.gz" }.to_string(),
+            target_triple,
+        }
+    }
+
+    /// Detect the C library variant on Linux.
+    fn detect_libc() -> Option<String> {
+        if !cfg!(target_os = "linux") {
+            return None;
+        }
+        // Check for musl by reading /etc/os-release for Alpine
+        if let Ok(content) = std::fs::read_to_string("/etc/os-release") {
+            if content.contains("Alpine") || content.contains("alpine") {
+                return Some("musl".to_string());
+            }
+        }
+        Some("gnu".to_string())
+    }
+}
+
+// =============================================================================
+// Tool Manager Types
+// =============================================================================
+
+/// Information about an installed tool.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct InstalledToolInfo {
+    pub name: String,
+    pub version: String,
+    pub install_dir: String,
+    pub installed_by: String,
+    pub installed_at: String, // ISO 8601
+    pub shim_path: Option<String>,
+}
+
 /// A callback ID for JavaScript promises in the plugin runtime.
 ///
 /// This newtype distinguishes JS promise callbacks (resolved via `resolve_callback`)
@@ -225,6 +337,31 @@ pub enum PluginResponse {
         request_id: u64,
         split_id: Option<SplitId>,
     },
+
+    // ==================== Tool Manager Responses ====================
+    /// Download completed
+    DownloadComplete {
+        request_id: u64,
+        result: Result<String, String>, // Ok(path) or Err(message)
+    },
+
+    /// Archive extraction completed
+    ExtractComplete {
+        request_id: u64,
+        result: Result<(), String>,
+    },
+
+    /// Tool removal completed
+    ToolRemoved {
+        request_id: u64,
+        result: Result<(), String>,
+    },
+
+    /// Installed tools query result
+    InstalledTools {
+        request_id: u64,
+        tools: Vec<InstalledToolInfo>,
+    },
 }
 
 /// Messages sent from async plugin tasks to the synchronous main loop
@@ -285,6 +422,14 @@ pub enum PluginAsyncMessage {
         total_matches: usize,
         /// Whether the search was stopped early due to reaching max_results
         truncated: bool,
+    },
+
+    // ==================== Tool Manager Async Messages ====================
+    /// Download progress update (fired multiple times during download)
+    DownloadProgress {
+        download_id: u64,
+        bytes_downloaded: u64,
+        total_bytes: Option<u64>,
     },
 }
 
@@ -1749,6 +1894,66 @@ pub enum PluginCommand {
         /// Callback ID for async response
         callback_id: JsCallbackId,
     },
+
+    // ==================== Tool Manager Commands ====================
+    /// Download a file from a URL with progress reporting.
+    /// The Rust core handles HTTPS, redirects, timeouts, and retries.
+    DownloadFile {
+        /// Unique ID for correlating progress events
+        download_id: u64,
+        /// Source URL (HTTPS required)
+        url: String,
+        /// Local destination path
+        dest: PathBuf,
+        /// Expected SHA-256 hex digest (optional but recommended)
+        expected_sha256: Option<String>,
+        /// Callback ID for completion notification
+        callback_id: JsCallbackId,
+    },
+
+    /// Extract an archive to a directory.
+    /// Supports: .zip, .tar.gz, .tar.xz, .gz (single file)
+    ExtractArchive {
+        /// Path to the archive file
+        archive_path: PathBuf,
+        /// Destination directory
+        dest_dir: PathBuf,
+        /// Strip N leading path components (like tar --strip-components)
+        strip_components: u32,
+        /// Callback ID for completion notification
+        callback_id: JsCallbackId,
+    },
+
+    /// Create an executable shim in the tool bin directory.
+    /// Unix: creates a symlink. Windows: creates a .cmd wrapper.
+    CreateToolShim {
+        /// Name of the shim (e.g., "gopls") — extension added automatically
+        shim_name: String,
+        /// Absolute path to the actual executable
+        target_path: PathBuf,
+    },
+
+    /// Remove a tool's shim and optionally its installation directory.
+    RemoveTool {
+        tool_name: String,
+        version: String,
+        /// Callback ID for completion notification
+        callback_id: JsCallbackId,
+    },
+
+    /// Set file as executable (chmod +x). No-op on Windows.
+    SetExecutable { path: PathBuf },
+
+    /// Register a tool in the inventory database.
+    RegisterToolInstallation {
+        tool_name: String,
+        version: String,
+        install_dir: PathBuf,
+        installed_by: String, // recipe name
+    },
+
+    /// Query the inventory for installed tools.
+    GetInstalledTools { callback_id: JsCallbackId },
 }
 
 impl PluginCommand {

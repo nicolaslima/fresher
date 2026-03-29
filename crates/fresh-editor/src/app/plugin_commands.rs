@@ -2410,4 +2410,239 @@ impl Editor {
         let json = serde_json::to_string(&result).unwrap_or_else(|_| "null".to_string());
         self.plugin_manager.resolve_callback(callback_id, json);
     }
+
+    // ==================== Tool Manager Handlers ====================
+
+    /// Download a file with progress reporting and optional checksum verification.
+    pub(super) fn handle_tool_download(
+        &mut self,
+        download_id: u64,
+        url: String,
+        dest: std::path::PathBuf,
+        expected_sha256: Option<String>,
+        callback_id: JsCallbackId,
+    ) {
+        let Some(bridge) = &self.async_bridge else {
+            self.plugin_manager
+                .reject_callback(callback_id, "No async bridge available".to_string());
+            return;
+        };
+        let sender = bridge.sender();
+
+        let Some(runtime) = &self.tokio_runtime else {
+            self.plugin_manager
+                .reject_callback(callback_id, "No tokio runtime available".to_string());
+            return;
+        };
+
+        let dest_clone = dest.clone();
+        let progress_sender = sender.clone();
+
+        runtime.spawn(tokio::task::spawn_blocking(move || {
+            use crate::services::async_bridge::AsyncMessage;
+            use crate::services::tool_manager::Downloader;
+            use fresh_core::api::{PluginAsyncMessage, PluginResponse};
+
+            let progress_cb = {
+                let sender = progress_sender.clone();
+                Box::new(move |bytes_downloaded: u64, total_bytes: Option<u64>| {
+                    let _ =
+                        sender.send(AsyncMessage::Plugin(PluginAsyncMessage::DownloadProgress {
+                            download_id,
+                            bytes_downloaded,
+                            total_bytes,
+                        }));
+                })
+            };
+
+            let result = Downloader::download(
+                &url,
+                &dest_clone,
+                expected_sha256.as_deref(),
+                Some(progress_cb),
+            );
+
+            let response = match result {
+                Ok(()) => PluginResponse::DownloadComplete {
+                    request_id: download_id,
+                    result: Ok(dest_clone.to_string_lossy().to_string()),
+                },
+                Err(e) => PluginResponse::DownloadComplete {
+                    request_id: download_id,
+                    result: Err(format!("{e:#}")),
+                },
+            };
+
+            let _ = progress_sender.send(AsyncMessage::Plugin(PluginAsyncMessage::PluginResponse(
+                response,
+            )));
+        }));
+    }
+
+    /// Extract an archive to a directory.
+    pub(super) fn handle_tool_extract(
+        &mut self,
+        archive_path: std::path::PathBuf,
+        dest_dir: std::path::PathBuf,
+        strip_components: u32,
+        callback_id: JsCallbackId,
+    ) {
+        let Some(bridge) = &self.async_bridge else {
+            self.plugin_manager
+                .reject_callback(callback_id, "No async bridge available".to_string());
+            return;
+        };
+        let sender = bridge.sender();
+
+        let Some(runtime) = &self.tokio_runtime else {
+            self.plugin_manager
+                .reject_callback(callback_id, "No tokio runtime available".to_string());
+            return;
+        };
+
+        runtime.spawn(tokio::task::spawn_blocking(move || {
+            use crate::services::async_bridge::AsyncMessage;
+            use crate::services::tool_manager::Extractor;
+            use fresh_core::api::{PluginAsyncMessage, PluginResponse};
+
+            let result = Extractor::extract(&archive_path, &dest_dir, strip_components);
+
+            let response = PluginResponse::ExtractComplete {
+                request_id: callback_id.0,
+                result: result.map_err(|e| format!("{e:#}")),
+            };
+
+            let _ = sender.send(AsyncMessage::Plugin(PluginAsyncMessage::PluginResponse(
+                response,
+            )));
+        }));
+    }
+
+    /// Create an executable shim in the tool bin directory.
+    pub(super) fn handle_create_tool_shim(
+        &mut self,
+        shim_name: &str,
+        target_path: &std::path::Path,
+    ) {
+        use crate::services::tool_manager::{tools_bin_dir, Shimmer};
+
+        let bin_dir = tools_bin_dir();
+        if let Err(e) = Shimmer::create(&bin_dir, shim_name, target_path) {
+            tracing::error!("Failed to create tool shim '{}': {:#}", shim_name, e);
+            self.handle_set_status(format!("Failed to create shim: {e}"));
+        } else {
+            tracing::info!(
+                "Created tool shim: {} → {}",
+                shim_name,
+                target_path.display()
+            );
+        }
+    }
+
+    /// Remove a tool (shim, install directory, inventory entry).
+    pub(super) fn handle_remove_tool(
+        &mut self,
+        tool_name: String,
+        version: String,
+        callback_id: JsCallbackId,
+    ) {
+        use crate::services::tool_manager::{tools_bin_dir, tools_root, Shimmer, ToolInventory};
+
+        let bin_dir = tools_bin_dir();
+        let root = tools_root();
+
+        // Remove shim
+        if let Err(e) = Shimmer::remove(&bin_dir, &tool_name) {
+            tracing::warn!("Failed to remove shim for {}: {:#}", tool_name, e);
+        }
+
+        // Remove install directory
+        let install_dir = root.join(&tool_name).join(&version);
+        if install_dir.exists() {
+            if let Err(e) = std::fs::remove_dir_all(&install_dir) {
+                let msg = format!(
+                    "Failed to remove install dir {}: {e}",
+                    install_dir.display()
+                );
+                tracing::error!("{}", msg);
+                self.plugin_manager.reject_callback(callback_id, msg);
+                return;
+            }
+        }
+
+        // Update inventory
+        match ToolInventory::load(&root) {
+            Ok(mut inventory) => {
+                if let Err(e) = inventory.remove(&tool_name) {
+                    tracing::warn!(
+                        "Failed to update inventory after removing {}: {:#}",
+                        tool_name,
+                        e
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to load inventory for removal: {:#}", e);
+            }
+        }
+
+        self.plugin_manager
+            .resolve_callback(callback_id, "true".to_string());
+    }
+
+    /// Set a file as executable (chmod +x). No-op on Windows.
+    pub(super) fn handle_set_executable(&mut self, path: &std::path::Path) {
+        use crate::services::tool_manager::Shimmer;
+
+        if let Err(e) = Shimmer::set_executable(path) {
+            tracing::error!("Failed to set executable: {:#}", e);
+            self.handle_set_status(format!("Failed to set executable: {e}"));
+        }
+    }
+
+    /// Register a tool installation in the inventory.
+    pub(super) fn handle_register_tool_installation(
+        &mut self,
+        tool_name: &str,
+        version: &str,
+        install_dir: &std::path::Path,
+        installed_by: &str,
+    ) {
+        use crate::services::tool_manager::{tools_root, ToolInventory};
+
+        let root = tools_root();
+        match ToolInventory::load(&root) {
+            Ok(mut inventory) => {
+                if let Err(e) = inventory.register(tool_name, version, install_dir, installed_by) {
+                    tracing::error!("Failed to register tool {}: {:#}", tool_name, e);
+                    self.handle_set_status(format!("Failed to register tool: {e}"));
+                } else {
+                    tracing::info!("Registered tool: {} v{}", tool_name, version);
+                }
+            }
+            Err(e) => {
+                tracing::error!("Failed to load inventory: {:#}", e);
+                self.handle_set_status(format!("Failed to load tool inventory: {e}"));
+            }
+        }
+    }
+
+    /// Return the list of installed tools via callback.
+    pub(super) fn handle_get_installed_tools(&mut self, callback_id: JsCallbackId) {
+        use crate::services::tool_manager::{tools_root, ToolInventory};
+
+        let root = tools_root();
+        match ToolInventory::load(&root) {
+            Ok(inventory) => {
+                let tools = inventory.list();
+                let json = serde_json::to_string(&tools).unwrap_or_else(|_| "[]".to_string());
+                self.plugin_manager.resolve_callback(callback_id, json);
+            }
+            Err(e) => {
+                tracing::error!("Failed to load tool inventory: {:#}", e);
+                self.plugin_manager
+                    .reject_callback(callback_id, format!("Failed to load inventory: {e}"));
+            }
+        }
+    }
 }

@@ -441,6 +441,37 @@ impl PluginThreadHandle {
                     .unwrap_or_else(|_| "null".to_string());
                 self.resolve_callback(JsCallbackId(request_id), result);
             }
+
+            // Tool Manager responses
+            PluginResponse::DownloadComplete { request_id, result } => match result {
+                Ok(path) => {
+                    let json = serde_json::to_string(&path).unwrap_or_else(|_| "\"\"".to_string());
+                    self.resolve_callback(JsCallbackId(request_id), json);
+                }
+                Err(e) => {
+                    self.reject_callback(JsCallbackId(request_id), e);
+                }
+            },
+            PluginResponse::ExtractComplete { request_id, result } => match result {
+                Ok(()) => {
+                    self.resolve_callback(JsCallbackId(request_id), "true".to_string());
+                }
+                Err(e) => {
+                    self.reject_callback(JsCallbackId(request_id), e);
+                }
+            },
+            PluginResponse::ToolRemoved { request_id, result } => match result {
+                Ok(()) => {
+                    self.resolve_callback(JsCallbackId(request_id), "true".to_string());
+                }
+                Err(e) => {
+                    self.reject_callback(JsCallbackId(request_id), e);
+                }
+            },
+            PluginResponse::InstalledTools { request_id, tools } => {
+                let json = serde_json::to_string(&tools).unwrap_or_else(|_| "[]".to_string());
+                self.resolve_callback(JsCallbackId(request_id), json);
+            }
         }
     }
 
@@ -825,6 +856,10 @@ fn respond_to_pending(
         fresh_core::api::PluginResponse::BufferLineCount { request_id, .. } => *request_id,
         fresh_core::api::PluginResponse::TerminalCreated { request_id, .. } => *request_id,
         fresh_core::api::PluginResponse::SplitByLabel { request_id, .. } => *request_id,
+        fresh_core::api::PluginResponse::DownloadComplete { request_id, .. } => *request_id,
+        fresh_core::api::PluginResponse::ExtractComplete { request_id, .. } => *request_id,
+        fresh_core::api::PluginResponse::ToolRemoved { request_id, .. } => *request_id,
+        fresh_core::api::PluginResponse::InstalledTools { request_id, .. } => *request_id,
     };
 
     let sender = {

@@ -19,11 +19,12 @@ use fresh_core::api::{
     BufferSavedDiff, CompositeHunk, CompositeLayoutConfig, CompositePaneStyle,
     CompositeSourceConfig, CreateCompositeBufferOptions, CreateTerminalOptions,
     CreateVirtualBufferInExistingSplitOptions, CreateVirtualBufferInSplitOptions,
-    CreateVirtualBufferOptions, CursorInfo, DirEntry, FormatterPackConfig, GrepMatch, JsDiagnostic,
-    JsPosition, JsRange, JsTextPropertyEntry, LanguagePackConfig, LayoutHints, LspServerPackConfig,
-    OverlayColorSpec, OverlayOptions, ProcessLimitsPackConfig, ReplaceResult, SpawnResult,
-    TerminalResult, TextPropertiesAtCursor, TsHighlightSpan, ViewTokenStyle, ViewTokenWire,
-    ViewTokenWireKind, ViewportInfo, VirtualBufferResult,
+    CreateVirtualBufferOptions, CursorInfo, DirEntry, FormatterPackConfig, GrepMatch,
+    InstalledToolInfo, JsDiagnostic, JsPosition, JsRange, JsTextPropertyEntry, LanguagePackConfig,
+    LayoutHints, LspServerPackConfig, OverlayColorSpec, OverlayOptions, PlatformContext,
+    ProcessLimitsPackConfig, ReplaceResult, SpawnResult, TerminalResult, TextPropertiesAtCursor,
+    TsHighlightSpan, ViewTokenStyle, ViewTokenWire, ViewTokenWireKind, ViewportInfo,
+    VirtualBufferResult,
 };
 use fresh_core::command::Suggestion;
 use fresh_core::file_explorer::FileExplorerDecoration;
@@ -114,6 +115,10 @@ fn get_type_decl(type_name: &str) -> Option<String> {
         "OverlayColorSpec" => Some(OverlayColorSpec::decl(&cfg)),
         "InlineOverlay" => Some(InlineOverlay::decl(&cfg)),
 
+        // Tool manager types
+        "PlatformContext" => Some(PlatformContext::decl(&cfg)),
+        "InstalledToolInfo" => Some(InstalledToolInfo::decl(&cfg)),
+
         _ => None,
     }
 }
@@ -151,6 +156,8 @@ const DEPENDENCY_TYPES: &[&str] = &[
     "OverlayOptions",                 // Used by TextPropertyEntry.style and InlineOverlay
     "OverlayColorSpec",               // Used by OverlayOptions.fg/bg
     "InlineOverlay",                  // Used by TextPropertyEntry.inlineOverlays
+    "PlatformContext",                // Used by getPlatform() return type
+    "InstalledToolInfo",              // Used by getInstalledTools() return type
 ];
 
 /// Collect TypeScript type declarations based on referenced types from proc macro
@@ -390,6 +397,9 @@ mod tests {
             "LspServerPackConfig",
             "ProcessLimitsPackConfig",
             "FormatterPackConfig",
+            // Tool manager types
+            "PlatformContext",
+            "InstalledToolInfo",
         ];
 
         for type_name in &expected_types {
@@ -518,6 +528,8 @@ mod tests {
             "CursorInfo",
             "TerminalResult",
             "CreateTerminalOptions",
+            "PlatformContext",
+            "InstalledToolInfo",
         ];
 
         for type_name in &required_types {
@@ -898,6 +910,15 @@ mod tests {
             "unloadPlugin",
             "reloadPlugin",
             "listPlugins",
+            // Tool manager methods
+            "getPlatform",
+            "downloadFile",
+            "extractArchive",
+            "createToolShim",
+            "removeTool",
+            "setExecutable",
+            "registerToolInstallation",
+            "getInstalledTools",
         ];
 
         let mut missing = Vec::new();

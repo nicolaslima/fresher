@@ -330,14 +330,13 @@
             text-decoration-color: var(--accent-green);
         }
 
-        /* Show only the first six benefit-led pills (Intuitive keys,
-           Fast & light, Edit multi-GB files instantly, Themes,
-           Extensible with TypeScript, Full mouse support) plus the
-           trailing "and more!" link. The rest live in the Full
-           feature list at the bottom of the page, reachable via the
-           "and more!" anchor. Keeps the hero to one row on desktop
-           and a couple rows on mobile. */
-        .feature-pills li:nth-child(n+7):not(.feature-pill-more) {
+        /* Show only the first five benefit-led pills (Intuitive keys
+           & mouse, Fast & light, Huge files, Themes, TypeScript
+           plugins) plus the trailing "and more!" link. The rest stay
+           in the DOM for screen readers / SEO but are not rendered;
+           they're reachable via the "and more!" anchor to the Full
+           feature list at the bottom. */
+        .feature-pills li:nth-child(n+6):not(.feature-pill-more) {
             display: none;
         }
 
@@ -1330,12 +1329,11 @@
             <p class="hero-claim">A powerful terminal text editor — with IDE features built in.</p>
 
             <ul class="feature-pills">
-                <li>Intuitive keys</li>
+                <li>Intuitive keys &amp; mouse</li>
                 <li>Fast &amp; light</li>
-                <li>Edit multi-GB files instantly</li>
+                <li>Huge files</li>
                 <li>Themes</li>
-                <li>Extensible with TypeScript</li>
-                <li>Full mouse support</li>
+                <li>TypeScript plugins</li>
                 <li>Multi-cursor</li>
                 <li>Keyboard macros</li>
                 <li>LSP</li>

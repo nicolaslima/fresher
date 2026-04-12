@@ -3,7 +3,7 @@
 //!
 //! <https://github.com/sinelaw/fresh/issues/1537>
 //!
-//! The reporter describes the following flow:
+//! Reporter's flow:
 //!   1. Ctrl+F, search for a term with multiple matches. Find next/previous
 //!      behaves correctly.
 //!   2. Place the cursor on a bracket and invoke Go to Matching Bracket
@@ -14,25 +14,9 @@
 //!       > once you do a go to matching bracket, it seems to insert the
 //!       > matching bracket into the find next /. previous.
 //!
-//! Root cause (reproduced here): `goto_matching_bracket` moves the cursor
-//! off the active search match and onto a bracket character. The next
-//! invocation of the "quick find" actions — `find_selection_next` /
-//! `find_selection_previous`, bound by default to Ctrl+F3 / Ctrl+Shift+F3
-//! (with Alt+N / Alt+P as terminal-friendly alternatives) — detects that
-//! the cursor is no longer on a match, throws away the active NEEDLE
-//! search state, and starts a brand new search using whatever
-//! `get_selection_or_word_for_search_with_pos` returns for the bracket
-//! position. That "new search" is effectively the bracket / bracket
-//! context, which is exactly what the reporter describes.
-//!
-//! Each test:
-//!   * sets up a file with 3 NEEDLE matches and a pair of matching braces,
-//!   * performs Ctrl+F "NEEDLE" Enter,
-//!   * positions the cursor on a bracket,
-//!   * invokes Go to Matching Bracket (Ctrl+]),
-//!   * invokes a find-next / find-previous quick-find action,
-//!   * asserts the cursor landed on the expected NEEDLE match and *not*
-//!     on a bracket character.
+//! Each test exercises the plain `find_next` / `find_previous` actions
+//! (F3 / Shift+F3 — NOT the `find_selection_*` "quick find" actions bound
+//! to Ctrl+F3 / Alt+N / Alt+P, which are a different feature).
 
 use crate::common::harness::EditorTestHarness;
 use crossterm::event::{KeyCode, KeyModifiers};
@@ -135,11 +119,10 @@ fn assert_not_on_bracket(harness: &EditorTestHarness, action: &str) {
     );
 }
 
-/// Issue #1537 — find_selection_next (Ctrl+F3 / Alt+N) following Go to
-/// Matching Bracket must not throw away the active NEEDLE search and land
-/// on a bracket / bracket context.
+/// Issue #1537 — F3 (find_next) after Go to Matching Bracket must land on
+/// the next NEEDLE match, not on the bracket.
 #[test]
-fn test_find_selection_next_after_goto_matching_bracket_lands_on_needle() {
+fn test_find_next_after_goto_matching_bracket_lands_on_needle() {
     let (mut harness, _tmp) = setup();
     let (m1, _m2, m3) = match_positions();
     let open_pos = open_bracket_pos();
@@ -159,28 +142,25 @@ fn test_find_selection_next_after_goto_matching_bracket_lands_on_needle() {
         "Go to Matching Bracket should move cursor to the matching '}}'"
     );
 
-    // Ctrl+F3 — find_selection_next (see default keymap).
-    harness
-        .send_key(KeyCode::F(3), KeyModifiers::CONTROL)
-        .unwrap();
+    // F3 — find_next (see default keymap).
+    harness.send_key(KeyCode::F(3), KeyModifiers::NONE).unwrap();
     harness.process_async_and_render().unwrap();
 
-    assert_not_on_bracket(&harness, "Ctrl+F3 after Go to Matching Bracket");
+    assert_not_on_bracket(&harness, "F3 after Go to Matching Bracket");
     assert_eq!(
         harness.cursor_position(),
         m3,
-        "After Ctrl+F3 following Go to Matching Bracket, cursor should be on \
+        "After F3 following Go to Matching Bracket, cursor should be on \
          the next NEEDLE match (line 7 at pos {}), but was at pos {}",
         m3,
         harness.cursor_position()
     );
 }
 
-/// Issue #1537 — find_selection_previous (Ctrl+Shift+F3 / Alt+P) following
-/// Go to Matching Bracket must not throw away the active NEEDLE search and
-/// land on a bracket / bracket context.
+/// Issue #1537 — Shift+F3 (find_previous) after Go to Matching Bracket
+/// must land on the previous NEEDLE match, not on the bracket.
 #[test]
-fn test_find_selection_previous_after_goto_matching_bracket_lands_on_needle() {
+fn test_find_previous_after_goto_matching_bracket_lands_on_needle() {
     let (mut harness, _tmp) = setup();
     let (m1, _m2, _m3) = match_positions();
     let open_pos = open_bracket_pos();
@@ -200,18 +180,18 @@ fn test_find_selection_previous_after_goto_matching_bracket_lands_on_needle() {
         "Go to Matching Bracket should move cursor to the matching '{{'"
     );
 
-    // Ctrl+Shift+F3 — find_selection_previous (see default keymap).
+    // Shift+F3 — find_previous (see default keymap).
     harness
-        .send_key(KeyCode::F(3), KeyModifiers::CONTROL | KeyModifiers::SHIFT)
+        .send_key(KeyCode::F(3), KeyModifiers::SHIFT)
         .unwrap();
     harness.process_async_and_render().unwrap();
 
-    assert_not_on_bracket(&harness, "Ctrl+Shift+F3 after Go to Matching Bracket");
+    assert_not_on_bracket(&harness, "Shift+F3 after Go to Matching Bracket");
     assert_eq!(
         harness.cursor_position(),
         m1,
-        "After Ctrl+Shift+F3 following Go to Matching Bracket, cursor should \
-         be on the previous NEEDLE match (line 0 at pos {}), but was at pos {}",
+        "After Shift+F3 following Go to Matching Bracket, cursor should be \
+         on the previous NEEDLE match (line 0 at pos {}), but was at pos {}",
         m1,
         harness.cursor_position()
     );

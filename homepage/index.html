@@ -301,6 +301,35 @@
             border-color: var(--accent-green);
         }
 
+        /* The trailing "and more!" pill is an inviting link to the full
+           feature list at the bottom of the page. Style it as a
+           borderless accent so it doesn't read as just another feature. */
+        .feature-pills .feature-pill-more {
+            background: transparent;
+            border-color: transparent;
+            color: var(--accent-green);
+            padding-left: 2px;
+            padding-right: 2px;
+        }
+
+        .feature-pills .feature-pill-more::before {
+            content: '… ';
+            color: var(--text-muted);
+            margin-right: 2px;
+        }
+
+        .feature-pills .feature-pill-more a {
+            color: inherit;
+            text-decoration: underline;
+            text-decoration-color: rgba(16, 185, 129, 0.35);
+            text-underline-offset: 3px;
+            transition: text-decoration-color 0.15s ease;
+        }
+
+        .feature-pills .feature-pill-more a:hover {
+            text-decoration-color: var(--accent-green);
+        }
+
         @media (prefers-reduced-motion: reduce) {
             .rotator-track {
                 transition: none !important;
@@ -901,59 +930,6 @@
             color: var(--accent-green);
         }
 
-        /* Why Fresh — short positioning strip */
-        .why-fresh {
-            padding: 60px 24px;
-            background: var(--bg-darker);
-            border-top: 1px solid var(--border-color);
-            border-bottom: 1px solid var(--border-color);
-        }
-
-        .why-container {
-            max-width: 900px;
-            margin: 0 auto;
-        }
-
-        .why-fresh h2 {
-            text-align: center;
-            font-size: 1.6rem;
-            margin-bottom: 28px;
-            color: var(--text-light);
-        }
-
-        .why-list {
-            list-style: none;
-            padding: 0;
-            display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            gap: 24px;
-        }
-
-        .why-list li {
-            color: var(--text-muted);
-            font-size: 0.95rem;
-            line-height: 1.7;
-            padding-left: 14px;
-            border-left: 2px solid var(--accent-green);
-        }
-
-        .why-list strong {
-            color: var(--text-light);
-            font-weight: 600;
-        }
-
-        .why-list code {
-            color: var(--accent-green);
-            font-size: 0.9em;
-        }
-
-        @media (max-width: 768px) {
-            .why-list {
-                grid-template-columns: 1fr;
-                gap: 16px;
-            }
-        }
-
         /* Full feature list — dense, comma-separated vibe,
            no cards, no boxes. */
         .feature-list-section {
@@ -1343,16 +1319,22 @@
             <p class="hero-claim">A powerful terminal text editor — with IDE features built in.</p>
 
             <ul class="feature-pills">
-                <li>multi-cursor</li>
-                <li>keyboard macros</li>
-                <li>multi-GB files</li>
+                <li>Intuitive keys</li>
+                <li>Fast &amp; light</li>
+                <li>Edit multi-GB files instantly</li>
+                <li>Themes</li>
+                <li>Extensible with TypeScript</li>
+                <li>Full mouse support</li>
+                <li>Multi-cursor</li>
+                <li>Keyboard macros</li>
                 <li>LSP</li>
                 <li>Magit-style git review</li>
-                <li>fuzzy file finder</li>
-                <li>project-wide grep</li>
+                <li>Fuzzy file finder</li>
+                <li>Project-wide grep</li>
                 <li>SSH remote editing</li>
                 <li>Vim mode</li>
-                <li>open source</li>
+                <li>Open source</li>
+                <li class="feature-pill-more"><a href="#full-features">and more!</a></li>
             </ul>
 
             <div class="download-section">
@@ -1389,18 +1371,6 @@
                 </div>
                 <div class="screenshot-glow"></div>
             </div>
-        </div>
-    </section>
-
-    <!-- How it differs -->
-    <section class="why-fresh">
-        <div class="why-container">
-            <h2>Why Fresh</h2>
-            <ul class="why-list">
-                <li><strong>Ships with IDE power.</strong> LSP, git review, fuzzy finder, live grep, multi-cursor, sessions, SSH remote — all built in. No plugin manager, no init.lua, no elisp.</li>
-                <li><strong>Intuitive by default.</strong> Standard keybindings (Ctrl+S, Ctrl+Z, Ctrl+F), menus, and a command palette. Vim mode is there when you want it.</li>
-                <li><strong>Zero config to start.</strong> Open a file and go. A Settings UI and <code>config.json</code> are there when you need to tweak.</li>
-            </ul>
         </div>
     </section>
 
@@ -1667,7 +1637,7 @@
     </section>
 
     <!-- Full feature list -->
-    <section class="feature-list-section">
+    <section class="feature-list-section" id="full-features">
         <h2>Full feature list</h2>
         <ul class="full-feature-list">
             <li>Multi-GB file support</li>

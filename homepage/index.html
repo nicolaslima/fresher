@@ -315,54 +315,71 @@
             white-space: nowrap;
         }
 
-        /* Triple install row */
-        .install-triple {
-            display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            gap: 10px;
+        /* Single install pill with OS tabs */
+        .install-single {
             width: 100%;
-            max-width: 920px;
+            max-width: 720px;
             margin: 0 auto;
         }
 
-        .install-triple .install-pill {
+        .install-tabs {
+            display: flex;
+            gap: 4px;
+            margin-bottom: 8px;
+        }
+
+        .install-tab {
+            background: transparent;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            color: var(--text-muted);
+            font-family: inherit;
+            font-size: 0.8rem;
+            padding: 6px 14px;
+            cursor: pointer;
+            transition: border-color 0.15s, color 0.15s, background 0.15s;
+        }
+
+        .install-tab:hover {
+            color: var(--text-light);
+            border-color: #333;
+        }
+
+        .install-tab.active {
+            color: var(--accent-green);
+            border-color: var(--accent-green);
+            background: rgba(16, 185, 129, 0.08);
+        }
+
+        .install-pill {
             display: flex;
             align-items: center;
             gap: 8px;
             background: var(--bg-card);
             border: 1px solid var(--border-color);
             border-radius: 8px;
-            padding: 10px 14px;
+            padding: 8px 12px;
             cursor: pointer;
-            transition: border-color 0.2s, background 0.2s;
+            transition: border-color 0.15s;
             position: relative;
         }
 
-        .install-triple .install-pill:hover {
-            border-color: var(--accent-green);
-            background: rgba(16, 185, 129, 0.05);
+        .install-pill:hover {
+            border-color: #333;
         }
 
-        .install-triple .install-pill.primary {
-            border-color: var(--accent-green);
-            background: rgba(16, 185, 129, 0.08);
-        }
-
-        .install-pill-os {
-            color: var(--text-muted);
-            font-size: 0.75rem;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            flex-shrink: 0;
+        .install-pill.primary {
+            border-color: var(--border-color);
         }
 
         .install-pill code {
             flex: 1;
             color: var(--accent-green);
-            font-size: 0.85rem;
+            font-size: 0.9rem;
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
+            padding: 4px 4px 4px 8px;
         }
 
         .install-pill .copied-popup {
@@ -372,13 +389,13 @@
             transform: translate(-50%, -50%);
             background: var(--accent-green);
             color: var(--bg-dark);
-            padding: 6px 14px;
-            border-radius: 6px;
-            font-size: 0.85rem;
+            padding: 4px 12px;
+            border-radius: 4px;
+            font-size: 0.8rem;
             font-weight: 600;
             opacity: 0;
             pointer-events: none;
-            transition: opacity 0.2s;
+            transition: opacity 0.15s;
             z-index: 5;
         }
 
@@ -1114,22 +1131,44 @@
             }
 
             .hero-stats {
-                flex-direction: column;
+                display: grid;
+                grid-template-columns: 1fr 1fr;
                 max-width: 100%;
             }
 
             .hero-stat {
-                border-right: none;
+                flex: initial;
+                border-right: 1px solid var(--border-color);
                 border-bottom: 1px solid var(--border-color);
-                padding: 10px 12px;
+                padding: 10px 8px;
             }
 
-            .hero-stat:last-child {
+            .hero-stat:nth-child(2n) {
+                border-right: none;
+            }
+
+            .hero-stat:nth-last-child(-n+2) {
                 border-bottom: none;
             }
 
-            .install-triple {
-                grid-template-columns: 1fr;
+            .hero-stat-value {
+                font-size: 0.95rem;
+            }
+
+            .hero-stat-label {
+                font-size: 0.7rem;
+            }
+
+            .install-single {
+                max-width: 100%;
+            }
+
+            .install-tabs {
+                justify-content: center;
+            }
+
+            .install-pill code {
+                font-size: 0.8rem;
             }
 
             .hero-replaces {
@@ -1210,24 +1249,20 @@
     <section class="hero">
         <div class="hero-content">
             <h1>Fresh</h1>
-            <p class="hero-tagline">The terminal IDE for people who never left the terminal.</p>
+            <p class="hero-tagline">A terminal editor with IDE features, git review, and remote editing built in.</p>
 
             <div class="hero-stats">
-                <div class="hero-stat">
-                    <span class="hero-stat-value">Instant</span>
-                    <span class="hero-stat-label">Cold start</span>
-                </div>
                 <div class="hero-stat">
                     <span class="hero-stat-value">Single binary</span>
                     <span class="hero-stat-label">No runtime, no deps</span>
                 </div>
                 <div class="hero-stat">
-                    <span class="hero-stat-value">Broad LSP</span>
-                    <span class="hero-stat-label">Out of the box</span>
+                    <span class="hero-stat-value">LSP</span>
+                    <span class="hero-stat-label">Shipped for many languages</span>
                 </div>
                 <div class="hero-stat">
-                    <span class="hero-stat-value">Huge files</span>
-                    <span class="hero-stat-label">Multi-GB, no sweat</span>
+                    <span class="hero-stat-value">Large files</span>
+                    <span class="hero-stat-label">Multi-GB supported</span>
                 </div>
                 <div class="hero-stat">
                     <span class="hero-stat-value">SSH</span>
@@ -1236,35 +1271,31 @@
             </div>
 
             <p class="hero-replaces">
-                <span class="replaces-label">Replaces:</span>
-                <code>vim</code>
-                <code>magit</code>
-                <code>tmux-resurrect</code>
-                <code>fzf</code>
-                <code>ripgrep wiring</code>
-                <code>your 200-line init.lua</code>
+                <span class="replaces-label">Built in:</span>
+                <code>diff review</code>
+                <code>fuzzy finder</code>
+                <code>project grep</code>
+                <code>session persistence</code>
+                <code>integrated terminal</code>
             </p>
 
             <div class="download-section">
-                <div class="install-triple">
-                    <div class="install-pill primary" data-install="linux" onclick="copyInstallPill(this)">
-                        <span class="install-pill-os">Linux</span>
-                        <code>curl https://raw.githubusercontent.com/sinelaw/fresh/refs/heads/master/scripts/install.sh | sh</code>
-                        <span class="copied-popup">Copied!</span>
+                <div class="install-single">
+                    <div class="install-tabs" role="tablist">
+                        <button type="button" class="install-tab active" data-os="linux" onclick="selectInstallOS('linux')">Linux</button>
+                        <button type="button" class="install-tab" data-os="mac" onclick="selectInstallOS('mac')">macOS</button>
+                        <button type="button" class="install-tab" data-os="windows" onclick="selectInstallOS('windows')">Windows</button>
                     </div>
-                    <div class="install-pill" data-install="mac" onclick="copyInstallPill(this)">
-                        <span class="install-pill-os">macOS</span>
-                        <code>brew install sinelaw/fresh/fresh-editor</code>
-                        <span class="copied-popup">Copied!</span>
-                    </div>
-                    <div class="install-pill" data-install="windows" onclick="copyInstallPill(this)">
-                        <span class="install-pill-os">Windows</span>
-                        <code>winget install fresh-editor</code>
-                        <span class="copied-popup">Copied!</span>
+                    <div class="install-pill primary" id="install-pill" onclick="copyInstallPill(this)">
+                        <code id="install-cmd">curl https://raw.githubusercontent.com/sinelaw/fresh/refs/heads/master/scripts/install.sh | sh</code>
+                        <button class="copy-btn" onclick="event.stopPropagation(); copyInstallPill(document.getElementById('install-pill'))" aria-label="Copy install command">
+                            <img src="public/copy-icon.svg" alt="">
+                        </button>
+                        <span class="copied-popup">Copied</span>
                     </div>
                 </div>
                 <div class="secondary-cta">
-                    <span>Try without installing: <code>npx @fresh-editor/fresh-editor</code></span>
+                    <span>No install: <code>npx @fresh-editor/fresh-editor</code></span>
                     <a href="#install">apt · AUR · cargo · more →</a>
                 </div>
             </div>
@@ -1287,14 +1318,12 @@
     <section class="features" id="features">
         <div class="feature-section">
             <div class="feature-content">
-                <h2>Instant startup. Huge files. No JS on the hot path.</h2>
-                <p>Syntax grammars are pre-compiled at build time. Plugin I/O and transpilation run in parallel. Buffer diffs are native (no JS round-trips on edit). Search is chunked and incremental; bracket matching is bounded; line-wrap, fold and highlight pipelines are viewport-aware.</p>
+                <h2>Performance</h2>
+                <p>Pre-compiled grammars, parallel plugin loading, a PieceTree buffer, and chunked, viewport-aware search, folding and highlighting.</p>
                 <ul class="feature-list">
-                    <li>Cold start in a blink</li>
-                    <li>Multi-GB files with on-demand line indexing</li>
+                    <li>On-demand line indexing for multi-GB files</li>
                     <li>Project-wide search &amp; replace across unsaved buffers</li>
-                    <li>PieceTree with structural diffs — work scales with edits, not file size</li>
-                    <li>WCAG-enforced contrast even on 256-color terminals under tmux</li>
+                    <li>Contrast-adjusted rendering on 256-color terminals</li>
                 </ul>
             </div>
             <div class="feature-visual">
@@ -1307,14 +1336,12 @@
 
         <div class="feature-section">
             <div class="feature-content">
-                <h2>Magit-style diff review, in your terminal.</h2>
-                <p>Split-panel review: files grouped by staged / unstaged / untracked on the left, diff for the selected file on the right. Stage, unstage and discard individual hunks. Jump between hunks with <code style="color: var(--accent-green);">n</code> / <code style="color: var(--accent-green);">p</code>. Leave line comments and overall session notes, then export your review to Markdown.</p>
+                <h2>Git review &amp; diff</h2>
+                <p>Split-panel review with staged / unstaged / untracked files on the left and the selected diff on the right. Stage, unstage or discard individual hunks; leave line comments and session notes; export to Markdown.</p>
                 <ul class="feature-list">
                     <li>Hunk-level stage / unstage / discard</li>
-                    <li>Line comments (<code style="color: var(--accent-green);">c</code>) and session notes (<code style="color: var(--accent-green);">N</code>)</li>
-                    <li>Theme-aware diff colors with per-theme highlight overrides</li>
-                    <li>Git gutter, git log viewer, git grep, diff-chunk navigation</li>
-                    <li>Export review notes to Markdown</li>
+                    <li>Line comments and session notes</li>
+                    <li>Git gutter, git log viewer, git grep</li>
                 </ul>
             </div>
             <div class="feature-visual">
@@ -1327,14 +1354,12 @@
 
         <div class="feature-section">
             <div class="feature-content">
-                <h2>LSP that doesn't break on a monorepo.</h2>
-                <p>Run multiple LSP servers per language (pylsp + pyright, tsserver + eslint) with feature routing and merged completions. Servers spawn once per project, not once per language. Per-language workspace roots follow your <code style="color: var(--accent-green);">Cargo.toml</code>, <code style="color: var(--accent-green);">package.json</code>, or whatever marker you configure.</p>
+                <h2>Language Server Protocol</h2>
+                <p>Run multiple LSP servers per language (for example pylsp + pyright) with feature routing and merged completions. Per-project workspace roots detected from configurable markers like <code style="color: var(--accent-green);">Cargo.toml</code> or <code style="color: var(--accent-green);">package.json</code>.</p>
                 <ul class="feature-list">
-                    <li>LSP configs shipped for a huge range of languages (Nix, Haskell, OCaml, Elixir, Gleam, Nushell, Solidity, Vue, Svelte, Astro, Terraform, …)</li>
-                    <li>Goto / references / hover still work inside <code style="color: var(--accent-green);">node_modules</code>, <code style="color: var(--accent-green);">site-packages</code>, <code style="color: var(--accent-green);">.cargo</code></li>
-                    <li>Code actions — workspace edits, file create/rename/delete</li>
-                    <li>Format-on-save falls back to LSP formatter if no external one is configured</li>
-                    <li>Auto-imports applied on completion accept</li>
+                    <li>Configs shipped for Nix, Haskell, OCaml, Elixir, Gleam, Nushell, Solidity, Vue, Svelte, Astro, Terraform and more</li>
+                    <li>Goto, references and hover in library paths (<code style="color: var(--accent-green);">node_modules</code>, <code style="color: var(--accent-green);">site-packages</code>, <code style="color: var(--accent-green);">.cargo</code>)</li>
+                    <li>Code actions with workspace edits</li>
                 </ul>
             </div>
             <div class="feature-visual">
@@ -1347,14 +1372,12 @@
 
         <div class="feature-section">
             <div class="feature-content">
-                <h2>Detachable sessions. Your new <code style="color: var(--accent-green); font-size: 0.85em;">git core.editor</code>.</h2>
-                <p>Start a named session, detach, reattach after an SSH drop, or pipe files into a running instance from any tool. Hot Exit persists every buffer — including unnamed scratch buffers — across restarts and crashes. The <code style="color: var(--accent-green);">--wait</code> flag blocks until you close the buffer, which makes Fresh a drop-in <code style="color: var(--accent-green);">git core.editor</code>, <code style="color: var(--accent-green);">$EDITOR</code>, or yazi edit target.</p>
+                <h2>Detachable sessions</h2>
+                <p>Start a named session, detach and reattach across terminal disconnects. The <code style="color: var(--accent-green);">--wait</code> flag blocks until the buffer is closed, which lets Fresh serve as <code style="color: var(--accent-green);">git core.editor</code> or <code style="color: var(--accent-green);">$EDITOR</code>. Hot Exit persists every buffer across restarts and crashes.</p>
                 <ul class="feature-list">
-                    <li>Named &amp; directory-based sessions: <code style="color: var(--accent-green);">fresh -a myproject</code></li>
-                    <li><code style="color: var(--accent-green);">--wait</code> for commit messages, interactive rebase, and scripted flows</li>
-                    <li>Range &amp; column targeting: <code style="color: var(--accent-green);">file:L:C-EL:EC</code></li>
-                    <li>Hot Exit — unsaved scratch buffers recover on crash</li>
-                    <li>CLI session management: <code style="color: var(--accent-green);">fresh --cmd session list / kill / open-file</code></li>
+                    <li>Named and directory-based sessions (<code style="color: var(--accent-green);">fresh -a myproject</code>)</li>
+                    <li><code style="color: var(--accent-green);">--wait</code> for commit messages, rebases and scripted flows</li>
+                    <li>Hot Exit with crash recovery, including unnamed scratch buffers</li>
                 </ul>
             </div>
             <div class="feature-visual">
@@ -1376,13 +1399,12 @@
 
         <div class="feature-section">
             <div class="feature-content">
-                <h2>Edit remote boxes like they're local.</h2>
-                <p>Open a file on any SSH host: <code style="color: var(--accent-green);">fresh user@host:path</code>. Filesystem ops never block the event loop, connections auto-reconnect in the background, and saves to large files ship only the patch — small edits to huge files move a tiny diff over the wire, not the whole file.</p>
+                <h2>SSH remote editing</h2>
+                <p>Open files on an SSH host with <code style="color: var(--accent-green);">fresh user@host:path</code>. Connections reconnect in the background if they drop. Saves to large files transfer only the patch, not the whole file.</p>
                 <ul class="feature-list">
-                    <li>Password &amp; key auth, sudo save</li>
+                    <li>Password and key authentication, sudo save</li>
                     <li>Remote file finder (Ctrl+P) and remote grep</li>
-                    <li>Recipe-based patched saves for huge files</li>
-                    <li>Disconnected-state indicator; transparent auto-reconnect</li>
+                    <li>Background reconnect with disconnected-state indicator</li>
                 </ul>
             </div>
             <div class="feature-visual">
@@ -1402,14 +1424,12 @@
 
         <div class="feature-section">
             <div class="feature-content">
-                <h2>Plugins in TypeScript. Sandboxed in QuickJS. No <code style="color: var(--accent-green); font-size: 0.85em;">node_modules</code>.</h2>
-                <p>Plugins are compiled with OXC and run in an embedded QuickJS VM — fast to start, sandboxed, and shipped inside the same static binary. Browse, install and scaffold packages from the official registry. Language packs bundle a grammar, settings and LSP config in one package.</p>
+                <h2>TypeScript plugins</h2>
+                <p>Plugins are compiled with OXC and run in an embedded QuickJS VM, sandboxed and shipped inside the same binary. No <code style="color: var(--accent-green);">node_modules</code> on disk. Packages are installed from the official registry; language packs bundle a grammar, settings and LSP config together.</p>
                 <ul class="feature-list">
-                    <li>Plugin API v2: buffers, splits, cursors, processes, filesystem, virtual buffers, overlays</li>
-                    <li>Custom keybinding modes &amp; terminals (<code style="color: var(--accent-green);">createTerminal</code>)</li>
-                    <li>Topologically sorted plugin graph via <code style="color: var(--accent-green);">import type</code></li>
-                    <li>Scaffold a new package with <code style="color: var(--accent-green);">--init</code></li>
-                    <li>Package Manager with Plugins / Themes / Languages / Bundles</li>
+                    <li>Plugin API for buffers, splits, cursors, processes, virtual buffers and overlays</li>
+                    <li>Custom keybinding modes and embedded terminals</li>
+                    <li>Package scaffolding with <code style="color: var(--accent-green);">--init</code></li>
                 </ul>
             </div>
             <div class="feature-visual">
@@ -1422,14 +1442,13 @@
 
         <div class="feature-section">
             <div class="feature-content">
-                <h2>Rice it. Ship it. Translate it.</h2>
-                <p>Customize every side of the status bar with a visual DualList picker — drop in <code style="color: var(--accent-green);">{clock}</code>, git branch, LSP status. Live-preview themes with a built-in editor. Whitespace indicators and rainbow brackets ship out of the box. Interface translated into many languages including Japanese, Korean, Chinese, Vietnamese.</p>
+                <h2>Themes, status bar &amp; i18n</h2>
+                <p>Both sides of the status bar are configurable via a visual picker, with reorderable elements including a <code style="color: var(--accent-green);">{clock}</code>, git branch and LSP status. Themes are edited live. The interface is translated into several languages including Japanese, Korean, Chinese and Vietnamese.</p>
                 <ul class="feature-list">
-                    <li>Configurable status bar with reorderable elements &amp; <code style="color: var(--accent-green);">{clock}</code></li>
-                    <li>Live theme editor with "Inspect Theme at Cursor" (Ctrl+Right-Click)</li>
-                    <li>High-contrast, Gruvbox, Dracula, Nord, Solarized, Tokyo Night, and more</li>
-                    <li>Vertical rulers, whitespace dots, rainbow brackets, per-language wrap</li>
-                    <li>Nerd-font icons, CJK-safe rendering, plugin-translated UI</li>
+                    <li>Live theme editor with "Inspect Theme at Cursor"</li>
+                    <li>Built-in themes: high-contrast, Gruvbox, Dracula, Nord, Solarized, Tokyo Night and more</li>
+                    <li>Vertical rulers, whitespace indicators, rainbow brackets, per-language wrap</li>
+                    <li>Nerd-font icons and CJK-safe rendering</li>
                 </ul>
             </div>
             <div class="feature-visual">
@@ -1442,14 +1461,13 @@
 
         <div class="feature-section">
             <div class="feature-content">
-                <h2>Keyboard-first, but discoverable.</h2>
-                <p>Command palette with prefix routing (<code style="color: var(--accent-green);">&gt;</code> commands, <code style="color: var(--accent-green);">#</code> buffers, <code style="color: var(--accent-green);">:</code> lines). Keybinding editor with conflict detection, capture mode for special keys (Esc, Tab, Enter), and per-context bindings — searchable and mouse-friendly when you want it.</p>
+                <h2>Keyboard &amp; editing</h2>
+                <p>Command palette with prefix routing (<code style="color: var(--accent-green);">&gt;</code> commands, <code style="color: var(--accent-green);">#</code> buffers, <code style="color: var(--accent-green);">:</code> lines). Keybinding editor with conflict detection and per-context bindings. Full mouse support.</p>
                 <ul class="feature-list">
-                    <li>Command palette: fuzzy-find files, commands, buffers, line numbers</li>
-                    <li>Vim mode: normal / insert / visual, operators, motions, text objects, colon commands</li>
-                    <li>Multi-cursor, block selection, surround, smart home, smart backspace dedent</li>
-                    <li>Keyboard macros (F4 to replay), regex find &amp; replace with capture groups</li>
-                    <li>Built-in terminal with session-persistent scrollback</li>
+                    <li>Vim mode with operators, motions, text objects and colon commands</li>
+                    <li>Multi-cursor, block selection, surround, smart home and smart backspace</li>
+                    <li>Keyboard macros and regex find &amp; replace with capture groups</li>
+                    <li>Integrated terminal with session-persistent scrollback</li>
                 </ul>
             </div>
             <div class="feature-visual">
@@ -1560,114 +1578,46 @@
 
     <!-- All Features -->
     <section class="all-features">
-        <h2>The Short List</h2>
+        <h2>Also included</h2>
         <div class="features-grid">
             <div class="feature-card">
-                <h3>Project-Wide Search</h3>
-                <p>Search &amp; replace across the whole project, including unsaved buffers and multi-GB files. Live grep via ripgrep integration. Alt+Enter replaces project-wide.</p>
+                <h3>Code folding</h3>
+                <p>LSP folding ranges plus indent-based fallback. Gutter indicators and fold-aware scrolling, including in large-file mode.</p>
             </div>
             <div class="feature-card">
-                <h3>Review Diff</h3>
-                <p>Magit-style split-panel review: stage/unstage/discard hunks, line comments, session notes, export to Markdown. Hunk jump with <code style="color: var(--accent-green);">n</code>/<code style="color: var(--accent-green);">p</code>.</p>
+                <h3>Package manager</h3>
+                <p>Install plugins, themes, language packs and bundles from the official registry. Local-path installs. Scaffold new packages with <code style="color: var(--accent-green);">--init</code>.</p>
             </div>
             <div class="feature-card">
-                <h3>Multi-LSP per Language</h3>
-                <p>Run pylsp + pyright (or tsserver + eslint) together with feature routing. Spawned once per project, not once per language. Per-language root detection via markers.</p>
-            </div>
-            <div class="feature-card">
-                <h3>LSP Everywhere</h3>
-                <p>Configs shipped for Nix, Haskell, OCaml, Elixir, Gleam, Nushell, Solidity, Vue, Svelte, Astro, Terraform, Bash, Lua, Ruby, PHP, YAML, TOML, Typst, and many more.</p>
-            </div>
-            <div class="feature-card">
-                <h3>LSP in Library Files</h3>
-                <p>Goto / hover / references still work inside <code style="color: var(--accent-green);">node_modules</code>, <code style="color: var(--accent-green);">site-packages</code>, <code style="color: var(--accent-green);">.cargo</code>, <code style="color: var(--accent-green);">/nix/store</code>, Homebrew Cellar, Xcode SDKs — as read-only.</p>
-            </div>
-            <div class="feature-card">
-                <h3>Code Actions &amp; Formatting</h3>
-                <p>LSP code actions with workspace edits and file create/rename/delete. Auto-imports on completion accept. Format-on-save falls back to LSP when no external formatter is configured.</p>
-            </div>
-            <div class="feature-card">
-                <h3>Session Persistence</h3>
-                <p>Detach &amp; reattach with <code style="color: var(--accent-green);">fresh -a</code>. Survives SSH drops and terminal restarts. Manage with <code style="color: var(--accent-green);">fresh --cmd session list/kill</code>. Open files into a running session from anywhere.</p>
-            </div>
-            <div class="feature-card">
-                <h3>Use as <code>core.editor</code></h3>
-                <p><code style="color: var(--accent-green);">fresh --wait</code> blocks until the buffer closes — drop-in for <code style="color: var(--accent-green);">git core.editor</code>, <code style="color: var(--accent-green);">$EDITOR</code>, interactive rebase, yazi edit actions, scripted flows.</p>
-            </div>
-            <div class="feature-card">
-                <h3>Hot Exit</h3>
-                <p>All buffers — including unnamed scratch buffers — persist across restarts and recover from crashes automatically. Plugin state persists too.</p>
-            </div>
-            <div class="feature-card">
-                <h3>SSH Remote Editing</h3>
-                <p>Open remote files with <code style="color: var(--accent-green);">fresh user@host:path</code>. Auto-reconnecting. Recipe-based patched saves — small edits to huge files move a tiny diff, not the whole file.</p>
-            </div>
-            <div class="feature-card">
-                <h3>Code Folding</h3>
-                <p>LSP folding ranges plus indent-based fallback for large files and config-only languages. Gutter indicators and fold-aware scrolling.</p>
-            </div>
-            <div class="feature-card">
-                <h3>Vim Mode</h3>
-                <p>Normal / insert / visual, operators, motions, text objects, colon commands, counts. Native-Rust key motions — no plugin race conditions.</p>
-            </div>
-            <div class="feature-card">
-                <h3>Multi-Cursor &amp; Block</h3>
-                <p>Multi-cursor with Ctrl+D, block selection that converts to cursors for editing, surround-selection, smart home, smart backspace dedent.</p>
-            </div>
-            <div class="feature-card">
-                <h3>Regex Find/Replace</h3>
-                <p>Full regex with capture groups (<code style="color: var(--accent-green);">$1</code>, <code style="color: var(--accent-green);">${name}</code>). Incremental search, find-in-selection, F3 navigation across matches.</p>
-            </div>
-            <div class="feature-card">
-                <h3>Keyboard Macros</h3>
-                <p>Record and replay action sequences. F4 plays the last macro. Macro replay is deterministic — same effect as interactive flow.</p>
-            </div>
-            <div class="feature-card">
-                <h3>Command Palette</h3>
-                <p>Ctrl+P: fuzzy file finder by default. <code style="color: var(--accent-green);">&gt;</code> for commands, <code style="color: var(--accent-green);">#</code> for buffers, <code style="color: var(--accent-green);">:</code> for lines. Space-separated terms all must match.</p>
-            </div>
-            <div class="feature-card">
-                <h3>Customizable Status Bar</h3>
-                <p>Reorder elements per side via a DualList picker. Drop in a <code style="color: var(--accent-green);">{clock}</code>, LSP status, git branch. LSP indicator clickable for restart/stop/log.</p>
-            </div>
-            <div class="feature-card">
-                <h3>Themes &amp; Theme Editor</h3>
-                <p>Live-preview theme editor. "Inspect Theme at Cursor". Built-in high-contrast, Gruvbox, Dracula, Nord, Solarized, Tokyo Night. 256-color WCAG contrast under tmux.</p>
-            </div>
-            <div class="feature-card">
-                <h3>Plugins in TypeScript</h3>
-                <p>Compiled with OXC, sandboxed in QuickJS — no <code style="color: var(--accent-green);">node_modules</code>. Plugin API v2: buffers, splits, cursors, processes, virtual buffers, overlays, custom keybinding modes.</p>
-            </div>
-            <div class="feature-card">
-                <h3>Package Manager</h3>
-                <p>Browse, install, uninstall Plugins / Themes / Languages / Bundles from the official registry. Local-path installs. Scaffold new packages with <code style="color: var(--accent-green);">--init</code>.</p>
-            </div>
-            <div class="feature-card">
-                <h3>Internationalization</h3>
-                <p>Interface translations for Japanese, Korean, Simplified &amp; Traditional Chinese, Vietnamese, and more. CJK-safe rendering. Plugin translations supported.</p>
-            </div>
-            <div class="feature-card">
-                <h3>Text Encodings</h3>
-                <p>UTF-8, UTF-16 LE/BE, Latin-1, Windows-1250/1251/1252, GBK, Shift-JIS, EUC-KR, GB18030. Detect &amp; convert. Status bar shows encoding (clickable).</p>
-            </div>
-            <div class="feature-card">
-                <h3>Whitespace &amp; Rulers</h3>
-                <p>Space (·) and tab (→) indicators per-position (leading / inner / trailing). Rainbow brackets. Vertical rulers. Per-language wrap columns.</p>
-            </div>
-            <div class="feature-card">
-                <h3>Integrated Terminal</h3>
-                <p>Full terminal emulator with keyboard capture, mouse forwarding to alternate-screen apps (vim, htop), scrollback persistence, Windows ConPTY support.</p>
+                <h3>Text encodings</h3>
+                <p>UTF-8, UTF-16 LE/BE, Latin-1, Windows-1250/1251/1252, GBK, Shift-JIS, EUC-KR, GB18030. Detection, conversion, and clickable status-bar indicator.</p>
             </div>
             <div class="feature-card">
                 <h3>Settings UI</h3>
-                <p>Graphical settings editor with deep search, hierarchical breadcrumbs, and inherit/unset for nullable settings. Keybinding editor with conflict detection and capture mode for Esc/Tab/Enter.</p>
+                <p>Graphical settings editor with deep search, hierarchical breadcrumbs, and inherit/unset for nullable settings. Keybinding editor with conflict detection and key capture.</p>
+            </div>
+            <div class="feature-card">
+                <h3>Split panes &amp; tabs</h3>
+                <p>Split editing in any direction, tab bar, side-by-side diff view, built-in Markdown preview, fuzzy file finder, file explorer with git status.</p>
+            </div>
+            <div class="feature-card">
+                <h3>Auto-close &amp; indent</h3>
+                <p>Configurable bracket and quote auto-close with per-language overrides. Smart-quote suppression inside strings. Auto-indent and auto-dedent driven by tree-sitter.</p>
+            </div>
+            <div class="feature-card">
+                <h3>Read-only mode</h3>
+                <p>Library and toolchain paths (rustup, /usr/include, /nix/store, Homebrew Cellar, Xcode SDKs) open read-only automatically. Toggle on demand.</p>
+            </div>
+            <div class="feature-card">
+                <h3>Cross-platform</h3>
+                <p>Linux, macOS, Windows (ConPTY) and FreeBSD binaries. Packaging via Homebrew, AUR, winget, Flatpak, AppImage, .deb and .rpm.</p>
             </div>
         </div>
     </section>
 
     <!-- Testimonials -->
     <section class="testimonials">
-        <h2>From Users Who Switched</h2>
+        <h2>User feedback</h2>
         <div class="testimonials-grid">
             <div class="testimonial">
                 <p class="testimonial-quote">Out of the box this is the best new TUI editor I've tried, probably ever.</p>
@@ -1722,6 +1672,12 @@
             });
         }
 
+        const INSTALL_COMMANDS = {
+            linux: 'curl https://raw.githubusercontent.com/sinelaw/fresh/refs/heads/master/scripts/install.sh | sh',
+            mac: 'brew install sinelaw/fresh/fresh-editor',
+            windows: 'winget install fresh-editor'
+        };
+
         function detectOS() {
             const platform = navigator.platform.toLowerCase();
             const userAgent = navigator.userAgent.toLowerCase();
@@ -1730,23 +1686,20 @@
             return 'linux';
         }
 
-        // Highlight the install pill matching the visitor's OS, and
-        // reorder so it appears first. Linux is the static default
-        // (curl | sh is a no-prereq one-liner), so most visitors see
-        // the right thing even before JS runs.
-        (function highlightDetectedOS() {
-            const detected = detectOS();
-            const pills = document.querySelectorAll('.install-pill');
-            pills.forEach(p => {
-                if (p.dataset.install === detected) {
-                    p.classList.add('primary');
-                    p.style.order = '-1';
-                } else {
-                    p.classList.remove('primary');
-                    p.style.order = '';
-                }
+        function selectInstallOS(os) {
+            const cmd = INSTALL_COMMANDS[os];
+            if (!cmd) return;
+            const code = document.getElementById('install-cmd');
+            if (code) code.textContent = cmd;
+            document.querySelectorAll('.install-tab').forEach(t => {
+                t.classList.toggle('active', t.dataset.os === os);
             });
-        })();
+        }
+
+        // Preselect the visitor's OS. Linux is the static default
+        // (curl | sh is a no-prereq one-liner), so the page renders
+        // correctly before JS runs.
+        selectInstallOS(detectOS());
 
         function copyInstallPill(el) {
             const code = el.querySelector('code');

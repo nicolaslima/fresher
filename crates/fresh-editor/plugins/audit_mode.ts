@@ -192,6 +192,15 @@ interface ReviewState {
   // 1-indexed rows in the unified stream; hunkId pins the selection to
   // a single hunk (selections that cross hunks are rejected).
   lineSelection: { startRow: number; endRow: number; hunkId: string } | null;
+  // User-entered substring filter. Files whose path doesn't contain
+  // this substring (case-insensitive) are hidden from the diff stream.
+  // Empty string means "no filter". Edited via the `/` shortcut or the
+  // toolbar's filter chip.
+  filter: string;
+  // Toolbar button hit regions from the last render. Populated by
+  // `buildToolbar`, consumed by `on_review_mouse_click` to dispatch
+  // clicks on buttons to the matching command.
+  toolbarButtons: Array<{ startCol: number; endCol: number; command: string }>;
 }
 
 const state: ReviewState = {
@@ -230,6 +239,8 @@ const state: ReviewState = {
   stickyCurrentFile: null,
   diffViewportTopRow: 0,
   lineSelection: null,
+  filter: '',
+  toolbarButtons: [],
 };
 
 function fileKey(f: FileEntry): string { return `${f.path}\0${f.category}`; }
@@ -255,6 +266,15 @@ const STYLE_REMOVE_TEXT: OverlayColorSpec = "diagnostic.error_fg";
 
 const STYLE_SECTION_HEADER: OverlayColorSpec = "syntax.type";
 const STYLE_COMMENT: OverlayColorSpec = "diagnostic.warning_fg";
+// "Accent" — teal/cyan color used for hunk headers, file-header accents,
+// and dividers. `syntax.type` is teal in every dark theme we ship and a
+// readable variant in light themes (dark teal on light bg).
+const STYLE_ACCENT: OverlayColorSpec = "syntax.type";
+// Warm "badge" color — used for the [GIT] badge in the sticky header
+// and the path:line label in comment cards. `syntax.string` is a warm
+// salmon/orange hue across themes, reads as an attention-grabbing accent
+// without being a hard-coded color.
+const STYLE_BADGE_FG: OverlayColorSpec = "syntax.string";
 // Subtle bg for file/section header rows. Uses `editor.current_line_bg`
 // which is reliably a notch lighter than editor bg in every theme
 // (line_number_bg matches editor bg in Dracula and would render
@@ -277,6 +297,12 @@ const STYLE_INVERSE_BG: OverlayColorSpec = "editor.fg";
 // the editor uses for its own gutter — already chosen per-theme to be
 // readable but visibly subordinate to content fg.
 const STYLE_LINE_NUM_FG: OverlayColorSpec = "editor.line_number_fg";
+// Green/red foregrounds for the "+N / -N" summary counts on file and
+// sticky headers. The diff bg keys don't make sense as foregrounds
+// (they're almost-black); diagnostic.info_fg is reliably green-ish in
+// most themes and diagnostic.error_fg is red-ish everywhere.
+const STYLE_ADD_COUNT_FG: OverlayColorSpec = "diagnostic.info_fg";
+const STYLE_REMOVE_COUNT_FG: OverlayColorSpec = "diagnostic.error_fg";
 
 // Width of each line-number column. 4 chars fits up to 9999 lines —
 // past that we just let the number overflow rather than expanding the
@@ -747,6 +773,11 @@ function fileChangeCounts(file: FileEntry): { added: number; removed: number } {
 
 /**
  * Push inline comment lines for a given diff line into the lines array.
+ *
+ * Rendered as a full-line-wide highlighted bar with a leading ⚠ icon,
+ * the line ref in brackets, and the comment body. The bar spans the
+ * full viewport (extendToLineEnd) so comments read as framed callouts,
+ * not just another diff row.
  */
 function pushLineComments(
     lines: DiffLine[], hunk: Hunk,
@@ -760,20 +791,34 @@ function pushLineComments(
             (c.line_type === 'context' && c.new_line === newLine)
         )
     );
-    // Indent the comment so its `»` glyph aligns with the diff content
-    // column (just past the OLD/NEW number gutter and the +/- indicator).
-    const commentIndent = ' '.repeat(LINE_NUM_W + 1 + LINE_NUM_W + 1 + 1 + 1);
+    // Indent the comment bar so its left edge sits just past the
+    // OLD/NEW line-number gutter — this keeps the gutter column clean
+    // and makes the bar visually "attached" to its diff line.
+    const commentIndent = ' '.repeat(1 + LINE_NUM_W + 1 + LINE_NUM_W + 1);
     for (const comment of lineComments) {
         const lineRef = comment.line_type === 'add'
             ? `+${comment.new_line}`
             : comment.line_type === 'remove'
             ? `-${comment.old_line}`
             : `${comment.new_line}`;
+        // Full-line callout: "⚠ [ref] body" with a warning-tinted bg
+        // extending to the end of line. The ⚠ glyph plus the bracketed
+        // ref mimic a compiler-style inline diagnostic, making it
+        // unmistakable that the following text is *about* the line
+        // above, not part of the diff content.
+        const barText = `${commentIndent}\u26a0 [${lineRef}] ${comment.text}`;
         lines.push({
-            text: `${commentIndent}\u00bb [${lineRef}] ${comment.text}`,
+            text: barText,
             type: 'comment',
             commentId: comment.id,
-            style: { fg: STYLE_COMMENT, italic: true },
+            // Warm yellow bg + bold fg for the whole row; full-width
+            // extension draws the eye to the callout.
+            style: {
+                fg: STYLE_COMMENT,
+                bg: "diagnostic.warning_bg",
+                bold: true,
+                extendToLineEnd: true,
+            },
         });
     }
 }
@@ -802,9 +847,32 @@ function buildDiffLines(_rightWidth: number): DiffLine[] {
         return lines;
     }
 
+    // Apply the substring filter if set. Matches are case-insensitive
+    // against the filename (or the renamed destination for renames).
+    // Section counts/groupings use the filtered list — files hidden by
+    // the filter don't contribute to their category count.
+    const filterQuery = (state.filter || "").toLowerCase();
+    const visibleFiles = filterQuery
+        ? state.files.filter(f => {
+              const name = (f.origPath ? `${f.origPath} → ${f.path}` : f.path).toLowerCase();
+              return name.includes(filterQuery);
+          })
+        : state.files;
+
+    if (visibleFiles.length === 0) {
+        // Filter matched nothing — render a dim hint so the panel
+        // doesn't read as empty / broken.
+        lines.push({
+            text: `  No files match filter "${state.filter}".`,
+            type: 'empty',
+            style: { fg: STYLE_SECTION_HEADER, italic: true },
+        });
+        return lines;
+    }
+
     let lastCategory: string | undefined;
-    for (let fi = 0; fi < state.files.length; fi++) {
-        const file = state.files[fi];
+    for (let fi = 0; fi < visibleFiles.length; fi++) {
+        const file = visibleFiles[fi];
 
         // Section header — full-line-wide INVERSE band, uppercase, bold.
         // The strong inverse coloring (editor.bg as fg / editor.fg as bg)
@@ -821,7 +889,7 @@ function buildDiffLines(_rightWidth: number): DiffLine[] {
             } else if (file.category === 'staged') label = editor.t("section.staged") || "Staged";
             else if (file.category === 'unstaged') label = editor.t("section.unstaged") || "Unstaged";
             else if (file.category === 'untracked') label = editor.t("section.untracked") || "Untracked";
-            const sectionCount = state.files.filter(f => f.category === file.category).length;
+            const sectionCount = visibleFiles.filter(f => f.category === file.category).length;
             // Always render expanded triangle (▾). Collapse state is
             // shown by overlaying a `▸` replacement-conceal on the
             // triangle byte range — the buffer text never changes, so
@@ -1052,114 +1120,309 @@ function buildDiffLines(_rightWidth: number): DiffLine[] {
 //   * Labels: `editor.line_number_fg` (dim foreground in every theme).
 const STYLE_KEY_FG: OverlayColorSpec = "editor.fg";
 const STYLE_HINT_FG: OverlayColorSpec = "editor.line_number_fg";
-const STYLE_TOOLBAR_BG: OverlayColorSpec = "editor.bg";
+// Panel bg for the toolbar itself. Uses `editor.current_line_bg` so the
+// toolbar reads as a distinct banded strip against the editor bg rather
+// than blending into it. That bg is a consistent "slightly lighter
+// than editor bg" in every theme we ship.
+const STYLE_TOOLBAR_BG: OverlayColorSpec = "editor.current_line_bg";
 const STYLE_TOOLBAR_SEP: OverlayColorSpec = "ui.split_separator_fg";
+// Button-cell styling. Buttons render as "▌ n ▐" with an accent bg so
+// the key glyph reads as a clickable chip. Using the `selection_bg`
+// theme key keeps the chip visible in every theme without needing a
+// hard-coded color, and contrasts with the toolbar band bg.
+const STYLE_BUTTON_BG: OverlayColorSpec = "editor.selection_bg";
+const STYLE_BUTTON_FG: OverlayColorSpec = "editor.fg";
 
 interface HintItem {
     key: string;
     label: string;
+    // Review-diff command name to invoke when the button is clicked.
+    // If omitted, the button renders as a non-interactive hint.
+    command?: string;
+}
+
+// Records one button's byte-range on the toolbar row so the mouse
+// click handler can map clicks to commands. Recomputed on every
+// refresh; cleared via `state.toolbarButtons = []`.
+interface ToolbarButtonHit {
+    startCol: number;
+    endCol: number;
+    command: string;
 }
 
 /**
- * Build a styled toolbar entry with highlighted key hints.
- * Keys get bold + keyword color; labels get dim text; groups separated by │.
+ * Render one "button" inside the toolbar: a pill-shaped chip on a
+ * contrasting bg containing the keybind glyph, followed by the label
+ * in dim text. Returns the chunk of text produced and the button's
+ * column span so it can be hit-tested on mouse clicks.
+ *
+ * Visual: "▌ n ▐ next hunk"
+ *   - Leading/trailing half-blocks soften the chip edges so it reads
+ *     as rounded even in terminals without true rounded corners.
+ *   - Chip interior uses STYLE_BUTTON_BG with bold STYLE_BUTTON_FG.
+ *   - Label after the chip uses STYLE_HINT_FG (dim).
  */
-function buildToolbarRow(W: number, groups: HintItem[][]): TextPropertyEntry {
+function renderButton(
+    item: HintItem,
+    startByte: number,
+    startCol: number,
+): { text: string; overlays: InlineOverlay[]; byteLen: number; colLen: number; hit: ToolbarButtonHit | null } {
     const overlays: InlineOverlay[] = [];
-    let text = " ";
-    let bytePos = getByteLength(" ");
-    let done = false;
+    // Use single-space padding around the key for compact buttons.
+    // Half-block edges create a rounded-chip silhouette on most fonts.
+    const chipLeft = "▌";
+    const chipRight = "▐";
+    const chipBody = ` ${item.key} `;
+    const chip = `${chipLeft}${chipBody}${chipRight}`;
+    const label = ` ${item.label}`;
+    const text = `${chip}${label}`;
 
-    for (let g = 0; g < groups.length && !done; g++) {
-        if (g > 0) {
-            const sep = " │ ";
-            if (text.length + sep.length > W) { done = true; break; }
-            overlays.push({ start: bytePos, end: bytePos + getByteLength(sep), style: { fg: STYLE_TOOLBAR_SEP } });
-            text += sep;
-            bytePos += getByteLength(sep);
-        }
-        for (let h = 0; h < groups[g].length && !done; h++) {
-            const item = groups[g][h];
-            const gap = h > 0 ? "  " : "";
-            // Bracket-style key hint: "[key] label" — the brackets make
-            // the keys legible without a saturated bg, which works in
-            // every theme (no Dracula hot-pink toolbar problem). When
-            // the key itself is `[` or `]`, drop the brackets so we
-            // don't render `[[]` / `[]]`.
-            const isBracket = item.key === '[' || item.key === ']';
-            const keyDisplay = isBracket ? item.key : `[${item.key}]`;
-            const fullLen = gap.length + keyDisplay.length + 1 + item.label.length;
-            const keyOnlyLen = gap.length + keyDisplay.length;
+    let off = startByte;
+    const chipLeftLen = getByteLength(chipLeft);
+    const chipBodyLen = getByteLength(chipBody);
+    const chipRightLen = getByteLength(chipRight);
+    const labelLen = getByteLength(label);
 
-            if (text.length + fullLen <= W) {
-                if (gap) { text += gap; bytePos += getByteLength(gap); }
-                const keyLen = getByteLength(keyDisplay);
-                overlays.push({ start: bytePos, end: bytePos + keyLen, style: { fg: STYLE_KEY_FG, bold: true } });
-                text += keyDisplay;
-                bytePos += keyLen;
-                const labelText = " " + item.label;
-                const labelLen = getByteLength(labelText);
-                overlays.push({ start: bytePos, end: bytePos + labelLen, style: { fg: STYLE_HINT_FG } });
-                text += labelText;
-                bytePos += labelLen;
-            } else if (text.length + keyOnlyLen <= W) {
-                if (gap) { text += gap; bytePos += getByteLength(gap); }
-                const keyLen = getByteLength(keyDisplay);
-                overlays.push({ start: bytePos, end: bytePos + keyLen, style: { fg: STYLE_KEY_FG, bold: true } });
-                text += keyDisplay;
-                bytePos += keyLen;
-            } else {
-                done = true;
-            }
-        }
+    // Left/right half-blocks: fg is the button bg color so the block
+    // appears as a rounded edge filled with the chip color.
+    overlays.push({
+        start: off,
+        end: off + chipLeftLen,
+        style: { fg: STYLE_BUTTON_BG },
+    });
+    off += chipLeftLen;
+    // Chip interior: bg + bold key glyph.
+    overlays.push({
+        start: off,
+        end: off + chipBodyLen,
+        style: { bg: STYLE_BUTTON_BG, fg: STYLE_BUTTON_FG, bold: true },
+    });
+    off += chipBodyLen;
+    overlays.push({
+        start: off,
+        end: off + chipRightLen,
+        style: { fg: STYLE_BUTTON_BG },
+    });
+    off += chipRightLen;
+    // Label: dim foreground.
+    overlays.push({
+        start: off,
+        end: off + labelLen,
+        style: { fg: STYLE_HINT_FG },
+    });
+
+    // Column length: chipLeft(1) + chipBody(3 chars) + chipRight(1) + label.
+    // item.key may be multi-character (e.g. "Tab") — count chars not bytes.
+    const chipChars = 1 + (item.key.length + 2) + 1;
+    const colLen = chipChars + label.length;
+
+    const hit: ToolbarButtonHit | null = item.command
+        ? { startCol, endCol: startCol + colLen, command: item.command }
+        : null;
+    return { text, overlays, byteLen: chipLeftLen + chipBodyLen + chipRightLen + labelLen, colLen, hit };
+}
+
+/**
+ * Build a styled toolbar content row with button-style hints and a
+ * trailing filter field. Returns the rendered entry plus the button
+ * hit map so mouse clicks can dispatch to the right command.
+ */
+function buildToolbarContentRow(
+    W: number,
+    buttons: HintItem[],
+    filterQuery: string,
+): { entry: TextPropertyEntry; hits: ToolbarButtonHit[] } {
+    const overlays: InlineOverlay[] = [];
+    const hits: ToolbarButtonHit[] = [];
+    // Leading border cell + space.
+    const leftEdge = "│ ";
+    const rightEdge = " │";
+
+    // Reserve at most 1/3 of the row for the filter field at the right.
+    // `editor.t` returns the raw key when a translation is missing, so
+    // we compare and fall back to an English default ourselves.
+    const filterKey = "review.toolbar.filter";
+    const translated = editor.t(filterKey);
+    const filterPlaceholder = translated && translated !== filterKey
+        ? translated
+        : "filter files…";
+    const filterDisplay = filterQuery.length > 0 ? filterQuery : filterPlaceholder;
+    const filterChip = `▌/▐ ${filterDisplay}`;
+    const filterCols = 1 + 1 + 1 + 1 + filterDisplay.length;
+
+    let text = leftEdge;
+    let bytePos = getByteLength(leftEdge);
+    // Column position (visible cells). All toolbar glyphs we use are
+    // 1 cell wide so tracking length ≈ column count.
+    let colPos = leftEdge.length;
+
+    // Left-edge border overlay (dim).
+    overlays.push({
+        start: 0,
+        end: getByteLength("│"),
+        style: { fg: STYLE_TOOLBAR_SEP },
+    });
+
+    // Render each button separated by two spaces. Stop if we'd collide
+    // with the reserved filter area.
+    const reserveForFilter = filterCols + rightEdge.length + 2; // gutter before filter
+    for (let i = 0; i < buttons.length; i++) {
+        const btn = buttons[i];
+        const gap = i > 0 ? "  " : "";
+        const { text: bt, overlays: bov, byteLen: bBytes, colLen: bCols, hit } =
+            renderButton(btn, bytePos + getByteLength(gap), colPos + gap.length);
+        const needed = gap.length + bCols;
+        if (colPos + needed + reserveForFilter > W) break;
+        text += gap + bt;
+        bytePos += getByteLength(gap) + bBytes;
+        colPos += needed;
+        for (const o of bov) overlays.push(o);
+        if (hit) hits.push(hit);
     }
 
-    const padded = text.padEnd(W) + "\n";
+    // Pad with spaces until the filter field's start column (right-justified).
+    const filterStartCol = W - rightEdge.length - filterCols;
+    if (filterStartCol > colPos) {
+        const pad = ' '.repeat(filterStartCol - colPos);
+        text += pad;
+        bytePos += getByteLength(pad);
+        colPos += pad.length;
+    }
+
+    // Filter chip: "▌/▐ <text>" styled like a button. Also a hit target
+    // for the `review_filter` command.
+    const filterHitStart = colPos;
+    const leftChip = "▌/▐";
+    overlays.push({ start: bytePos, end: bytePos + getByteLength("▌"), style: { fg: STYLE_BUTTON_BG } });
+    overlays.push({
+        start: bytePos + getByteLength("▌"),
+        end: bytePos + getByteLength("▌/"),
+        style: { bg: STYLE_BUTTON_BG, fg: STYLE_BUTTON_FG, bold: true },
+    });
+    overlays.push({
+        start: bytePos + getByteLength("▌/"),
+        end: bytePos + getByteLength(leftChip),
+        style: { fg: STYLE_BUTTON_BG },
+    });
+    text += leftChip;
+    bytePos += getByteLength(leftChip);
+    colPos += 3;
+    const fieldText = ` ${filterDisplay}`;
+    const fieldFg = filterQuery.length > 0 ? STYLE_BADGE_FG : STYLE_HINT_FG;
+    const fieldStyle: Partial<OverlayOptions> =
+        filterQuery.length > 0
+            ? { fg: fieldFg, bold: true }
+            : { fg: fieldFg, italic: true };
+    overlays.push({
+        start: bytePos,
+        end: bytePos + getByteLength(fieldText),
+        style: fieldStyle,
+    });
+    text += fieldText;
+    bytePos += getByteLength(fieldText);
+    colPos += fieldText.length;
+    hits.push({ startCol: filterHitStart, endCol: colPos, command: "review_filter" });
+
+    // Pad to right edge, then add the right-edge border.
+    if (colPos < W - rightEdge.length) {
+        const pad = ' '.repeat(W - rightEdge.length - colPos);
+        text += pad;
+        bytePos += getByteLength(pad);
+        colPos += pad.length;
+    }
+    text += rightEdge;
+    overlays.push({
+        start: bytePos + getByteLength(" "),
+        end: bytePos + getByteLength(rightEdge),
+        style: { fg: STYLE_TOOLBAR_SEP },
+    });
+
     return {
-        text: padded,
-        properties: { type: "toolbar" },
+        entry: {
+            text: text + "\n",
+            properties: { type: "toolbar" },
+            style: { bg: STYLE_TOOLBAR_BG, extendToLineEnd: true },
+            inlineOverlays: overlays,
+        },
+        hits,
+    };
+}
+
+/**
+ * Build a rounded-border edge row for the toolbar. `kind`:
+ *   - "top":    ╭────╮
+ *   - "bottom": ╰────╯
+ */
+function buildToolbarBorderRow(W: number, kind: "top" | "bottom"): TextPropertyEntry {
+    const left = kind === "top" ? "╭" : "╰";
+    const right = kind === "top" ? "╮" : "╯";
+    const middle = "─".repeat(Math.max(0, W - 2));
+    const text = left + middle + right;
+    const overlays: InlineOverlay[] = [
+        {
+            start: 0,
+            end: getByteLength(text),
+            style: { fg: STYLE_TOOLBAR_SEP },
+        },
+    ];
+    return {
+        text: text + "\n",
+        properties: { type: "toolbar-border" },
         style: { bg: STYLE_TOOLBAR_BG, extendToLineEnd: true },
         inlineOverlays: overlays,
     };
 }
 
 /**
- * Build the (two-row) toolbar with all review-diff shortcuts.
- * Row 1 — navigation; row 2 — actions. Identical regardless of which
- * panel currently has focus (no more files-pane vs diff-pane variants).
+ * Build the bordered three-row toolbar:
+ *   row 1: ╭────────────────────────────────╮   rounded top edge
+ *   row 2: │ ▌n▐ next  ▌p▐ prev  …  ▌/▐ filter │  buttons + filter field
+ *   row 3: ╰────────────────────────────────╯   rounded bottom edge
+ *
+ * Only the most-used actions are rendered as buttons to keep the row
+ * legible; the rest of the shortcuts are still bound and discoverable
+ * via the command palette. As a side effect, this populates
+ * `state.toolbarButtons` with column ranges so mouse clicks on a
+ * button dispatch the matching review command.
  */
 function buildToolbar(W: number): TextPropertyEntry[] {
-    // In range mode, stage / unstage / discard are meaningless (there is
-    // no working tree to mutate), so hide them from the hint bar to keep
-    // the toolbar honest. The key-bindings themselves are harmless if
-    // pressed — `review_stage_scope` no-ops on range-mode hunks because
-    // their gitStatus is 'unstaged' and the git commands it invokes
-    // target the working tree, which isn't what the user intended. The
-    // toolbar is the user-facing surface, so pruning here is the
+    // In range mode, stage / unstage / discard are meaningless (there
+    // is no working tree to mutate), so hide them from the toolbar to
+    // keep it honest. The keybindings themselves are harmless if
+    // pressed — `review_stage_scope` no-ops on range-mode hunks — but
+    // the toolbar is the user-facing surface, so pruning here is the
     // cheapest honest thing to do.
     const inRange = state.mode === 'range';
-    const row1: HintItem[][] = [
-        [{ key: "n", label: "next hunk" }, { key: "p", label: "prev hunk" },
-         { key: "]", label: "next cmt" }, { key: "[", label: "prev cmt" }],
-        inRange
-            ? [{ key: "v", label: "select" }, { key: "c", label: "comment" }]
-            : [{ key: "s", label: "stage" }, { key: "u", label: "unstage" }, { key: "d", label: "discard" },
-               { key: "v", label: "select" }, { key: "c", label: "comment" }],
+    const buttons: HintItem[] = inRange
+        ? [
+            { key: "n", label: "next",    command: "review_next_hunk" },
+            { key: "p", label: "prev",    command: "review_prev_hunk" },
+            { key: "c", label: "comment", command: "review_add_comment" },
+            { key: "Tab", label: "fold",  command: "review_toggle_file_collapse" },
+            { key: "q", label: "close",   command: "stop_review_diff" },
+        ]
+        : [
+            { key: "n", label: "next",    command: "review_next_hunk" },
+            { key: "p", label: "prev",    command: "review_prev_hunk" },
+            { key: "s", label: "stage",   command: "review_stage_scope" },
+            { key: "u", label: "unstage", command: "review_unstage_scope" },
+            { key: "d", label: "discard", command: "review_discard_file" },
+            { key: "c", label: "comment", command: "review_add_comment" },
+            { key: "Tab", label: "fold",  command: "review_toggle_file_collapse" },
+            { key: "q", label: "close",   command: "stop_review_diff" },
+        ];
+    const { entry, hits } = buildToolbarContentRow(W, buttons, state.filter || "");
+    state.toolbarButtons = hits;
+    return [
+        buildToolbarBorderRow(W, "top"),
+        entry,
+        buildToolbarBorderRow(W, "bottom"),
     ];
-    const row2: HintItem[][] = [
-        [{ key: "Tab", label: "fold" }, { key: "z a", label: "fold all" }, { key: "z r", label: "unfold all" }],
-        inRange
-            ? [{ key: "Enter", label: "jump" }, { key: "e", label: "export" }, { key: "q", label: "close" }]
-            : [{ key: "S U D", label: "file-level" }, { key: "Enter", label: "jump" },
-               { key: "e", label: "export" }, { key: "q", label: "close" }],
-    ];
-    return [buildToolbarRow(W, row1), buildToolbarRow(W, row2)];
 }
 
 // --- Buffer Group panel content builders ---
 
 function buildToolbarPanelEntries(): TextPropertyEntry[] {
-    // Two-row toolbar: navigation hints on row 1, actions on row 2.
     return buildToolbar(state.viewportWidth);
 }
 
@@ -1351,42 +1614,79 @@ function buildCommentsPanelEntries(): TextPropertyEntry[] {
         return la - lb;
     });
 
-    let rowIdx = 1; // header is row 0 (0-indexed); comments start at row 1
+    // Panel width (columns) is roughly 25% of the viewport; we subtract
+    // a small padding so the card contents don't hug the right edge.
+    const panelWidth = Math.max(20, Math.floor(state.viewportWidth * 0.25) - 2);
+
+    // Each comment is rendered as a 3-line "card":
+    //   row 1: " path:line"             — accent fg, bold; header strip
+    //   row 2: " body …"                — normal fg, possibly wrapped/truncated
+    //   row 3: (blank spacer)           — visual separation between cards
+    //
+    // Clicking any of the three rows jumps to the comment source, so the
+    // row-to-comment map is populated for all of them.
+    let rowIdx = 1; // header was row 1 (1-indexed); comments start at row 2
     for (const c of sortedComments) {
-        rowIdx++;
         const lineRef = c.new_line ?? c.old_line ?? 0;
         const path = c.file.split('/').pop() || c.file;
         const snippet = c.text.replace(/\s+/g, ' ').trim();
-        // Leading marker: ">" when this comment is the diff cursor's
-        // current target (cursor is on the comment row itself, or on
-        // the line the comment is attached to). Otherwise a space.
-        const marker = c.id === state.commentsHighlightId ? '>' : ' ';
-        const text = `${marker} ${path}:${lineRef}  ${snippet}`;
 
-        // Truncate to fit panel width (estimate).
-        const panelWidth = Math.max(20, Math.floor(state.viewportWidth * 0.25) - 2);
-        const display = text.length > panelWidth ? text.slice(0, panelWidth - 1) + '…' : text;
-
-        const isSelected = rowIdx === state.commentsSelectedRow && state.focusPanel === 'comments';
+        const isSelected = rowIdx + 1 === state.commentsSelectedRow && state.focusPanel === 'comments';
         const isCursorMarked = c.id === state.commentsHighlightId;
-        const style: Partial<OverlayOptions> | undefined = isSelected
+
+        // Leading marker column: ">" when the diff cursor is pointing
+        // at this comment, otherwise a space. Keeps the header row
+        // aligned across marked/unmarked states.
+        const marker = isCursorMarked ? '>' : ' ';
+
+        // --- Row 1: file:line header strip ---
+        const headerText = `${marker} ${path}:${lineRef}`;
+        const displayHeader = headerText.length > panelWidth
+            ? headerText.slice(0, panelWidth - 1) + '…'
+            : headerText;
+        const headerStyle: Partial<OverlayOptions> = isSelected
             ? { bg: STYLE_SELECTED_BG, bold: true, extendToLineEnd: true }
-            : isCursorMarked
-                ? { bold: true }
-                : undefined;
-
-        // Color the path:line prefix in keyword color (skip the marker).
-        const prefixLen = getByteLength(`${marker} ${path}:${lineRef}`);
-        const inlineOverlays: InlineOverlay[] = [
-            { start: 2, end: prefixLen, style: { fg: STYLE_KEY_FG } },
+            : { bg: STYLE_FILE_HEADER_BG, bold: true, extendToLineEnd: true };
+        // Overlay on the path:line portion (skip the marker + space) so
+        // the file reference reads as an accent-colored tag.
+        const headerOverlays: InlineOverlay[] = [
+            {
+                start: 2,
+                end: getByteLength(displayHeader),
+                style: { fg: STYLE_BADGE_FG, bold: true },
+            },
         ];
-
+        rowIdx++;
         state.commentsByRow[rowIdx] = c.id;
         entries.push({
-            text: display + "\n",
-            style,
-            inlineOverlays,
+            text: displayHeader + "\n",
+            style: headerStyle,
+            inlineOverlays: headerOverlays,
             properties: { type: "comment-nav", commentId: c.id, file: c.file, line: lineRef },
+        });
+
+        // --- Row 2: comment body ---
+        const bodyText = `  ${snippet}`;
+        const displayBody = bodyText.length > panelWidth
+            ? bodyText.slice(0, panelWidth - 1) + '…'
+            : bodyText;
+        const bodyStyle: Partial<OverlayOptions> | undefined = isSelected
+            ? { bg: STYLE_SELECTED_BG, extendToLineEnd: true }
+            : undefined;
+        rowIdx++;
+        state.commentsByRow[rowIdx] = c.id;
+        entries.push({
+            text: displayBody + "\n",
+            style: bodyStyle,
+            properties: { type: "comment-nav", commentId: c.id, file: c.file, line: lineRef },
+        });
+
+        // --- Row 3: blank spacer ---
+        rowIdx++;
+        state.commentsByRow[rowIdx] = c.id;
+        entries.push({
+            text: "\n",
+            properties: { type: "comment-nav-spacer", commentId: c.id, file: c.file, line: lineRef },
         });
     }
 
@@ -1452,9 +1752,12 @@ function refreshStickyHeader(topVisibleRow: number): void {
     const stickyId = state.panelBuffers["sticky"];
     if (stickyId === undefined) return;
 
-    const W = state.viewportWidth;
-    let text: string;
-    let style: Partial<OverlayOptions> = { fg: STYLE_HEADER, bold: true };
+    // Sticky panel width: the sticky shares a vertical split with the
+    // diff panel, and that whole split takes 75% of the viewport. The
+    // remaining width goes to the comments panel. Using the full
+    // viewport width here would push the right-aligned segment off
+    // the panel, so we compute the effective width explicitly.
+    const W = Math.max(20, Math.floor(state.viewportWidth * 0.75) - 1);
 
     // topVisibleRow is 0-indexed; fileHeaderRows are 1-indexed.
     const top1 = topVisibleRow + 1;
@@ -1468,7 +1771,18 @@ function refreshStickyHeader(topVisibleRow: number): void {
         }
     }
 
+    // Base style: subtle band bg, same as file/section headers so the
+    // sticky reads as "the header pinned to the viewport top".
+    const baseStyle: Partial<OverlayOptions> = {
+        bg: STYLE_FILE_HEADER_BG,
+        extendToLineEnd: true,
+    };
+    const overlays: InlineOverlay[] = [];
+    let text: string;
+
     if (!bestFile) {
+        // No file pinned — show an overall summary. No [GIT] badge
+        // here, just a dim italic line.
         if (state.files.length === 0) {
             text = ` ${editor.t("status.review_empty") || "Review Diff"}`;
         } else {
@@ -1485,31 +1799,96 @@ function refreshStickyHeader(topVisibleRow: number): void {
                 ? ` (${state.range.label})`
                 : '';
             text = ` Review Diff${rangeSuffix} — ${state.files.length} files, +${totals.added} / -${totals.removed}`;
-            style = { fg: STYLE_SECTION_HEADER, italic: true };
         }
+        // Keep an italic dim look for the summary case only.
+        overlays.push({
+            start: 0,
+            end: getByteLength(text),
+            style: { fg: STYLE_SECTION_HEADER, italic: true },
+        });
     } else {
+        // File-pinned sticky — compose three styled segments:
+        //   "[GIT]" badge      (warm accent, bold)
+        //   filename           (bright fg, bold)
+        //   " +A / -R" counts  (green/red) — right-aligned
         const counts = fileChangeCounts(bestFile);
-        let section: string = bestFile.category;
-        // In range mode every hunk is bucketed as 'unstaged' as an impl
-        // detail; "UNSTAGED" would be misleading, so display the range
-        // label instead.
-        if (state.mode === 'range' && state.range) {
-            section = state.range.label;
-        } else if (bestFile.category === 'staged') section = (editor.t("section.staged") || "Staged").toUpperCase();
-        else if (bestFile.category === 'unstaged') section = (editor.t("section.unstaged") || "Changes").toUpperCase();
-        else if (bestFile.category === 'untracked') section = (editor.t("section.untracked") || "Untracked").toUpperCase();
         const filename = bestFile.origPath ? `${bestFile.origPath} → ${bestFile.path}` : bestFile.path;
-        text = ` ${section} · ${filename}   +${counts.added} / -${counts.removed}`;
+        // Badge: `[GIT]` in worktree mode, or the range label (e.g.
+        // `HEAD~3..HEAD`) wrapped in brackets in range mode — that
+        // mirrors the old per-section label which read "UNSTAGED" in
+        // worktree mode and the range string in range mode.
+        const badge = state.mode === 'range' && state.range
+            ? `[${state.range.label}]`
+            : "[GIT]";
+        const countsText = `+${counts.added} / -${counts.removed}`;
+
+        // Build a single padded line with the badge/filename on the
+        // left, counts right-justified. If the viewport is too narrow
+        // to fit both with even a single-space gap we drop the counts.
+        const leftBase = ` ${badge} ${filename} `;
+        const rightBase = `${countsText} `;
+        const needed = getByteLength(leftBase) + getByteLength(rightBase);
+        let body: string;
+        let countsStart = -1;
+        if (needed <= W) {
+            const gap = W - needed;
+            body = leftBase + ' '.repeat(gap) + rightBase;
+            countsStart = getByteLength(leftBase) + gap;
+        } else if (getByteLength(leftBase) <= W) {
+            // Not enough room for counts — just render the left side.
+            body = leftBase;
+        } else {
+            // Even the filename overflows — truncate.
+            body = leftBase.slice(0, W);
+        }
+
+        // Badge overlay: the "[GIT]" segment gets the warm accent fg
+        // with bold weight, making it read as an inline badge without
+        // requiring a solid-bg chip (which would clash with the
+        // current_line_bg band in some themes).
+        const badgeStart = 1; // leading space
+        const badgeEnd = badgeStart + getByteLength(badge);
+        overlays.push({
+            start: badgeStart,
+            end: badgeEnd,
+            style: { fg: STYLE_BADGE_FG, bold: true },
+        });
+        // Filename overlay: bright fg, bold.
+        const fnStart = badgeEnd + 1; // space between badge and filename
+        const fnEnd = fnStart + getByteLength(filename);
+        overlays.push({
+            start: fnStart,
+            end: fnEnd,
+            style: { fg: STYLE_FILE_HEADER_FG, bold: true },
+        });
+        // Counts overlay: split into "+A" (green) and "-R" (red) with a
+        // neutral "/" separator in between.
+        if (countsStart >= 0) {
+            const plusToken = `+${counts.added}`;
+            const slashToken = ` / `;
+            const minusToken = `-${counts.removed}`;
+            let off = countsStart;
+            overlays.push({
+                start: off,
+                end: off + getByteLength(plusToken),
+                style: { fg: STYLE_ADD_COUNT_FG, bold: true },
+            });
+            off += getByteLength(plusToken) + getByteLength(slashToken);
+            overlays.push({
+                start: off,
+                end: off + getByteLength(minusToken),
+                style: { fg: STYLE_REMOVE_COUNT_FG, bold: true },
+            });
+        }
+
+        text = body;
     }
 
     const padded = (text.length > W ? text.slice(0, W) : text).padEnd(W) + "\n";
     editor.setPanelContent(state.groupId, "sticky", [{
         text: padded,
-        // Same band-bg as file/section headers — keeps the sticky visually
-        // tied to the headers it summarizes and avoids the toolbar's
-        // status_bar_bg, which is a saturated accent in some themes
-        // (Dracula's is hot pink — clashes badly with the diff content).
-        style: { ...style, bg: STYLE_FILE_HEADER_BG, extendToLineEnd: true },
+        style: baseStyle,
+        inlineOverlays: overlays,
         properties: { type: "sticky-header" },
     }]);
 }
@@ -1567,6 +1946,23 @@ function on_review_mouse_click(data: {
     const diffId = state.panelBuffers["diff"];
     const stickyId = state.panelBuffers["sticky"];
     const commentsId = state.panelBuffers["comments"];
+    const toolbarId = state.panelBuffers["toolbar"];
+
+    // Click in the toolbar buffer: dispatch to the command for the
+    // button under the pointer. The toolbar buffer is 3 rows tall
+    // (top border / content / bottom border); only the content row
+    // (row index 1) has hit-testable buttons.
+    if (toolbarId !== undefined && data.buffer_id === toolbarId) {
+        if (data.buffer_row !== 1) return; // border rows are decorative
+        const col = data.buffer_col ?? 0;
+        for (const hit of state.toolbarButtons) {
+            if (col >= hit.startCol && col < hit.endCol) {
+                dispatchToolbarCommand(hit.command);
+                return;
+            }
+        }
+        return;
+    }
 
     // Click in the diff buffer: section headers and file headers are
     // both interactive — clicking either toggles its fold state.
@@ -1641,6 +2037,27 @@ function on_review_mouse_click(data: {
     }
 }
 registerHandler("on_review_mouse_click", on_review_mouse_click);
+
+/**
+ * Dispatch a toolbar-button click to its registered handler. We can't
+ * call plugin handlers by name from inside the runtime, so this
+ * function contains an explicit switch over every command that the
+ * toolbar exposes. Keep this in sync with the `buttons` array in
+ * `buildToolbar`.
+ */
+function dispatchToolbarCommand(command: string): void {
+    switch (command) {
+        case "review_next_hunk": review_next_hunk(); return;
+        case "review_prev_hunk": review_prev_hunk(); return;
+        case "review_stage_scope": { void review_stage_scope(); return; }
+        case "review_unstage_scope": { void review_unstage_scope(); return; }
+        case "review_discard_file": review_discard_file(); return;
+        case "review_add_comment": { void review_add_comment(); return; }
+        case "review_toggle_file_collapse": review_toggle_file_collapse(); return;
+        case "stop_review_diff": stop_review_diff(); return;
+        case "review_filter": { void review_filter(); return; }
+    }
+}
 
 /**
  * Jump the diff cursor to the line associated with a comment, auto-
@@ -1744,6 +2161,30 @@ function applyCursorLineOverlay(panel: 'diff'): void {
 
 function review_refresh() { refreshMagitData(); }
 registerHandler("review_refresh", review_refresh);
+
+/**
+ * Interactive filter-files command. Prompts the user for a substring
+ * and hides any file whose path doesn't contain it (case-insensitive).
+ * Entering an empty string clears the filter. The toolbar filter chip
+ * and the diff stream both refresh immediately after the prompt
+ * resolves.
+ */
+async function review_filter(): Promise<void> {
+    // `editor.t` returns the raw key when a translation is missing, so
+    // compare and fall back to the English default ourselves.
+    const labelKey = "review.prompt.filter";
+    const translated = editor.t(labelKey);
+    const label = translated && translated !== labelKey
+        ? translated
+        : "Filter files (empty to clear)";
+    const next = await editor.prompt(label, state.filter || "");
+    if (next === null) return; // user cancelled
+    state.filter = next.trim();
+    // Rebuild everything — filter affects file list, section counts,
+    // sticky header, and fold ranges all at once.
+    updateMagitDisplay();
+}
+registerHandler("review_filter", review_filter);
 
 // --- Cursor-driven navigation ---
 //
@@ -3689,7 +4130,9 @@ const REVIEW_LAYOUT = JSON.stringify({
     type: "split",
     direction: "v",
     ratio: 0.05,
-    first: { type: "fixed", id: "toolbar", height: 2 },
+    // 3 rows for the toolbar — one row each for the top border, the
+    // button content, and the bottom border.
+    first: { type: "fixed", id: "toolbar", height: 3 },
     second: {
         type: "split",
         direction: "h",
@@ -4751,6 +5194,8 @@ editor.defineMode("review-mode", [
     // Close & export
     ["q", "close"],
     ["e", "review_export_session"],
+    // Filter files — opens a prompt, substring match, clears when empty.
+    ["/", "review_filter"],
 ], true);
 
 editor.debug("Review Diff plugin loaded with review comments support");

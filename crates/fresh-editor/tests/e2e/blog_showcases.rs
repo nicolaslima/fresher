@@ -2470,3 +2470,178 @@ fn blog_showcase_productivity_git_log() {
 
     s.finalize().unwrap();
 }
+
+/// Review-Diff mode: rounded-border toolbar with button shortcuts,
+/// `[GIT] file  +A/-R` sticky header, full-width inline comment bars,
+/// multi-line comment cards, and the new `/` filter.
+///
+/// This is an animated demo of the redesigned UI — it exercises the
+/// visual improvements end-to-end so the generated GIF doubles as a
+/// visual regression of the redesign.
+#[test]
+#[ignore]
+fn blog_showcase_review_diff_ui() {
+    // A git repo with a mix of staged, unstaged, and untracked changes
+    // — the review-diff panel rendering is most interesting when all
+    // three categories are populated at once.
+    let repo = GitTestRepo::new();
+    let plugins_dir = repo.path.join("plugins");
+    fs::create_dir_all(&plugins_dir).unwrap();
+    copy_plugin(&plugins_dir, "audit_mode");
+    copy_plugin_lib(&plugins_dir);
+
+    // Seed the repo with a few committed files.
+    repo.create_file(
+        "README.md",
+        "# Demo Project\n\nA small demo with a few changes.\n\n## Features\n- Greetings\n- Arithmetic\n",
+    );
+    repo.create_file(
+        "hello.py",
+        "def greet(name):\n    \"\"\"Say hello.\"\"\"\n    print(\"Hello, \" + name + \"!\")\n    return True\n\ndef farewell(name):\n    print(\"Goodbye \" + name)\n    return True\n\nif __name__ == \"__main__\":\n    greet(\"World\")\n",
+    );
+    repo.create_file(
+        "utils.js",
+        "function add(a, b) {\n  return a + b;\n}\n\nfunction multiply(a, b) {\n  return a * b;\n}\n\nmodule.exports = { add, multiply };\n",
+    );
+    repo.git_add_all();
+    repo.git_commit("Initial commit");
+
+    // Now modify the tree to create interesting diff content:
+    //   - README.md is modified + staged        → STAGED section
+    //   - hello.py + utils.js are modified     → UNSTAGED section
+    //   - NOTES.txt is brand-new               → UNTRACKED section
+    fs::write(
+        repo.path.join("README.md"),
+        "# Demo Project\n\nA small demo with several changes for showcasing review-diff mode.\n\n## Features\n- Greetings (customizable)\n- Arithmetic (add, sub, mul, div)\n- Shouting\n",
+    )
+    .unwrap();
+    fs::write(
+        repo.path.join("hello.py"),
+        "def greet(name, greeting=\"Hello\"):\n    \"\"\"Say hello with a custom greeting.\"\"\"\n    print(greeting + \", \" + name + \"!\")\n    return True\n\ndef farewell(name, formal=False):\n    prefix = \"Farewell\" if formal else \"Goodbye\"\n    print(prefix + \", \" + name)\n    return True\n\ndef shout(name):\n    print(\"HEY \" + name.upper() + \"!\")\n\nif __name__ == \"__main__\":\n    greet(\"World\")\n    shout(\"Friend\")\n",
+    )
+    .unwrap();
+    fs::write(
+        repo.path.join("utils.js"),
+        "function add(a, b) {\n  return a + b;\n}\n\nfunction subtract(a, b) {\n  return a - b;\n}\n\nfunction multiply(a, b) {\n  return a * b;\n}\n\nfunction divide(a, b) {\n  if (b === 0) throw new Error(\"Division by zero\");\n  return a / b;\n}\n\nmodule.exports = { add, subtract, multiply, divide };\n",
+    )
+    .unwrap();
+    fs::write(
+        repo.path.join("NOTES.txt"),
+        "TODO items:\n- Polish the UI\n- Write more tests\n- Ship v1.0\n",
+    )
+    .unwrap();
+    repo.git_add(&["README.md"]);
+
+    // Launch the editor in the repo's working directory so `git status`
+    // inside the plugin sees the staged/unstaged/untracked mix.
+    let mut h = EditorTestHarness::with_config_and_working_dir(
+        140,
+        36,
+        Default::default(),
+        repo.path.clone(),
+    )
+    .unwrap();
+    h.render().unwrap();
+
+    let mut s = BlogShowcase::new(
+        "editing/review-diff",
+        "Review Diff: Polished Magit-Style Git UI",
+        "Bordered button toolbar, `[GIT]` sticky header, inline comment bars, card-style comments panel, and `/` file filter.",
+    );
+
+    // Let the idle editor render before triggering the feature.
+    hold(&mut h, &mut s, 2, 150);
+
+    // Open the command palette and invoke "Review Diff".
+    h.send_key(KeyCode::Char('p'), KeyModifiers::CONTROL)
+        .unwrap();
+    h.wait_for_prompt().unwrap();
+    h.type_text("Review Diff").unwrap();
+    h.render().unwrap();
+    snap(&mut h, &mut s, Some("Ctrl+P"), 250);
+
+    h.send_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+    h.wait_for_prompt_closed().unwrap();
+
+    // Wait for the async diff build to finish (the status bar stops
+    // saying "Generating Review Diff Stream..."). Semantic wait — no
+    // fixed sleeps.
+    h.wait_until(|hh| {
+        !hh.screen_to_string()
+            .contains("Generating Review Diff Stream")
+    })
+    .unwrap();
+    // Full repaint: toolbar, sticky header, and diff panel all visible.
+    snap(&mut h, &mut s, Some("Enter"), 400);
+    hold(&mut h, &mut s, 4, 120);
+
+    // Step into the diff a few rows to land on a changed line in
+    // README.md — this both exercises cursor movement and sets up the
+    // sticky header to show `[GIT] README.md  +4 / -3`.
+    for _ in 0..6 {
+        h.send_key(KeyCode::Char('j'), KeyModifiers::NONE).unwrap();
+    }
+    h.render().unwrap();
+    snap(&mut h, &mut s, Some("j × 6"), 250);
+
+    // Add an inline comment on the current line — shows the full-width
+    // ⚠ callout bar and populates the comments-panel card.
+    h.send_key(KeyCode::Char('c'), KeyModifiers::NONE).unwrap();
+    h.wait_for_prompt().unwrap();
+    snap(&mut h, &mut s, Some("c"), 250);
+    h.type_text("this phrasing could be sharper").unwrap();
+    h.render().unwrap();
+    snap(&mut h, &mut s, None, 200);
+    h.send_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+    h.wait_for_prompt_closed().unwrap();
+    h.render().unwrap();
+    snap(&mut h, &mut s, Some("Enter"), 400);
+    hold(&mut h, &mut s, 4, 120);
+
+    // Scroll a few more lines and add a second comment further down to
+    // show two stacked cards in the COMMENTS panel.
+    for _ in 0..14 {
+        h.send_key(KeyCode::Char('j'), KeyModifiers::NONE).unwrap();
+    }
+    h.render().unwrap();
+    h.send_key(KeyCode::Char('c'), KeyModifiers::NONE).unwrap();
+    h.wait_for_prompt().unwrap();
+    h.type_text("should be in German").unwrap();
+    h.render().unwrap();
+    h.send_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+    h.wait_for_prompt_closed().unwrap();
+    h.render().unwrap();
+    snap(&mut h, &mut s, Some("c + text"), 400);
+    hold(&mut h, &mut s, 4, 120);
+
+    // Demonstrate the `/` filter — open it, type a query, press Enter.
+    h.send_key(KeyCode::Char('/'), KeyModifiers::NONE).unwrap();
+    h.wait_for_prompt().unwrap();
+    snap(&mut h, &mut s, Some("/"), 250);
+    h.type_text("hello").unwrap();
+    h.render().unwrap();
+    snap(&mut h, &mut s, Some("hello"), 200);
+    h.send_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+    h.wait_for_prompt_closed().unwrap();
+    h.render().unwrap();
+    // Filter applied — only hello.py is shown, and the toolbar filter
+    // chip now reads `▌/▐ hello`.
+    snap(&mut h, &mut s, Some("Enter"), 400);
+    hold(&mut h, &mut s, 4, 120);
+
+    // Clear the filter — open prompt, backspace out existing text,
+    // Enter to apply empty filter.
+    h.send_key(KeyCode::Char('/'), KeyModifiers::NONE).unwrap();
+    h.wait_for_prompt().unwrap();
+    for _ in 0..5 {
+        h.send_key(KeyCode::Backspace, KeyModifiers::NONE).unwrap();
+    }
+    h.render().unwrap();
+    h.send_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+    h.wait_for_prompt_closed().unwrap();
+    h.render().unwrap();
+    snap(&mut h, &mut s, Some("/ ⌫⌫ Enter"), 400);
+    hold(&mut h, &mut s, 5, 150);
+
+    s.finalize().unwrap();
+}

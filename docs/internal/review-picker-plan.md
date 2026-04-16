@@ -11,12 +11,12 @@ the four highest-leverage UX gaps in the current review-diff:
    "This PR" preset is preselected; Enter opens the review immediately.
 2. **No blind commits** — the picker has a live preview pane that
    re-renders the diff as the user moves through the list.
-3. **"New since last close (N new)"** — uses watermarks persisted on
-   review close; turns the existing per-range comment-persistence layer
-   into a daily-visible, repeat-review-friendly feature. (The label is
-   deliberately about "last close", not "last reviewed", because the
-   watermark signal is a close event, not a proof-of-read — see
-   *Watermarks* below.)
+3. **"Since `<sha>` (N new)"** — the picker remembers the HEAD you
+   last saw for this `(branch, base)` and offers `<stored-sha>..HEAD`
+   as a preset. The row label literally names the stored SHA, so the
+   user sees exactly what the comparison is and doesn't have to
+   guess what "last reviewed" or "last close" or "last fetch" means.
+   See *Watermarks* below.
 4. **Comment-count badges** — saved comments become discoverable from
    the picker, not only after opening a range.
 
@@ -91,7 +91,7 @@ List pane content:
 
 ```
  ★ This PR  (main..HEAD)             7 commits  +52/−12   (3)
-   New since last close                         3 new     (1)
+   Since 7e2a9f1  (7e2a9f1..HEAD)               3 new     (1)
    Working tree                                 16 files  (2)
  ─── COMMITS ─────────────────────────────────────────────
    bca083a  feat: farewell
@@ -112,7 +112,6 @@ List pane content:
 | `★`    | `*`            | Auto-detected default (cursor lands here)  |
 | `>`    | `>`            | Current branch                             |
 | `(N)`  | `(N)`          | Saved-comment count under this range key   |
-| `▸`    | `+`            | Commit marked by `v` for multi-select      |
 
 Notes:
 - `(0)` is hidden, not rendered dim. Dimming relies on color/attribute
@@ -121,8 +120,8 @@ Notes:
 - The count is rendered as text `(N)` rather than a unicode dot so
   it's parseable by screen readers and by users who pipe the picker
   through `tmux`/`screen`/SSH sessions that mangle BMP glyphs.
-- The `★`/`>`/`▸` glyphs all have ASCII fallbacks selected by the
-  same terminal-capability check the rest of the app uses.
+- The `★` and `>` glyphs have ASCII fallbacks selected by the same
+  terminal-capability check the rest of the app uses.
 - "Last commit" is not a preset row; it's just the first entry under
   COMMITS and would be redundant as a separate preset.
 
@@ -184,12 +183,19 @@ unstaged combined). File counts and `+N/−M` stats in the picker and
 ribbon are computed against the same command, so they never
 disagree with the diff the user actually sees.
 
-### Watermarks — "New since last close"
+### Watermarks — "Since `<sha>`"
 
-**Label.** The row is titled `New since last close`, not "Since I
-last reviewed". The watermark is a *close* event, not a
-proof-of-read: if the user q'd after scrolling three lines in, we
-can't claim they reviewed anything. Honest label, honest semantics.
+**Label.** The row is titled `Since <short-sha>` where the SHA is
+substituted at render time from the stored tip. The label names the
+exact thing the comparison is built from — no verb ("reviewed",
+"closed", "pushed") for the user to second-guess. If the stored SHA
+is `7e2a9f1`, the row reads `Since 7e2a9f1` and the resolved range
+is `7e2a9f1..HEAD`.
+
+The preview pane and ribbon both carry the full revspec
+(`7e2a9f1..HEAD`) so the baseline is visible in two places: the
+list label names the anchor point, the preview shows what's in the
+range.
 
 **Key.** Watermarks are keyed by `(branch, base)`, not by branch
 alone. Reviewing `main..feature/x` and reviewing
@@ -216,19 +222,22 @@ answer to "where was I up to?"
 
 **Read.** When the picker opens, for each watermark entry whose
 `tip` differs from `HEAD` **and** whose `tip` is still reachable
-from `HEAD` (i.e. ancestor), render a `New since last close (N new)`
+from `HEAD` (i.e. ancestor), render a `Since <short-sha> (N new)`
 row resolving to `<tip>..HEAD`. Show at most one such row (the
 `(branch, base)` that matches the currently-defaulting base).
 
-**Dangling watermarks (force-push).** If `tip` is *not* reachable
-from `HEAD` — typical after a rebase/force-push — the watermark no
-longer names a meaningful range. Fall back to
-`git merge-base <tip> HEAD` if non-empty, otherwise drop the row
-entirely. Do not show a range that mixes abandoned SHAs with live
-ones; it confuses more than it helps.
+**Dangling watermarks (force-push / rebase).** If `tip` is *not*
+reachable from `HEAD` — typical after a rebase/force-push — the
+stored SHA no longer names a meaningful range on the current
+history. Fall back to `git merge-base <tip> HEAD`; if non-empty,
+render the row with the merge-base SHA in the label
+(`Since <merge-base-short>`) and `<merge-base>..HEAD` as the range.
+If the merge-base is empty or equals `HEAD`, drop the row entirely.
+The label always matches the SHA actually used in the diff — we
+never show a row whose name differs from its comparison baseline.
 
 **No watermark yet.** Freshly-checked-out branch, never reviewed:
-hide the row rather than render "0 new".
+hide the row rather than render a confusing `Since HEAD (0 new)`.
 
 This is the unique-value-prop feature. Most reviewers come back to a
 PR after the author pushes follow-up commits; today they have to find
@@ -254,8 +263,6 @@ gg / G                  jump to top / bottom of list
 Enter                   open the row's range as a review
 Tab                     toggle focus between list and preview
 PageDown / PageUp       scroll focused pane
-v                       (commits section) toggle "marked"
-V                       (commits section) extend mark range
 :                       focus the custom-revspec field
 r                       refresh (re-scan branches/commits/badges)
 ?                       show the full keymap
@@ -283,26 +290,6 @@ of the list pane. Behaviour:
   `Up`/`Down` inside the input (mirrors readline).
 - `Esc` inside the input returns focus to the list without clearing.
 
-### Multi-commit selection (`v` / `V`) — semantics
-
-`v` toggles a mark on the commit under the cursor; `V` extends the
-mark from the last-marked commit to the cursor (inclusive). Marks
-are independent — the user can mark commits A, C, E with B and D
-unmarked.
-
-The "flatten" step on Enter is **not** a single `git diff A..E` —
-that would silently include the unmarked B and D. Instead the picker
-materialises a temporary detached branch by cherry-picking the marked
-commits in topological order onto their common merge-base, then
-opens the review against `<merge-base>..<temp>`. The temp ref is
-cleaned up when the review closes. If any cherry-pick conflicts, the
-picker aborts, restores state, and shows the offending commit pair —
-non-contiguous selection of commits that don't apply cleanly in
-isolation isn't a reviewable slice.
-
-This is involved enough that it ships as a follow-up; the rest of
-the picker delivers >80% of the value without it.
-
 ## Review screen — the one new row
 
 `REVIEW_LAYOUT` adds one fixed-height node:
@@ -326,7 +313,7 @@ Ribbon content (mode-aware):
 | worktree  | `Working tree · 16 files · +40/−77 · 0 comments         p: pick` |
 | range     | `★ main..HEAD · 2 files · +10/−1 · 0 comments           p: pick` |
 | commit    | `bca083a feat: farewell · 1 file · +3/−0 · 0 comments   p: pick` |
-| new       | `New since last close · 3 new · +12/−4 · 1 comment      p: pick` |
+| since     | `7e2a9f1..HEAD · 3 new · +12/−4 · 1 comment             p: pick` |
 
 Always visible. The "what am I reviewing?" question never requires a
 keystroke to answer.
@@ -399,7 +386,8 @@ to the range you just left, so `p`-then-Enter is a no-op refresh.
 - **The "I have to open it to know if I have comments"** dance — the
   comment-count badges expose this in the picker.
 - **The "what's new since I last looked at this branch?" hunt** —
-  the `New since last close` row resolves the range for you.
+  the `Since <sha>` row resolves the range for you, and names the
+  exact SHA it's comparing against.
 - **The "what am I reviewing again?" check** — the ribbon names it.
 
 ## Out of scope (good follow-ups, not blockers)
@@ -423,8 +411,8 @@ to the range you just left, so `p`-then-Enter is a no-op refresh.
   150 ms debounce, per-range cache, cancel any in-flight fetch when
   the cursor moves again.
 - **Freshly-checked-out branch**: there is no watermark yet. Hide
-  the "New since last close" row rather than show a confusing
-  "0 new".
+  the `Since <sha>` row rather than render a confusing
+  `Since HEAD (0 new)`.
 - **Force-pushed / rebased branch**: the stored `tip` is no longer
   reachable from `HEAD`. Handled by the "Dangling watermarks" rule
   under *Watermarks*: fall back to `merge-base`, else drop the row.
@@ -460,7 +448,6 @@ Follow-up ship points, each independently useful:
 
 - **Ship C** — Phase 5. Commit list section.
 - **Ship D** — Phase 6. Branch list section.
-- **Ship E** — Phase 7. Multi-commit `v`/`V` marking.
 
 Phase-by-phase sequencing:
 
@@ -469,7 +456,6 @@ Phase-by-phase sequencing:
    tree`, `:custom`). Live preview wired in. Replaces
    `start_review_range`.
 3. Comment-count badges on preset rows.
-4. Watermark write on close + `New since last close` preset.
+4. Watermark write on close + `Since <sha>` preset.
 5. Commit list section + per-row badges.
 6. Branch list section.
-7. Multi-commit `v`/`V` marking + cherry-pick-flatten semantics.

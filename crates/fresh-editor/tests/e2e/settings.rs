@@ -1357,6 +1357,78 @@ fn test_settings_percentage_value_saves_correctly() {
     );
 }
 
+/// Regression test for #1212: settings should reject File Explorer width
+/// values below the minimum enforced by mouse-drag resizing (0.1 == 10%),
+/// so users can't produce an unusable sidebar by typing e.g. 2.
+#[test]
+fn test_settings_file_explorer_width_clamps_to_minimum() {
+    let mut harness = EditorTestHarness::new(100, 40).unwrap();
+    harness.render().unwrap();
+
+    // Open settings and search for the File Explorer Width setting.
+    harness.open_settings().unwrap();
+    harness
+        .send_key(KeyCode::Char('/'), KeyModifiers::NONE)
+        .unwrap();
+    for c in "file explorer width".chars() {
+        harness
+            .send_key(KeyCode::Char(c), KeyModifiers::NONE)
+            .unwrap();
+    }
+    harness.render().unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.render().unwrap();
+
+    // The default value is 30 (0.3 * 100 as a percentage).
+    harness.assert_screen_contains("30");
+
+    // Enter editing mode, clear the value, and type an out-of-range value.
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.render().unwrap();
+    harness
+        .send_key(KeyCode::Char('a'), KeyModifiers::CONTROL)
+        .unwrap();
+    for c in "2".chars() {
+        harness
+            .send_key(KeyCode::Char(c), KeyModifiers::NONE)
+            .unwrap();
+    }
+    // Confirm - value should be clamped to the minimum (10).
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.render().unwrap();
+
+    harness.assert_screen_contains("10");
+    harness.assert_screen_not_contains(" 2 ");
+
+    // Save the change and verify the stored float is 0.1.
+    harness.send_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+    harness.send_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+    harness.send_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+    harness.render().unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.render().unwrap();
+
+    assert!(
+        !harness.editor().is_settings_open(),
+        "Settings should be closed after saving"
+    );
+
+    let new_width = harness.config().file_explorer.width;
+    assert!(
+        (new_width - 0.1).abs() < 0.01,
+        "Width should be clamped to 0.1 (minimum), got {}",
+        new_width
+    );
+}
+
 /// Test number input editing mode - enter editing, type value, confirm
 #[test]
 fn test_number_input_enter_editing_mode() {

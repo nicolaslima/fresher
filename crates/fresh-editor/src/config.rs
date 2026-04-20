@@ -1387,8 +1387,10 @@ pub struct FileExplorerConfig {
     #[serde(default)]
     pub custom_ignore_patterns: Vec<String>,
 
-    /// Width of file explorer as percentage (0.0 to 1.0)
+    /// Width of file explorer as a fraction of the terminal width (0.1 to 0.5,
+    /// i.e. 10% to 50%). Matches the range enforced by mouse-drag resizing.
     #[serde(default = "default_explorer_width")]
+    #[schemars(range(min = 0.1, max = 0.5))]
     pub width: f32,
 
     /// Open files in a "preview" (ephemeral) tab on single-click in the

@@ -874,9 +874,11 @@
           "default": []
         },
         "width": {
-          "description": "Width of file explorer as percentage (0.0 to 1.0)",
+          "description": "Width of file explorer as a fraction of the terminal width (0.1 to 0.5,\ni.e. 10% to 50%). Matches the range enforced by mouse-drag resizing.",
           "type": "number",
           "format": "float",
+          "minimum": 0.1,
+          "maximum": 0.5,
           "default": 0.30000001192092896
         },
         "preview_tabs": {

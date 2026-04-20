@@ -477,8 +477,11 @@ impl Editor {
             }
         }
 
-        // Extract config values before moving config into the struct
-        let file_explorer_width = config.file_explorer.width;
+        // Extract config values before moving config into the struct.
+        // Clamp file-explorer width to the same range enforced by mouse-drag
+        // resizing (see `handle_file_explorer_border_drag`), so pre-existing
+        // out-of-range values in saved configs don't produce an unusable UI.
+        let file_explorer_width = config.file_explorer.width.clamp(0.1, 0.5);
         let recovery_enabled = config.editor.recovery_enabled;
         let check_for_updates = config.check_for_updates;
         let show_menu_bar = config.editor.show_menu_bar;

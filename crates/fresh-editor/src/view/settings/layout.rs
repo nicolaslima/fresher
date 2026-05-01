@@ -258,7 +258,7 @@ impl SettingsLayout {
                             return Some(SettingsHit::ControlIncrement(item.index));
                         }
                         if point_in_rect(*value, x, y) {
-                            return Some(SettingsHit::Item(item.index));
+                            return Some(SettingsHit::ControlNumberValue(item.index));
                         }
                     }
                     ControlLayoutInfo::Dropdown {
@@ -400,6 +400,8 @@ pub enum SettingsHit {
     ControlDecrement(usize),
     /// Click on number increment button
     ControlIncrement(usize),
+    /// Click on the number value display (between the brackets)
+    ControlNumberValue(usize),
     /// Click on dropdown button
     ControlDropdown(usize),
     /// Click on dropdown option (item_idx, option_idx)

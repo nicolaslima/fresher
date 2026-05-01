@@ -1115,7 +1115,7 @@ impl SettingsState {
             KeyCode::Esc => {
                 self.number_cancel();
             }
-            KeyCode::Enter => {
+            KeyCode::Enter | KeyCode::Tab => {
                 self.number_confirm();
             }
             KeyCode::Char('a') if ctrl => {

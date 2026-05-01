@@ -327,6 +327,13 @@ impl Editor {
                 }
                 self.settings_increment_current();
             }
+            SettingsHit::ControlNumberValue(idx) => {
+                if let Some(ref mut state) = self.settings_state {
+                    state.focus.set(FocusPanel::Settings);
+                    state.selected_item = idx;
+                    state.start_number_editing();
+                }
+            }
             SettingsHit::ControlText(idx) | SettingsHit::ControlTextListRow(idx, _) => {
                 if let Some(ref mut state) = self.settings_state {
                     state.focus.set(FocusPanel::Settings);

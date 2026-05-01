@@ -977,6 +977,7 @@ fn render_setting_item_pure(
             | Some(SettingsHit::ControlToggle(i))
             | Some(SettingsHit::ControlDecrement(i))
             | Some(SettingsHit::ControlIncrement(i))
+            | Some(SettingsHit::ControlNumberValue(i))
             | Some(SettingsHit::ControlDropdown(i))
             | Some(SettingsHit::ControlText(i))
             | Some(SettingsHit::ControlTextListRow(i, _))

@@ -164,6 +164,7 @@ pub mod settings;
 pub mod settings_config_issue_806;
 pub mod settings_fallback_category;
 pub mod settings_lsp_entry_dialog_bugs;
+pub mod settings_number_input_clicks;
 pub mod settings_paste;
 pub mod settings_quicklsp_entry_bug;
 pub mod settings_ruler_keyboard_nav;

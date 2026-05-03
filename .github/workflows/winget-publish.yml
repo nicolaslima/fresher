@@ -43,5 +43,35 @@ jobs:
           umask 077
           printf 'https://x-access-token:%s@github.com\n' "${GH_TOKEN}" > "${HOME}/.git-credentials"
 
+      - name: Verify token has push access to sinelaw/winget-pkgs
+        run: |
+          set -euo pipefail
+          echo "Checking PAT permissions on sinelaw/winget-pkgs..."
+          response=$(curl -sS -o /tmp/repo.json -w '%{http_code}' \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/repos/sinelaw/winget-pkgs)
+          if [ "$response" != "200" ]; then
+            echo "::error::API request failed with HTTP $response"
+            cat /tmp/repo.json
+            echo
+            echo "The PAT cannot read sinelaw/winget-pkgs. Verify the token"
+            echo "is valid, not expired, and that the fork exists."
+            exit 1
+          fi
+          push=$(python3 -c "import json; print(json.load(open('/tmp/repo.json')).get('permissions', {}).get('push', False))")
+          echo "permissions.push = ${push}"
+          if [ "$push" != "True" ]; then
+            echo "::error::PAT lacks write access to sinelaw/winget-pkgs"
+            echo
+            echo "Fix: regenerate WINGET_TOKEN with one of:"
+            echo "  - Fine-grained PAT scoped to sinelaw/winget-pkgs with"
+            echo "    Contents: read & write and Pull requests: read & write"
+            echo "  - Classic PAT with public_repo scope"
+            exit 1
+          fi
+          echo "OK: PAT has write access to sinelaw/winget-pkgs"
+
       - name: Publish to winget-pkgs
         run: ./scripts/winget-publish.py "${VERSION}"

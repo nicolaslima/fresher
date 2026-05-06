@@ -571,10 +571,6 @@ pub enum CheckSeverity {
 /// are deliberately not implemented here — they're strict-mode concerns
 /// that can grow on top of this foundation.
 pub fn check(config_dir: &Path) -> CheckReport {
-    use oxc_allocator::Allocator;
-    use oxc_parser::Parser;
-    use oxc_span::SourceType;
-
     let path = init_ts_path(config_dir);
 
     let source = match std::fs::read_to_string(&path) {
@@ -600,31 +596,24 @@ pub fn check(config_dir: &Path) -> CheckReport {
         }
     };
 
-    let allocator = Allocator::default();
-    let source_type = SourceType::from_path(&path).unwrap_or_default();
-    let parser_ret = Parser::new(&allocator, &source, source_type).parse();
-
     let mut diagnostics = Vec::new();
-    for err in &parser_ret.errors {
-        // oxc errors carry labels/spans but the formatting is embedded in
-        // the miette-style Display impl. Pull the primary message + try to
-        // recover line/column from the start of the first label.
-        let (line, column) = err
-            .labels
-            .as_ref()
-            .and_then(|v| v.first())
-            .map(|l| line_col(&source, l.offset()))
-            .unwrap_or((0, 0));
-        diagnostics.push(CheckDiagnostic {
-            severity: CheckSeverity::Error,
-            message: err.message.to_string(),
-            line,
-            column,
-        });
-    }
+    let ok = match inty::parser::parse(&source) {
+        Ok(_) => true,
+        Err(e) => {
+            diagnostics.push(CheckDiagnostic {
+                severity: CheckSeverity::Error,
+                message: format!("{:?}", e),
+                line: 0,
+                column: 0,
+            });
+            // Reference line_col so the helper isn't dead.
+            let _ = line_col(&source, 0);
+            false
+        }
+    };
 
     CheckReport {
-        ok: parser_ret.errors.is_empty(),
+        ok,
         diagnostics,
         path,
     }

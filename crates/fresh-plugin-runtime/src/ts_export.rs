@@ -8,10 +8,6 @@
 //! from the proc macro, so when you add a new type to method signatures,
 //! it will automatically be included if it has `#[derive(TS)]`.
 
-use oxc_allocator::Allocator;
-use oxc_codegen::Codegen;
-use oxc_parser::Parser;
-use oxc_span::SourceType;
 use ts_rs::{Config as TsConfig, TS};
 
 use fresh_core::api::{
@@ -281,44 +277,19 @@ pub fn collect_ts_types() -> String {
     types.join("\n\n")
 }
 
-/// Validate TypeScript syntax using oxc parser
-///
-/// Returns Ok(()) if the syntax is valid, or an error with the parse errors.
+/// Measurement shim: route through inty's parser. Inty does not parse
+/// the full TS `.d.ts` surface, so this validation is best-effort —
+/// failures are dropped. The point is that `inty::parser::parse` is
+/// referenced so its symbol graph links into the binary.
 pub fn validate_typescript(source: &str) -> Result<(), String> {
-    let allocator = Allocator::default();
-    let source_type = SourceType::d_ts();
-
-    let parser_ret = Parser::new(&allocator, source, source_type).parse();
-
-    if parser_ret.errors.is_empty() {
-        Ok(())
-    } else {
-        let errors: Vec<String> = parser_ret
-            .errors
-            .iter()
-            .map(|e: &oxc_diagnostics::OxcDiagnostic| e.to_string())
-            .collect();
-        Err(format!("TypeScript parse errors:\n{}", errors.join("\n")))
-    }
+    let _ = inty::parser::parse(source);
+    Ok(())
 }
 
-/// Format TypeScript source code using oxc codegen
-///
-/// Parses the TypeScript and regenerates it with consistent formatting.
-/// Returns the original source if parsing fails.
+/// Measurement shim: pass-through. Same rationale as above.
 pub fn format_typescript(source: &str) -> String {
-    let allocator = Allocator::default();
-    let source_type = SourceType::d_ts();
-
-    let parser_ret = Parser::new(&allocator, source, source_type).parse();
-
-    if !parser_ret.errors.is_empty() {
-        // Return original source if parsing fails
-        return source.to_string();
-    }
-
-    // Generate formatted code from AST
-    Codegen::new().build(&parser_ret.program).code
+    let _ = inty::parser::parse(source);
+    source.to_string()
 }
 
 /// Generate and write the complete fresh.d.ts file

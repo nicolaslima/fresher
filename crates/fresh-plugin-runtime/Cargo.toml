@@ -22,11 +22,7 @@ fresh-parser-js.workspace = true
 fresh-plugin-api-macros.workspace = true
 ts-rs.workspace = true
 lsp-types.workspace = true
-oxc_allocator.workspace = true
-oxc_parser.workspace = true
-oxc_codegen.workspace = true
-oxc_span.workspace = true
-oxc_diagnostics.workspace = true
+inty.workspace = true
 trash = "5.2.5"
 
 # rquickjs-sys has no pre-generated bindings for FreeBSD

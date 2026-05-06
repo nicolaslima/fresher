@@ -10,11 +10,5 @@ description = "JavaScript/TypeScript parser for Fresh editor plugins"
 
 [dependencies]
 anyhow.workspace = true
-oxc_allocator.workspace = true
-oxc_ast.workspace = true
-oxc_parser.workspace = true
-oxc_transformer.workspace = true
-oxc_codegen.workspace = true
-oxc_span.workspace = true
-oxc_semantic.workspace = true
-oxc_isolated_declarations.workspace = true
+inty.workspace = true
+inty-bundle.workspace = true

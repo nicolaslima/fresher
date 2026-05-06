@@ -51,15 +51,8 @@ rust-i18n = "3.1.5"
 schemars = { version = "1.2", features = ["preserve_order"] }
 rquickjs = { version = "0.11", features = ["futures", "macro"] }
 rquickjs-serde = "0.5"
-oxc_allocator = "0.128.0"
-oxc_ast = "0.128.0"
-oxc_parser = "0.128.0"
-oxc_transformer = "0.128.0"
-oxc_codegen = { version = "0.128.0", default-features = false }
-oxc_span = "0.128.0"
-oxc_semantic = "0.128.0"
-oxc_diagnostics = "0.128.0"
-oxc_isolated_declarations = "0.128.0"
+inty = { path = "../inty/crates/inty" }
+inty-bundle = { path = "../inty/crates/inty-bundle" }
 tree-sitter = "0.26.5"
 tree-sitter-highlight = "0.26.3"
 crossterm = "0.29"
@@ -92,54 +85,24 @@ inherits = "release"
 # rebuilds stay fast. We avoid the wildcard `package."*"` form because
 # rebuilding *every* transitive dep at -O3 was prohibitively slow on a
 # cold build.
-[profile.dev.package.oxc_allocator]
-opt-level = 3
-[profile.dev.package.oxc_ast]
-opt-level = 3
-[profile.dev.package.oxc_codegen]
-opt-level = 3
-[profile.dev.package.oxc_diagnostics]
-opt-level = 3
-[profile.dev.package.oxc_isolated_declarations]
-opt-level = 3
-[profile.dev.package.oxc_parser]
-opt-level = 3
-[profile.dev.package.oxc_semantic]
-opt-level = 3
-[profile.dev.package.oxc_span]
-opt-level = 3
-[profile.dev.package.oxc_transformer]
-opt-level = 3
 [profile.dev.package.rquickjs]
 opt-level = 3
 [profile.dev.package.rquickjs-sys]
 opt-level = 3
 [profile.dev.package.rquickjs-serde]
 opt-level = 3
+[profile.dev.package.inty]
+opt-level = 3
+[profile.dev.package.inty-bundle]
+opt-level = 3
 
-# Mirror the same overrides into the test profile, which `cargo test`
-# and `cargo nextest run` use.
-[profile.test.package.oxc_allocator]
-opt-level = 3
-[profile.test.package.oxc_ast]
-opt-level = 3
-[profile.test.package.oxc_codegen]
-opt-level = 3
-[profile.test.package.oxc_diagnostics]
-opt-level = 3
-[profile.test.package.oxc_isolated_declarations]
-opt-level = 3
-[profile.test.package.oxc_parser]
-opt-level = 3
-[profile.test.package.oxc_semantic]
-opt-level = 3
-[profile.test.package.oxc_span]
-opt-level = 3
-[profile.test.package.oxc_transformer]
-opt-level = 3
 [profile.test.package.rquickjs]
 opt-level = 3
 [profile.test.package.rquickjs-sys]
 opt-level = 3
 [profile.test.package.rquickjs-serde]
+opt-level = 3
+[profile.test.package.inty]
+opt-level = 3
+[profile.test.package.inty-bundle]
 opt-level = 3

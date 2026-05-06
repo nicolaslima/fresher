@@ -17,15 +17,40 @@ pub fn transpile_typescript(source: &str, _filename: &str) -> Result<String> {
     Ok(source.to_string())
 }
 
-/// Replaces oxc's `IsolatedDeclarations`. Routes through inty's parser
-/// so the inty code path is exercised; declaration emission for a real
-/// migration would call `inty::declarations::emit_declarations` against
-/// a `CheckedModule`. For binary-size purposes, returning an empty
-/// `.d.ts` is fine — what matters is the symbol graph linked in.
-pub fn emit_isolated_declarations(source: &str, _filename: &str) -> Result<String> {
-    match inty::parser::parse(source) {
-        Ok(_) => Ok(String::new()),
-        Err(e) => Err(anyhow!("inty parse failed: {:?}", e)),
+/// Replaces oxc's `IsolatedDeclarations`. The real migration calls
+/// `inty::modules::check_module` then `inty::declarations::emit_declarations`.
+/// We do both here (against a temp file) so the full type-checker
+/// + declaration-emitter symbol graph links into the binary.
+pub fn emit_isolated_declarations(source: &str, filename: &str) -> Result<String> {
+    use inty::declarations::{emit_declarations, emit_declarations_with_flavor, CheckedModule, DeclarationFlavor};
+    use inty::infer::{InferState, TypeEnv};
+    use inty::modules::check_module;
+
+    // Parse first to surface obvious errors.
+    if let Err(e) = inty::parser::parse(source) {
+        return Err(anyhow!("inty parse failed in {}: {:?}", filename, e));
+    }
+
+    // Write to a temp path so check_module's filesystem-rooted module
+    // graph can resolve any imports.
+    let tmp = std::env::temp_dir().join(format!("fresh-decl-{}.js", std::process::id()));
+    let _ = std::fs::write(&tmp, source);
+
+    let mut state = InferState::default();
+    let env = TypeEnv::empty();
+    match check_module(&mut state, env, &tmp) {
+        Ok((env, exports)) => {
+            let module = CheckedModule::new(env, exports);
+            let inty_flavor = emit_declarations(&module);
+            let ts_flavor = emit_declarations_with_flavor(&module, DeclarationFlavor::Ts);
+            // Reference both flavors so neither is dead-stripped.
+            if ts_flavor.len() > inty_flavor.len() {
+                Ok(ts_flavor)
+            } else {
+                Ok(inty_flavor)
+            }
+        }
+        Err(e) => Err(anyhow!("inty check_module failed: {:?}", e)),
     }
 }
 

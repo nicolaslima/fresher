@@ -424,7 +424,8 @@ impl Editor {
         buffer_id: BufferId,
         entries: Vec<crate::primitives::text_property::TextPropertyEntry>,
     ) -> Result<(), String> {
-        self.set_virtual_buffer_content(buffer_id, entries)
+        self.active_window_mut()
+            .set_virtual_buffer_content(buffer_id, entries)
     }
 }
 

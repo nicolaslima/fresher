@@ -71,7 +71,8 @@ impl crate::app::window::Window {
     /// [`Editor::ensure_active_cursor_visible_for_navigation`] afterwards.
     pub fn jump_active_cursor_to(&mut self, position: usize, opts: JumpOptions) {
         let active_split = self
-            .buffers.splits()
+            .buffers
+            .splits()
             .map(|(mgr, _)| mgr)
             .expect("active window must have a populated split layout")
             .active_split();
@@ -153,8 +154,7 @@ impl crate::app::window::Window {
                 // line lies within the viewport's line range. If it doesn't, the
                 // lower-level routine bailed out for one of its skip-paths and we
                 // must force a recenter.
-                let cursor_visible =
-                    is_cursor_line_visible(view_state, &state.buffer, cursor_pos);
+                let cursor_visible = is_cursor_line_visible(view_state, &state.buffer, cursor_pos);
 
                 let needs_recenter = !cursor_visible || (scrolled && recenter_on_scroll);
                 if needs_recenter {

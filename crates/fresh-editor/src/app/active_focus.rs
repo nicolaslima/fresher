@@ -109,7 +109,8 @@ impl Window {
         // Capture the previous focus target BEFORE set_pane_buffer runs,
         // so the LRU records the right thing.
         let (mgr, vs) = self
-            .buffers.splits()
+            .buffers
+            .splits()
             .expect("active window must have a populated split layout");
         let active_split = mgr.active_split();
         let previous_target = vs.get(&active_split).map(|vs| vs.active_target());
@@ -198,7 +199,8 @@ impl Window {
         }
 
         let previous_split = self
-            .buffers.splits()
+            .buffers
+            .splits()
             .expect("active window must have a populated split layout")
             .0
             .active_split();
@@ -218,7 +220,8 @@ impl Window {
         // its `focused_group_leaf` marker so `active_buffer()` routes to
         // the clicked inner panel buffer.
         let in_main_tree = self
-            .buffers.splits()
+            .buffers
+            .splits()
             .expect("active window must have a populated split layout")
             .0
             .root()
@@ -239,7 +242,8 @@ impl Window {
                 .map(|(group_leaf_id, _)| *group_leaf_id);
             let host_split = group_leaf_id.and_then(|group_leaf_id| {
                 // Find the split whose open_buffers has this group tab.
-                self.buffers.splits()
+                self.buffers
+                    .splits()
                     .expect("active window must have a populated split layout")
                     .1
                     .iter()

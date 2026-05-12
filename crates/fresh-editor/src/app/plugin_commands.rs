@@ -967,7 +967,8 @@ impl Editor {
         };
         if !self
             .active_window()
-            .buffers.splits()
+            .buffers
+            .splits()
             .expect("active window must have a populated split layout")
             .1
             .contains_key(&leaf_id)

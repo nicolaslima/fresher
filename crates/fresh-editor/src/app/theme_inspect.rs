@@ -94,7 +94,8 @@ impl Editor {
         // overlapping with the splits read.
         let viewport = self
             .active_window()
-            .buffers.splits()
+            .buffers
+            .splits()
             .expect("active window must have a populated split layout")
             .1[&active_split]
             .viewport

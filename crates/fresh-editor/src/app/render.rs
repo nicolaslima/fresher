@@ -109,7 +109,8 @@ impl Editor {
                     .get(&active_id)
                     .expect("active window must exist");
                 let (mgr, vs_map) = win
-                    .buffers.splits()
+                    .buffers
+                    .splits()
                     .expect("active window must have a populated split layout");
                 vs_map
                     .iter()
@@ -833,7 +834,8 @@ impl Editor {
             .expect("active window present");
         __vp_win.previous_viewports.clear();
         let (_, __vp_vs_map) = __vp_win
-            .buffers.splits()
+            .buffers
+            .splits()
             .expect("active window must have a populated split layout");
         let snapshot: Vec<(LeafId, (usize, u16, u16))> = __vp_vs_map
             .iter()
@@ -2192,7 +2194,8 @@ impl Editor {
                     .expect("active window must exist");
                 let __buffer_keys: Vec<BufferId> = __win.buffers.ids();
                 let (__mgr, __vs_map) = __win
-                    .buffers.splits_mut()
+                    .buffers
+                    .splits_mut()
                     .expect("active window must have a populated split layout");
                 if let Some(source_state) = __vs_map.get_mut(&source_split) {
                     if source_state.active_buffer == buffer_id {

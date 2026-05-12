@@ -26,7 +26,8 @@ impl crate::app::window::Window {
         // group host's.
         let active_split = self.effective_active_split();
         let viewport_height = self
-            .buffers.splits()
+            .buffers
+            .splits()
             .map(|(_, vs)| vs)
             .expect("active window must have a populated split layout")
             .get(&active_split)
@@ -109,7 +110,8 @@ impl crate::app::window::Window {
         let delta = (viewport_height.saturating_sub(overlap).max(1) as isize) * direction;
 
         let old_top_byte = self
-            .buffers.splits()
+            .buffers
+            .splits()
             .map(|(_, vs)| vs)
             .expect("active window must have a populated split layout")
             .get(&split_id)?
@@ -117,7 +119,8 @@ impl crate::app::window::Window {
             .top_byte;
         self.handle_scroll_event(delta);
         let new_top_byte = self
-            .buffers.splits()
+            .buffers
+            .splits()
             .map(|(_, vs)| vs)
             .expect("active window must have a populated split layout")
             .get(&split_id)?
@@ -137,7 +140,8 @@ impl crate::app::window::Window {
         // viewport) and each press advances by exactly a full page of view
         // rows — the same way it does when line wrap is off.
         let cursors = &self
-            .buffers.splits()
+            .buffers
+            .splits()
             .map(|(_, vs)| vs)
             .expect("active window must have a populated split layout")
             .get(&split_id)?
@@ -227,7 +231,8 @@ impl crate::app::window::Window {
             let active_split = self.effective_active_split();
             let active_buffer = self.active_buffer();
             let cursors = &self
-                .buffers.splits()
+                .buffers
+                .splits()
                 .map(|(_, vs)| vs)
                 .expect("active window must have a populated split layout")
                 .get(&active_split)

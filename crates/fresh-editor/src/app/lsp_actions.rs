@@ -720,113 +720,115 @@ impl crate::app::window::Window {
             return;
         };
 
-        self.buffers.with_buffer_and_split(buffer_id, split_id, |state, view_state| {
-            let buf_state = view_state.ensure_buffer_state(buffer_id);
+        self.buffers
+            .with_buffer_and_split(buffer_id, split_id, |state, view_state| {
+                let buf_state = view_state.ensure_buffer_state(buffer_id);
 
-        // Try to unfold first — check if this byte's line is a fold header.
-        let header_byte = {
-            use crate::view::folding::indent_folding;
-            indent_folding::find_line_start_byte(&state.buffer, byte_pos)
-        };
-        if buf_state
-            .folds
-            .remove_by_header_byte(&state.buffer, &mut state.marker_list, header_byte)
-        {
-            return;
-        }
-
-        // Also unfold if the byte position is inside an existing fold.
-        if buf_state
-            .folds
-            .remove_if_contains_byte(&mut state.marker_list, byte_pos)
-        {
-            return;
-        }
-
-        // Determine the fold byte range: prefer LSP ranges, fall back to indent-based.
-        if !state.folding_ranges.is_empty() {
-            // --- LSP-provided ranges (line-based) ---
-            let resolved = state
-                .folding_ranges
-                .resolved(&state.buffer, &state.marker_list);
-            let line = state.buffer.get_line_number(byte_pos);
-            let mut exact_range: Option<&lsp_types::FoldingRange> = None;
-            let mut exact_span = usize::MAX;
-            let mut containing_range: Option<&lsp_types::FoldingRange> = None;
-            let mut containing_span = usize::MAX;
-
-            for range in &resolved {
-                let start_line = range.start_line as usize;
-                let range_end = range.end_line as usize;
-                if range_end <= start_line {
-                    continue;
+                // Try to unfold first — check if this byte's line is a fold header.
+                let header_byte = {
+                    use crate::view::folding::indent_folding;
+                    indent_folding::find_line_start_byte(&state.buffer, byte_pos)
+                };
+                if buf_state.folds.remove_by_header_byte(
+                    &state.buffer,
+                    &mut state.marker_list,
+                    header_byte,
+                ) {
+                    return;
                 }
-                let span = range_end.saturating_sub(start_line);
 
-                if start_line == line && span < exact_span {
-                    exact_span = span;
-                    exact_range = Some(range);
+                // Also unfold if the byte position is inside an existing fold.
+                if buf_state
+                    .folds
+                    .remove_if_contains_byte(&mut state.marker_list, byte_pos)
+                {
+                    return;
                 }
-                if start_line <= line && line <= range_end && span < containing_span {
-                    containing_span = span;
-                    containing_range = Some(range);
+
+                // Determine the fold byte range: prefer LSP ranges, fall back to indent-based.
+                if !state.folding_ranges.is_empty() {
+                    // --- LSP-provided ranges (line-based) ---
+                    let resolved = state
+                        .folding_ranges
+                        .resolved(&state.buffer, &state.marker_list);
+                    let line = state.buffer.get_line_number(byte_pos);
+                    let mut exact_range: Option<&lsp_types::FoldingRange> = None;
+                    let mut exact_span = usize::MAX;
+                    let mut containing_range: Option<&lsp_types::FoldingRange> = None;
+                    let mut containing_span = usize::MAX;
+
+                    for range in &resolved {
+                        let start_line = range.start_line as usize;
+                        let range_end = range.end_line as usize;
+                        if range_end <= start_line {
+                            continue;
+                        }
+                        let span = range_end.saturating_sub(start_line);
+
+                        if start_line == line && span < exact_span {
+                            exact_span = span;
+                            exact_range = Some(range);
+                        }
+                        if start_line <= line && line <= range_end && span < containing_span {
+                            containing_span = span;
+                            containing_range = Some(range);
+                        }
+                    }
+
+                    let chosen = exact_range.or(containing_range);
+                    let Some(range) = chosen else {
+                        return;
+                    };
+                    let placeholder = range
+                        .collapsed_text
+                        .as_ref()
+                        .filter(|text| !text.trim().is_empty())
+                        .cloned();
+                    let header_line = range.start_line as usize;
+                    let end_line = range.end_line as usize;
+                    let first_hidden = header_line.saturating_add(1);
+                    if first_hidden > end_line {
+                        return;
+                    }
+                    let Some(sb) = state.buffer.line_start_offset(first_hidden) else {
+                        return;
+                    };
+                    let eb = state
+                        .buffer
+                        .line_start_offset(end_line.saturating_add(1))
+                        .unwrap_or_else(|| state.buffer.len());
+                    let hb = state.buffer.line_start_offset(header_line).unwrap_or(0);
+                    create_fold(state, buf_state, sb, eb, hb, placeholder);
+                } else {
+                    // --- Indent-based folding on bytes ---
+                    use crate::view::folding::indent_folding;
+                    let tab_size = state.buffer_settings.tab_size;
+                    let max_upward = crate::config::INDENT_FOLD_MAX_UPWARD_SCAN;
+                    let est_ll = state.buffer.estimated_line_length();
+                    let max_scan_bytes = crate::config::INDENT_FOLD_MAX_SCAN_LINES * est_ll;
+
+                    let upward_bytes = max_upward * est_ll;
+                    let load_start = byte_pos.saturating_sub(upward_bytes);
+                    let load_end = byte_pos
+                        .saturating_add(max_scan_bytes)
+                        .min(state.buffer.len());
+                    drop(
+                        state
+                            .buffer
+                            .get_text_range_mut(load_start, load_end - load_start),
+                    );
+
+                    if let Some((hb, sb, eb)) = indent_folding::find_fold_range_at_byte(
+                        &state.buffer,
+                        byte_pos,
+                        tab_size,
+                        max_scan_bytes,
+                        max_upward,
+                    ) {
+                        create_fold(state, buf_state, sb, eb, hb, None);
+                    }
                 }
-            }
-
-            let chosen = exact_range.or(containing_range);
-            let Some(range) = chosen else {
-                return;
-            };
-            let placeholder = range
-                .collapsed_text
-                .as_ref()
-                .filter(|text| !text.trim().is_empty())
-                .cloned();
-            let header_line = range.start_line as usize;
-            let end_line = range.end_line as usize;
-            let first_hidden = header_line.saturating_add(1);
-            if first_hidden > end_line {
-                return;
-            }
-            let Some(sb) = state.buffer.line_start_offset(first_hidden) else {
-                return;
-            };
-            let eb = state
-                .buffer
-                .line_start_offset(end_line.saturating_add(1))
-                .unwrap_or_else(|| state.buffer.len());
-            let hb = state.buffer.line_start_offset(header_line).unwrap_or(0);
-            create_fold(state, buf_state, sb, eb, hb, placeholder);
-        } else {
-            // --- Indent-based folding on bytes ---
-            use crate::view::folding::indent_folding;
-            let tab_size = state.buffer_settings.tab_size;
-            let max_upward = crate::config::INDENT_FOLD_MAX_UPWARD_SCAN;
-            let est_ll = state.buffer.estimated_line_length();
-            let max_scan_bytes = crate::config::INDENT_FOLD_MAX_SCAN_LINES * est_ll;
-
-            let upward_bytes = max_upward * est_ll;
-            let load_start = byte_pos.saturating_sub(upward_bytes);
-            let load_end = byte_pos
-                .saturating_add(max_scan_bytes)
-                .min(state.buffer.len());
-            drop(
-                state
-                    .buffer
-                    .get_text_range_mut(load_start, load_end - load_start),
-            );
-
-            if let Some((hb, sb, eb)) = indent_folding::find_fold_range_at_byte(
-                &state.buffer,
-                byte_pos,
-                tab_size,
-                max_scan_bytes,
-                max_upward,
-            ) {
-                create_fold(state, buf_state, sb, eb, hb, None);
-            }
-        }
-        });
+            });
     }
 }
 

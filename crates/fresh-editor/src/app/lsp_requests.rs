@@ -2679,8 +2679,7 @@ impl Editor {
                     .iter()
                     .map(|(id, pos, anchor)| {
                         let shift = calc_shift(*pos);
-                        let new_pos =
-                            ((*pos as isize + shift).max(0) as usize).min(buffer_len);
+                        let new_pos = ((*pos as isize + shift).max(0) as usize).min(buffer_len);
                         let new_anchor = anchor.map(|a| {
                             let anchor_shift = calc_shift(a);
                             ((a as isize + anchor_shift).max(0) as usize).min(buffer_len)

@@ -182,7 +182,8 @@ impl crate::app::window::Window {
         const COMPOSITE_HEADER_HEIGHT: u16 = 1;
         const DEFAULT_VIEWPORT_HEIGHT: usize = 24;
 
-        self.buffers.splits()
+        self.buffers
+            .splits()
             .map(|(_, vs)| vs)
             .expect("window must have a populated split layout")
             .get(&split_id)
@@ -216,7 +217,8 @@ impl crate::app::window::Window {
         }
 
         let active_split = self
-            .buffers.splits()
+            .buffers
+            .splits()
             .map(|(mgr, _)| mgr)
             .expect("window must have a populated split layout")
             .active_split();
@@ -284,7 +286,8 @@ impl crate::app::window::Window {
     /// carry a split id.
     pub fn composite_next_hunk_active(&mut self, buffer_id: BufferId) -> bool {
         let split_id = self
-            .buffers.splits()
+            .buffers
+            .splits()
             .map(|(mgr, _)| mgr)
             .expect("window must have a populated split layout")
             .active_split();
@@ -294,7 +297,8 @@ impl crate::app::window::Window {
     /// `composite_prev_hunk` flavour for the active split.
     pub fn composite_prev_hunk_active(&mut self, buffer_id: BufferId) -> bool {
         let split_id = self
-            .buffers.splits()
+            .buffers
+            .splits()
             .map(|(mgr, _)| mgr)
             .expect("window must have a populated split layout")
             .active_split();

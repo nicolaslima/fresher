@@ -1201,7 +1201,8 @@ impl Editor {
 
         let primary_cursor_id = self
             .active_window()
-            .buffers.splits()
+            .buffers
+            .splits()
             .and_then(|(_, vs)| vs.get(&leaf_id))
             .map(|vs| vs.cursors.primary_id())
             .unwrap_or(CursorId(0));
@@ -1353,7 +1354,8 @@ impl Editor {
 
         let primary_cursor_id = self
             .active_window()
-            .buffers.splits()
+            .buffers
+            .splits()
             .and_then(|(_, vs)| vs.get(&leaf_id))
             .map(|vs| vs.cursors.primary_id())
             .unwrap_or(CursorId(0));
@@ -2626,7 +2628,8 @@ impl Editor {
 
         let (primary_cursor_id, old_position, old_anchor, old_sticky_column) = self
             .active_window()
-            .buffers.splits()
+            .buffers
+            .splits()
             .and_then(|(_, vs)| vs.get(&leaf_id))
             .map(|vs| {
                 let cursor = vs.cursors.primary();

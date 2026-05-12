@@ -897,7 +897,11 @@ fn issue_1939_render_survives_stale_active_buffer_pointer() {
     // leaf still pointing at it. Replace with a real user-action repro
     // once one is identified.
     let stale = harness.editor().active_buffer();
-    harness.editor_mut().active_window_mut().buffers.remove(&stale);
+    harness
+        .editor_mut()
+        .active_window_mut()
+        .buffers
+        .remove(&stale);
 
     harness.render().unwrap();
     let screen = harness.screen_to_string();

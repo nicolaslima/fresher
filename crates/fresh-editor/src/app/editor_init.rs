@@ -1065,7 +1065,9 @@ impl Editor {
         // now (Step 0b).
         active_win.lsp = Some(lsp);
         active_win.buffers = buffers;
-        active_win.buffers.set_splits((split_manager, split_view_states));
+        active_win
+            .buffers
+            .set_splits((split_manager, split_view_states));
         active_win.buffer_metadata = buffer_metadata;
         active_win.event_logs = event_logs;
         active_win.plugin_state = active_plugin_state;

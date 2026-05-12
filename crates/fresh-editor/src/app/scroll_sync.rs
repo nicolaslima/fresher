@@ -43,60 +43,58 @@ impl crate::app::window::Window {
         let metadata = &self.buffer_metadata;
         let composites = &self.composite_buffers;
 
-        self.buffers
-            .with_all_mut(|buffer_map, _mgr, vs_map| {
-                let Some(view_state) = vs_map.get_mut(&split_id) else {
-                    return;
-                };
-                let split_buffers = view_state.open_buffers.clone();
-                let (tab_widths, rendered_targets) = crate::view::ui::tabs::calculate_tab_widths(
-                    &split_buffers,
-                    buffer_map,
-                    metadata,
-                    composites,
-                    &group_names,
-                );
+        self.buffers.with_all_mut(|buffer_map, _mgr, vs_map| {
+            let Some(view_state) = vs_map.get_mut(&split_id) else {
+                return;
+            };
+            let split_buffers = view_state.open_buffers.clone();
+            let (tab_widths, rendered_targets) = crate::view::ui::tabs::calculate_tab_widths(
+                &split_buffers,
+                buffer_map,
+                metadata,
+                composites,
+                &group_names,
+            );
 
-                let total_tabs_width: usize = tab_widths.iter().sum();
-                let max_visible_width = available_width as usize;
+            let total_tabs_width: usize = tab_widths.iter().sum();
+            let max_visible_width = available_width as usize;
 
-                let active_target = view_state.active_target();
-                let active_target =
-                    if matches!(active_target, crate::view::split::TabTarget::Buffer(_)) {
-                        crate::view::split::TabTarget::Buffer(active_buffer)
-                    } else {
-                        active_target
-                    };
+            let active_target = view_state.active_target();
+            let active_target = if matches!(active_target, crate::view::split::TabTarget::Buffer(_))
+            {
+                crate::view::split::TabTarget::Buffer(active_buffer)
+            } else {
+                active_target
+            };
 
-                let active_tab_index =
-                    rendered_targets.iter().position(|t| *t == active_target);
-                let active_width_index = active_tab_index
-                    .map(|buf_idx| if buf_idx == 0 { 0 } else { buf_idx * 2 });
+            let active_tab_index = rendered_targets.iter().position(|t| *t == active_target);
+            let active_width_index =
+                active_tab_index.map(|buf_idx| if buf_idx == 0 { 0 } else { buf_idx * 2 });
 
-                let old_offset = view_state.tab_scroll_offset;
-                let new_scroll_offset = if let Some(idx) = active_width_index {
-                    crate::view::ui::tabs::scroll_to_show_tab(
-                        &tab_widths,
-                        idx,
-                        view_state.tab_scroll_offset,
-                        max_visible_width,
-                    )
-                } else {
-                    view_state
-                        .tab_scroll_offset
-                        .min(total_tabs_width.saturating_sub(max_visible_width))
-                };
-
-                tracing::debug!(
-                    "  -> offset: {} -> {} (idx={:?}, max_width={}, total={})",
-                    old_offset,
-                    new_scroll_offset,
-                    active_width_index,
+            let old_offset = view_state.tab_scroll_offset;
+            let new_scroll_offset = if let Some(idx) = active_width_index {
+                crate::view::ui::tabs::scroll_to_show_tab(
+                    &tab_widths,
+                    idx,
+                    view_state.tab_scroll_offset,
                     max_visible_width,
-                    total_tabs_width
-                );
-                view_state.tab_scroll_offset = new_scroll_offset;
-            });
+                )
+            } else {
+                view_state
+                    .tab_scroll_offset
+                    .min(total_tabs_width.saturating_sub(max_visible_width))
+            };
+
+            tracing::debug!(
+                "  -> offset: {} -> {} (idx={:?}, max_width={}, total={})",
+                old_offset,
+                new_scroll_offset,
+                active_width_index,
+                max_visible_width,
+                total_tabs_width
+            );
+            view_state.tab_scroll_offset = new_scroll_offset;
+        });
     }
 
     /// Synchronize viewports for all scroll-sync groups in this window.
@@ -111,7 +109,8 @@ impl crate::app::window::Window {
     /// soft-break-aware fix-up using view lines.
     pub(super) fn sync_scroll_groups(&mut self) {
         let (mgr, vs_map) = self
-            .buffers.splits()
+            .buffers
+            .splits()
             .expect("window must have a populated split layout");
         let active_split = mgr.active_split();
         let group_count = self.scroll_sync_manager.groups().len();
@@ -178,7 +177,8 @@ impl crate::app::window::Window {
         for (other_split, target_line) in sync_info {
             let other_leaf = LeafId(other_split);
             let buffer_id = self
-                .buffers.splits()
+                .buffers
+                .splits()
                 .expect("window must have a populated split layout")
                 .0
                 .buffer_for_split(other_leaf);
@@ -188,7 +188,8 @@ impl crate::app::window::Window {
         }
 
         let active_buffer_id = if self.same_buffer_scroll_sync {
-            self.buffers.splits()
+            self.buffers
+                .splits()
                 .expect("window must have a populated split layout")
                 .0
                 .buffer_for_split(active_split)
@@ -197,7 +198,8 @@ impl crate::app::window::Window {
         };
         if let Some(active_buf_id) = active_buffer_id {
             let (mgr, vs_map) = self
-                .buffers.splits()
+                .buffers
+                .splits()
                 .expect("window must have a populated split layout");
             let active_top_byte = vs_map.get(&active_split).map(|vs| vs.viewport.top_byte);
             let active_viewport_height = vs_map
@@ -232,7 +234,8 @@ impl crate::app::window::Window {
                     };
 
                     let (_, vs_map_mut) = self
-                        .buffers.splits_mut()
+                        .buffers
+                        .splits_mut()
                         .expect("window must have a populated split layout");
                     for other_split in other_splits {
                         if let Some(view_state) = vs_map_mut.get_mut(&other_split) {
@@ -261,7 +264,8 @@ impl crate::app::window::Window {
 
         if let Some((left_split, right_split)) = group_info {
             let buffer_id = self
-                .buffers.splits()
+                .buffers
+                .splits()
                 .expect("window must have a populated split layout")
                 .0
                 .buffer_for_split(active_split);
@@ -291,7 +295,8 @@ impl crate::app::window::Window {
             return;
         }
         let active_buf_id = match self
-            .buffers.splits()
+            .buffers
+            .splits()
             .expect("window must have a populated split layout")
             .0
             .buffer_for_split(active_split)
@@ -302,7 +307,8 @@ impl crate::app::window::Window {
 
         let other_same_buffer_splits: Vec<_> = {
             let (mgr, vs_map) = self
-                .buffers.splits()
+                .buffers
+                .splits()
                 .expect("window must have a populated split layout");
             vs_map
                 .keys()

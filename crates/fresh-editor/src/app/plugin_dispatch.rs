@@ -5189,7 +5189,8 @@ impl Window {
         snapshot.active_buffer_id = self.active_buffer();
 
         let (mgr_ref, vs_ref) = self
-            .buffers.splits()
+            .buffers
+            .splits()
             .expect("active window must have a populated split layout");
         let active_split = mgr_ref.active_split();
         snapshot.active_split_id = active_split.0 .0;
@@ -5429,8 +5430,7 @@ impl Window {
             if let Some(active_vs) = vs_map.get(&active_split_id) {
                 for (buffer_id, buf_state) in &active_vs.keyed_states {
                     if !buf_state.plugin_state.is_empty() {
-                        let entry =
-                            snapshot.plugin_view_states.entry(*buffer_id).or_default();
+                        let entry = snapshot.plugin_view_states.entry(*buffer_id).or_default();
                         for (key, value) in &buf_state.plugin_state {
                             entry.entry(key.clone()).or_insert_with(|| value.clone());
                         }

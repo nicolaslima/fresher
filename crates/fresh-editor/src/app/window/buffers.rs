@@ -217,7 +217,6 @@ impl WindowBuffers {
         let (mgr, vs_map) = self.splits.as_mut()?;
         Some(f(buffer_map, mgr, vs_map))
     }
-
 }
 
 impl Default for WindowBuffers {

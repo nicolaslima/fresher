@@ -763,7 +763,8 @@ impl Window {
         // In read-only view, keep line wrapping disabled for terminal buffers
         // Also scroll viewport to show the end of the buffer where the cursor is.
         let active_split = self
-            .buffers.splits()
+            .buffers
+            .splits()
             .expect("active window must have a populated split layout")
             .0
             .active_split();

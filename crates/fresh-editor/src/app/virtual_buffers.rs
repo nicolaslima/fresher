@@ -374,7 +374,8 @@ impl crate::app::window::Window {
         self.buffer_metadata.insert(buffer_id, metadata);
 
         let (mgr, _) = self
-            .buffers.splits()
+            .buffers
+            .splits()
             .expect("active window must have a populated split layout");
         let active_split = mgr.active_split();
         let line_wrap = self.resolve_line_wrap_for_buffer(buffer_id);

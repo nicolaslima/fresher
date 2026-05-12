@@ -50,7 +50,8 @@ impl crate::app::window::Window {
     /// Otherwise find an unlabeled leaf so files don't open in labeled splits (e.g., sidebars).
     pub(crate) fn preferred_split_for_file(&self) -> LeafId {
         let (mgr, _) = self
-            .buffers.splits()
+            .buffers
+            .splits()
             .expect("active window must have a populated split layout");
         let active = mgr.active_split();
         if mgr.get_label(active.into()).is_none() {

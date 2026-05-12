@@ -1741,224 +1741,232 @@ impl Editor {
             .expect("active window must exist")
             .buffers
             .with_all_mut(|__buffers_mut, _mgr, vs_map| {
-        let Some(view_state) = vs_map.get_mut(&current_split_id) else {
-            return None;
-        };
-        let mut active_buffer_id: Option<BufferId> = None;
-        if !split_state.open_tabs.is_empty() {
-            // Clear pre-existing open_buffers (e.g. the initial empty buffer
-            // created at startup) so only the saved tabs appear.
-            view_state.open_buffers.clear();
+                let Some(view_state) = vs_map.get_mut(&current_split_id) else {
+                    return None;
+                };
+                let mut active_buffer_id: Option<BufferId> = None;
+                if !split_state.open_tabs.is_empty() {
+                    // Clear pre-existing open_buffers (e.g. the initial empty buffer
+                    // created at startup) so only the saved tabs appear.
+                    view_state.open_buffers.clear();
 
-            for tab in &split_state.open_tabs {
-                match tab {
-                    SerializedTabRef::File(rel_path) => {
+                    for tab in &split_state.open_tabs {
+                        match tab {
+                            SerializedTabRef::File(rel_path) => {
+                                if let Some(&buffer_id) = path_to_buffer.get(rel_path) {
+                                    if !view_state.has_buffer(buffer_id) {
+                                        view_state.add_buffer(buffer_id);
+                                    }
+                                    // Ensure keyed state exists for this buffer
+                                    view_state.ensure_buffer_state(buffer_id);
+                                    if terminal_buffers.values().any(|&tid| tid == buffer_id) {
+                                        view_state
+                                            .buffer_state_mut(buffer_id)
+                                            .unwrap()
+                                            .viewport
+                                            .line_wrap_enabled = false;
+                                    }
+                                }
+                            }
+                            SerializedTabRef::Terminal(index) => {
+                                if let Some(&buffer_id) = terminal_buffers.get(index) {
+                                    if !view_state.has_buffer(buffer_id) {
+                                        view_state.add_buffer(buffer_id);
+                                    }
+                                    view_state
+                                        .ensure_buffer_state(buffer_id)
+                                        .viewport
+                                        .line_wrap_enabled = false;
+                                }
+                            }
+                            SerializedTabRef::Unnamed(recovery_id) => {
+                                if let Some(&buffer_id) = unnamed_buffers.get(recovery_id) {
+                                    if !view_state.has_buffer(buffer_id) {
+                                        view_state.add_buffer(buffer_id);
+                                    }
+                                    view_state.ensure_buffer_state(buffer_id);
+                                }
+                            }
+                        }
+                    }
+
+                    // If all saved tabs referenced deleted/missing files, open_buffers
+                    // is now empty. Re-add the buffer that the split manager assigned to
+                    // this split so the orphan cleanup won't remove a buffer the split
+                    // manager still points to (#1278).
+                    if view_state.open_buffers.is_empty() {
+                        if let Some(buf) = split_buf_for_current {
+                            view_state.add_buffer(buf);
+                            view_state.ensure_buffer_state(buf);
+                        }
+                    }
+
+                    if let Some(active_idx) = split_state.active_tab_index {
+                        if let Some(tab) = split_state.open_tabs.get(active_idx) {
+                            active_buffer_id = match tab {
+                                SerializedTabRef::File(rel) => path_to_buffer.get(rel).copied(),
+                                SerializedTabRef::Terminal(index) => {
+                                    terminal_buffers.get(index).copied()
+                                }
+                                SerializedTabRef::Unnamed(id) => unnamed_buffers.get(id).copied(),
+                            };
+                        }
+                    }
+                } else {
+                    // Backward compatibility path using open_files/active_file_index
+                    for rel_path in &split_state.open_files {
                         if let Some(&buffer_id) = path_to_buffer.get(rel_path) {
                             if !view_state.has_buffer(buffer_id) {
                                 view_state.add_buffer(buffer_id);
                             }
-                            // Ensure keyed state exists for this buffer
-                            view_state.ensure_buffer_state(buffer_id);
-                            if terminal_buffers.values().any(|&tid| tid == buffer_id) {
-                                view_state
-                                    .buffer_state_mut(buffer_id)
-                                    .unwrap()
-                                    .viewport
-                                    .line_wrap_enabled = false;
-                            }
-                        }
-                    }
-                    SerializedTabRef::Terminal(index) => {
-                        if let Some(&buffer_id) = terminal_buffers.get(index) {
-                            if !view_state.has_buffer(buffer_id) {
-                                view_state.add_buffer(buffer_id);
-                            }
-                            view_state
-                                .ensure_buffer_state(buffer_id)
-                                .viewport
-                                .line_wrap_enabled = false;
-                        }
-                    }
-                    SerializedTabRef::Unnamed(recovery_id) => {
-                        if let Some(&buffer_id) = unnamed_buffers.get(recovery_id) {
-                            if !view_state.has_buffer(buffer_id) {
-                                view_state.add_buffer(buffer_id);
-                            }
                             view_state.ensure_buffer_state(buffer_id);
                         }
                     }
-                }
-            }
 
-            // If all saved tabs referenced deleted/missing files, open_buffers
-            // is now empty. Re-add the buffer that the split manager assigned to
-            // this split so the orphan cleanup won't remove a buffer the split
-            // manager still points to (#1278).
-            if view_state.open_buffers.is_empty() {
-                if let Some(buf) = split_buf_for_current {
-                    view_state.add_buffer(buf);
-                    view_state.ensure_buffer_state(buf);
+                    let active_file_path =
+                        split_state.open_files.get(split_state.active_file_index);
+                    active_buffer_id =
+                        active_file_path.and_then(|rel_path| path_to_buffer.get(rel_path).copied());
                 }
-            }
 
-            if let Some(active_idx) = split_state.active_tab_index {
-                if let Some(tab) = split_state.open_tabs.get(active_idx) {
-                    active_buffer_id = match tab {
-                        SerializedTabRef::File(rel) => path_to_buffer.get(rel).copied(),
-                        SerializedTabRef::Terminal(index) => terminal_buffers.get(index).copied(),
-                        SerializedTabRef::Unnamed(id) => unnamed_buffers.get(id).copied(),
+                // Restore cursor, scroll, view_mode, and compose_width for ALL buffers in file_states
+                for (rel_path, file_state) in &split_state.file_states {
+                    // Look up buffer by path, or by unnamed recovery ID
+                    let rel_str = rel_path.to_string_lossy();
+                    let buffer_id = if let Some(recovery_id) = rel_str.strip_prefix("__unnamed__") {
+                        match unnamed_buffers.get(recovery_id).copied() {
+                            Some(id) => id,
+                            None => continue,
+                        }
+                    } else {
+                        match path_to_buffer.get(rel_path).copied() {
+                            Some(id) => id,
+                            None => continue,
+                        }
                     };
-                }
-            }
-        } else {
-            // Backward compatibility path using open_files/active_file_index
-            for rel_path in &split_state.open_files {
-                if let Some(&buffer_id) = path_to_buffer.get(rel_path) {
-                    if !view_state.has_buffer(buffer_id) {
-                        view_state.add_buffer(buffer_id);
-                    }
-                    view_state.ensure_buffer_state(buffer_id);
-                }
-            }
+                    let max_pos = __buffers_mut
+                        .get(&buffer_id)
+                        .map(|b| b.buffer.len())
+                        .unwrap_or(0);
 
-            let active_file_path = split_state.open_files.get(split_state.active_file_index);
-            active_buffer_id =
-                active_file_path.and_then(|rel_path| path_to_buffer.get(rel_path).copied());
-        }
+                    // Ensure keyed state exists for this buffer
+                    let buf_state = view_state.ensure_buffer_state(buffer_id);
 
-        // Restore cursor, scroll, view_mode, and compose_width for ALL buffers in file_states
-        for (rel_path, file_state) in &split_state.file_states {
-            // Look up buffer by path, or by unnamed recovery ID
-            let rel_str = rel_path.to_string_lossy();
-            let buffer_id = if let Some(recovery_id) = rel_str.strip_prefix("__unnamed__") {
-                match unnamed_buffers.get(recovery_id).copied() {
-                    Some(id) => id,
-                    None => continue,
-                }
-            } else {
-                match path_to_buffer.get(rel_path).copied() {
-                    Some(id) => id,
-                    None => continue,
-                }
-            };
-            let max_pos = __buffers_mut
-                .get(&buffer_id)
-                .map(|b| b.buffer.len())
-                .unwrap_or(0);
+                    let cursor_pos = file_state.cursor.position.min(max_pos);
+                    buf_state.cursors.primary_mut().position = cursor_pos;
+                    buf_state.cursors.primary_mut().anchor =
+                        file_state.cursor.anchor.map(|a| a.min(max_pos));
+                    buf_state.cursors.primary_mut().sticky_column = file_state.cursor.sticky_column;
 
-            // Ensure keyed state exists for this buffer
-            let buf_state = view_state.ensure_buffer_state(buffer_id);
+                    buf_state.viewport.top_byte = file_state.scroll.top_byte.min(max_pos);
+                    buf_state.viewport.top_view_line_offset =
+                        file_state.scroll.top_view_line_offset;
+                    buf_state.viewport.left_column = file_state.scroll.left_column;
+                    buf_state.viewport.set_skip_resize_sync();
 
-            let cursor_pos = file_state.cursor.position.min(max_pos);
-            buf_state.cursors.primary_mut().position = cursor_pos;
-            buf_state.cursors.primary_mut().anchor =
-                file_state.cursor.anchor.map(|a| a.min(max_pos));
-            buf_state.cursors.primary_mut().sticky_column = file_state.cursor.sticky_column;
-
-            buf_state.viewport.top_byte = file_state.scroll.top_byte.min(max_pos);
-            buf_state.viewport.top_view_line_offset = file_state.scroll.top_view_line_offset;
-            buf_state.viewport.left_column = file_state.scroll.left_column;
-            buf_state.viewport.set_skip_resize_sync();
-
-            // Saved cursor and saved viewport are independent fields; if they
-            // were already out of sync at save time (cursor moved off-screen
-            // before the user closed) the restore re-creates an off-screen
-            // cursor that arrow keys can't escape (the wrap-mode early return
-            // in `viewport.rs::ensure_visible` no-ops for any cursor whose
-            // byte position is `>= viewport.top_byte`). Reconcile so the
-            // restored view always shows the cursor (#1689 follow-up).
-            if let Some(state) = __buffers_mut.get_mut(&buffer_id) {
-                super::navigation::reconcile_restored_buffer_view(buf_state, &mut state.buffer);
-            }
-
-            // Restore per-buffer view mode and compose width
-            buf_state.view_mode = match file_state.view_mode {
-                SerializedViewMode::Source => ViewMode::Source,
-                SerializedViewMode::PageView => ViewMode::PageView,
-            };
-            buf_state.compose_width = file_state.compose_width;
-            buf_state.plugin_state = file_state.plugin_state.clone();
-            if let Some(state) = __buffers_mut.get_mut(&buffer_id) {
-                buf_state.folds.clear(&mut state.marker_list);
-                for fold in &file_state.folds {
-                    // Resolve the stored line numbers against the current
-                    // buffer content. If a header_text was recorded (issue
-                    // #1568), validate — and if necessary relocate — the
-                    // fold so it lands on the line it was actually meant
-                    // for, even after an external edit shifted line
-                    // numbers.
-                    let Some(resolved_header) = resolve_fold_header_line(
-                        &state.buffer,
-                        fold.header_line,
-                        fold.header_text.as_deref(),
-                    ) else {
-                        tracing::debug!(
-                            "Dropping stale fold: header_line={} no longer matches stored \
-                             header_text after external edit",
-                            fold.header_line,
+                    // Saved cursor and saved viewport are independent fields; if they
+                    // were already out of sync at save time (cursor moved off-screen
+                    // before the user closed) the restore re-creates an off-screen
+                    // cursor that arrow keys can't escape (the wrap-mode early return
+                    // in `viewport.rs::ensure_visible` no-ops for any cursor whose
+                    // byte position is `>= viewport.top_byte`). Reconcile so the
+                    // restored view always shows the cursor (#1689 follow-up).
+                    if let Some(state) = __buffers_mut.get_mut(&buffer_id) {
+                        super::navigation::reconcile_restored_buffer_view(
+                            buf_state,
+                            &mut state.buffer,
                         );
-                        continue;
-                    };
-
-                    // Adjust end_line by the same shift we applied to the header.
-                    let shift = resolved_header as i64 - fold.header_line as i64;
-                    let adjusted_end = (fold.end_line as i64 + shift).max(0) as usize;
-                    let start_line = resolved_header.saturating_add(1);
-                    let end_line = adjusted_end;
-                    if start_line > end_line {
-                        continue;
                     }
-                    let Some(start_byte) = state.buffer.line_start_offset(start_line) else {
-                        continue;
+
+                    // Restore per-buffer view mode and compose width
+                    buf_state.view_mode = match file_state.view_mode {
+                        SerializedViewMode::Source => ViewMode::Source,
+                        SerializedViewMode::PageView => ViewMode::PageView,
                     };
-                    let end_byte = state
-                        .buffer
-                        .line_start_offset(end_line.saturating_add(1))
-                        .unwrap_or_else(|| state.buffer.len());
-                    buf_state.folds.add(
-                        &mut state.marker_list,
-                        start_byte,
-                        end_byte,
-                        fold.placeholder.clone(),
+                    buf_state.compose_width = file_state.compose_width;
+                    buf_state.plugin_state = file_state.plugin_state.clone();
+                    if let Some(state) = __buffers_mut.get_mut(&buffer_id) {
+                        buf_state.folds.clear(&mut state.marker_list);
+                        for fold in &file_state.folds {
+                            // Resolve the stored line numbers against the current
+                            // buffer content. If a header_text was recorded (issue
+                            // #1568), validate — and if necessary relocate — the
+                            // fold so it lands on the line it was actually meant
+                            // for, even after an external edit shifted line
+                            // numbers.
+                            let Some(resolved_header) = resolve_fold_header_line(
+                                &state.buffer,
+                                fold.header_line,
+                                fold.header_text.as_deref(),
+                            ) else {
+                                tracing::debug!(
+                                    "Dropping stale fold: header_line={} no longer matches stored \
+                             header_text after external edit",
+                                    fold.header_line,
+                                );
+                                continue;
+                            };
+
+                            // Adjust end_line by the same shift we applied to the header.
+                            let shift = resolved_header as i64 - fold.header_line as i64;
+                            let adjusted_end = (fold.end_line as i64 + shift).max(0) as usize;
+                            let start_line = resolved_header.saturating_add(1);
+                            let end_line = adjusted_end;
+                            if start_line > end_line {
+                                continue;
+                            }
+                            let Some(start_byte) = state.buffer.line_start_offset(start_line)
+                            else {
+                                continue;
+                            };
+                            let end_byte = state
+                                .buffer
+                                .line_start_offset(end_line.saturating_add(1))
+                                .unwrap_or_else(|| state.buffer.len());
+                            buf_state.folds.add(
+                                &mut state.marker_list,
+                                start_byte,
+                                end_byte,
+                                fold.placeholder.clone(),
+                            );
+                        }
+                    }
+
+                    tracing::trace!(
+                        "Restored keyed state for {:?}: cursor={}, top_byte={}, view_mode={:?}",
+                        rel_path,
+                        cursor_pos,
+                        buf_state.viewport.top_byte,
+                        buf_state.view_mode,
                     );
                 }
-            }
 
-            tracing::trace!(
-                "Restored keyed state for {:?}: cursor={}, top_byte={}, view_mode={:?}",
-                rel_path,
-                cursor_pos,
-                buf_state.viewport.top_byte,
-                buf_state.view_mode,
-            );
-        }
+                // For buffers without saved file_state (e.g., terminals), apply split-level
+                // view_mode/compose_width as fallback (backward compatibility)
+                let restored_view_mode = match split_state.view_mode {
+                    SerializedViewMode::Source => ViewMode::Source,
+                    SerializedViewMode::PageView => ViewMode::PageView,
+                };
 
-        // For buffers without saved file_state (e.g., terminals), apply split-level
-        // view_mode/compose_width as fallback (backward compatibility)
-        let restored_view_mode = match split_state.view_mode {
-            SerializedViewMode::Source => ViewMode::Source,
-            SerializedViewMode::PageView => ViewMode::PageView,
-        };
+                if let Some(active_buf_id) = active_buffer_id {
+                    // Switch the split to the active buffer
+                    view_state.switch_buffer(active_buf_id);
 
-        if let Some(active_buf_id) = active_buffer_id {
-            // Switch the split to the active buffer
-            view_state.switch_buffer(active_buf_id);
+                    // If no per-buffer file_state was saved, apply split-level settings
+                    let active_has_file_state = split_state.file_states.keys().any(|rel_path| {
+                        path_to_buffer.get(rel_path).copied() == Some(active_buf_id)
+                    });
+                    if !active_has_file_state {
+                        view_state.active_state_mut().view_mode = restored_view_mode.clone();
+                        view_state.active_state_mut().compose_width = split_state.compose_width;
+                    }
 
-            // If no per-buffer file_state was saved, apply split-level settings
-            let active_has_file_state = split_state
-                .file_states
-                .keys()
-                .any(|rel_path| path_to_buffer.get(rel_path).copied() == Some(active_buf_id));
-            if !active_has_file_state {
-                view_state.active_state_mut().view_mode = restored_view_mode.clone();
-                view_state.active_state_mut().compose_width = split_state.compose_width;
-            }
-
-            // Cursors now live in SplitViewState, no need to sync to EditorState
-        }
-        view_state.tab_scroll_offset = split_state.tab_scroll_offset;
-        active_buffer_id
-            }).flatten();
+                    // Cursors now live in SplitViewState, no need to sync to EditorState
+                }
+                view_state.tab_scroll_offset = split_state.tab_scroll_offset;
+                active_buffer_id
+            })
+            .flatten();
 
         // Set this buffer as active in the split (fires buffer_activated
         // hook). Done after the view_state borrow ends so we can take a

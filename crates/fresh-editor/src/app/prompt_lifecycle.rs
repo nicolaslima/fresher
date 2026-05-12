@@ -370,7 +370,8 @@ impl Editor {
 
         if let Some(view_state) = self
             .active_window_mut()
-            .buffers.splits_mut()
+            .buffers
+            .splits_mut()
             .expect("active window must have a populated split layout")
             .1
             .get_mut(&snap.split_id)

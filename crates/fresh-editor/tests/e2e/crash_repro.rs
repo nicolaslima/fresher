@@ -862,96 +862,48 @@ fn test_review_diff_empty_repo_then_type_does_not_panic() {
         .unwrap();
 }
 
-/// Panic repro: issue #1939.
+/// Issue #1939: the status-bar render block at
+/// `__win.buffers.get_mut(&active_buf).unwrap()` panics when the split
+/// manager's active leaf points at a `BufferId` that's no longer in
+/// `window.buffers`. Reported at `render.rs:841:58` on v0.3.4; same
+/// `.unwrap()` site at `render.rs:1039` on HEAD.
 ///
-/// The reporter ran `fresh 0.3.5` (post-v0.3.4 dev) and saw:
+/// The fix hardens `Window::effective_active_pair`'s outer fallback to
+/// substitute any live buffer when the returned id is stale, matching
+/// the validation the group-tab branch right above it already does.
 ///
-///     thread 'main' panicked at crates/fresh-editor/src/app/render.rs:841:58:
-///     called `Option::unwrap()` on a `None` value
-///
-/// At v0.3.4, render.rs:841 is the status-bar context construction —
-///
-///     state: self.buffers.get_mut(&active_buf).unwrap(),
-///
-/// — and column 58 lands on `.unwrap()`. The failing call is
-/// `self.buffers.get_mut(&active_buf)`, meaning `active_buffer()`
-/// returned a `BufferId` that isn't in `self.buffers`.
-///
-/// At HEAD the same site lives at `render.rs:1039` after buffers
-/// moved onto `Window`:
-///
-///     let __state = __win.buffers.get_mut(&active_buf).unwrap();
-///
-/// — same `.unwrap()`, same invariant hole. (My initial pass
-/// misread the panic location as `windows.get_mut(&self.active_window).unwrap()`
-/// and chased a workspace-restore-windows bug; that was wrong. This
-/// is a stale active-*buffer* id, not a stale active-*window* id.)
-///
-/// Root cause is the fallback branch of `Window::effective_active_pair`
-/// (`window.rs` around line 1725):
-///
-///     let outer_buf = mgr
-///         .active_buffer_id()
-///         .expect("Editor always has at least one buffer");
-///     (active_split, outer_buf)
-///
-/// — it returns `outer_buf` without checking
-/// `self.buffers.contains_key(&outer_buf)`. The group-tab branch right
-/// above it does validate (`self.buffers.contains_key(&inner_buf) &&
-/// inner_vs.keyed_states.contains_key(&inner_buf)`); the outer fallback
-/// does not. Whenever the split manager's active leaf points at a
-/// `BufferId` that's been removed from the window's `buffers` map, the
-/// next render unwraps `None` in the status-bar block.
-///
-/// This test puts the editor into that state directly (remove the
-/// active buffer from `window.buffers` while leaving the split manager's
-/// pointer untouched) and renders. The fix hardens
-/// `effective_active_pair`'s outer fallback to validate the returned id
-/// against `self.buffers` and substitute any live buffer when the
-/// pointer is stale, mirroring the validation the group-tab branch
-/// already does.
+/// The production trigger isn't pinned to a single key sequence yet —
+/// every code path that mutates `window.buffers` without touching the
+/// split tree's leaf `buffer_id` is individually careful, but the
+/// invariant isn't enforced structurally. Until a user-action repro is
+/// in hand, the broken state goes in directly; the assertion is screen
+/// content (status bar reaches its line/col indicator instead of
+/// unwrapping `None` mid-frame).
 #[test]
-fn test_issue_1939_active_buffer_id_missing_from_window_buffers() {
+fn issue_1939_render_survives_stale_active_buffer_pointer() {
     let mut harness = EditorTestHarness::with_temp_project(80, 24).unwrap();
+    let project_dir = harness.project_dir().unwrap();
+    let file_a = project_dir.join("a.txt");
+    let file_b = project_dir.join("b.txt");
+    fs::write(&file_a, "hello from 1939\n").unwrap();
+    fs::write(&file_b, "second buffer\n").unwrap();
+    harness.open_file(&file_a).unwrap();
+    harness.open_file(&file_b).unwrap();
+    harness.render().unwrap();
+    harness.assert_screen_contains("second buffer");
 
-    // Mint a second buffer so the window has somewhere to fall back to
-    // after we orphan the split manager's pointer. (Production hits
-    // this only when other buffers exist — the orphan-cleanup that
-    // creates the inconsistency in the first place runs *because*
-    // other live buffers are around.)
-    let fallback_buf = harness.editor_mut().new_buffer();
+    // Synthetic injection of the broken invariant: drop the active
+    // buffer from `window.buffers` while leaving the split manager's
+    // leaf still pointing at it. Replace with a real user-action repro
+    // once one is identified.
+    let stale = harness.editor().active_buffer();
+    harness.editor_mut().active_window_mut().buffers.remove(&stale);
 
-    // Point the active leaf at `fallback_buf`, then remove it from
-    // `window.buffers`. `set_pane_buffer` writes the leaf's `buffer_id`
-    // and `vs.active_buffer` but not `vs.open_buffers`, so removing
-    // the buffer without touching the split manager mirrors what
-    // `clean_orphaned_buffers` can do in production.
-    let active_leaf = harness
-        .editor()
-        .active_window()
-        .splits
-        .as_ref()
-        .unwrap()
-        .0
-        .active_split();
-    harness
-        .editor_mut()
-        .active_window_mut()
-        .set_pane_buffer(active_leaf, fallback_buf);
-    let removed = harness
-        .editor_mut()
-        .active_window_mut()
-        .buffers
-        .remove(&fallback_buf);
+    harness.render().unwrap();
+    let screen = harness.screen_to_string();
     assert!(
-        removed.is_some(),
-        "precondition: fallback buffer must have been in window.buffers"
+        screen.contains("a.txt") && screen.contains("Ln 1, Col 1"),
+        "fallback should land on the other live buffer and the status bar \
+         should still render; screen was:\n{screen}"
     );
-
-    // Before the fix this panicked at `__win.buffers.get_mut(&active_buf).unwrap()`
-    // (HEAD: render.rs:1039), the same `.unwrap()` site reported as
-    // render.rs:841:58 at v0.3.4.
-    harness
-        .render()
-        .expect("render must not panic when the split manager's active buffer is stale");
 }

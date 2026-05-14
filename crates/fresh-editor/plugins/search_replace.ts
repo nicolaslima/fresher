@@ -1471,8 +1471,40 @@ registerHandler("search_replace_replace_scoped", search_replace_replace_scoped);
 registerHandler("search_replace_enter", () => dispatch(widgetKey("Enter")));
 registerHandler("search_replace_space", () => dispatch(widgetKey("Space")));
 
+/** Lock against re-entrant Replace All / Replace Scoped. Set as soon
+ *  as doReplaceAll/doReplaceScoped enters and cleared in a try/finally
+ *  around the whole flow. Without this, a user mashing Alt+Enter
+ *  during a streaming search produces N stacked confirmation prompts
+ *  once the search finishes — the host queues each keystroke and
+ *  drains them all when the JS event loop frees up; by then
+ *  `panel.busy` is false so the busy guard doesn't fire. */
+let replaceInProgress = false;
+
 async function doReplaceAll(): Promise<void> {
-  if (!panel || panel.busy) return;
+  if (!panel) return;
+  if (panel.busy) {
+    // Search is still streaming. Don't block silently — tell the user
+    // to wait, and don't queue the replace. (The host's event
+    // dispatcher would otherwise hold the keystroke and run it when
+    // the pump finishes, which feels like an unexplained delay.)
+    editor.setStatus(editor.t("status.replace_wait_for_search"));
+    return;
+  }
+  if (replaceInProgress) {
+    // First Alt+Enter is already showing its prompt or running the
+    // rewrites. Drop the duplicate so we don't stack prompts.
+    return;
+  }
+  replaceInProgress = true;
+  try {
+    await doReplaceAllInner();
+  } finally {
+    replaceInProgress = false;
+  }
+}
+
+async function doReplaceAllInner(): Promise<void> {
+  if (!panel) return;
   const selected = panel.searchResults.filter(r => r.selected);
   if (selected.length === 0) {
     editor.setStatus(editor.t("status.no_items_selected"));
@@ -1513,7 +1545,22 @@ async function doReplaceAll(): Promise<void> {
 }
 
 async function doReplaceScoped(): Promise<void> {
-  if (!panel || panel.busy || panel.focusPanel !== "matches") return;
+  if (!panel || panel.focusPanel !== "matches") return;
+  if (panel.busy) {
+    editor.setStatus(editor.t("status.replace_wait_for_search"));
+    return;
+  }
+  if (replaceInProgress) return;
+  replaceInProgress = true;
+  try {
+    await doReplaceScopedInner();
+  } finally {
+    replaceInProgress = false;
+  }
+}
+
+async function doReplaceScopedInner(): Promise<void> {
+  if (!panel) return;
   const flat = buildFlatItems();
   const item = flat[panel.matchIndex];
   if (!item) return;

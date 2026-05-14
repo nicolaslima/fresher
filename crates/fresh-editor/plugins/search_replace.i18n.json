@@ -45,7 +45,8 @@
     "panel.all_files_toggle": "All Files",
     "panel.scope_row_file": "Only in: %{file}",
     "panel.scope_row_unnamed": "Only in: (unsaved buffer)",
-    "panel.replace_all_in_file_btn": "Replace All in %{file} (Alt+Ret)"
+    "panel.replace_all_in_file_btn": "Replace All in %{file} (Alt+Ret)",
+    "status.replace_wait_for_search": "Search still running — please wait, then try again."
   },
   "cs": {
     "cmd.search_replace": "Hledat a nahradit v projektu",
@@ -93,7 +94,8 @@
     "panel.all_files_toggle": "Všechny soubory",
     "panel.scope_row_file": "Pouze v: %{file}",
     "panel.scope_row_unnamed": "Pouze v: (neuložený buffer)",
-    "panel.replace_all_in_file_btn": "Nahradit vše v %{file} (Alt+Ret)"
+    "panel.replace_all_in_file_btn": "Nahradit vše v %{file} (Alt+Ret)",
+    "status.replace_wait_for_search": "Vyhledávání probíhá — počkejte prosím a zkuste to znovu."
   },
   "de": {
     "cmd.search_replace": "Suchen und Ersetzen im Projekt",
@@ -141,7 +143,8 @@
     "panel.all_files_toggle": "Alle Dateien",
     "panel.scope_row_file": "Nur in: %{file}",
     "panel.scope_row_unnamed": "Nur in: (ungespeicherter Puffer)",
-    "panel.replace_all_in_file_btn": "Alle in %{file} ersetzen (Alt+Ret)"
+    "panel.replace_all_in_file_btn": "Alle in %{file} ersetzen (Alt+Ret)",
+    "status.replace_wait_for_search": "Suche läuft noch — bitte warten und erneut versuchen."
   },
   "es": {
     "cmd.search_replace": "Buscar y Reemplazar en Proyecto",
@@ -189,7 +192,8 @@
     "panel.all_files_toggle": "Todos los archivos",
     "panel.scope_row_file": "Solo en: %{file}",
     "panel.scope_row_unnamed": "Solo en: (buffer sin guardar)",
-    "panel.replace_all_in_file_btn": "Reemplazar todo en %{file} (Alt+Ret)"
+    "panel.replace_all_in_file_btn": "Reemplazar todo en %{file} (Alt+Ret)",
+    "status.replace_wait_for_search": "Búsqueda en curso — espere y vuelva a intentar."
   },
   "fr": {
     "cmd.search_replace": "Rechercher et Remplacer dans le Projet",
@@ -237,7 +241,8 @@
     "panel.all_files_toggle": "Tous les fichiers",
     "panel.scope_row_file": "Seulement dans : %{file}",
     "panel.scope_row_unnamed": "Seulement dans : (tampon non enregistré)",
-    "panel.replace_all_in_file_btn": "Tout remplacer dans %{file} (Alt+Ret)"
+    "panel.replace_all_in_file_btn": "Tout remplacer dans %{file} (Alt+Ret)",
+    "status.replace_wait_for_search": "Recherche en cours — veuillez patienter puis réessayer."
   },
   "it": {
     "cmd.search_replace": "Cerca e sostituisci nel progetto",
@@ -285,7 +290,8 @@
     "panel.all_files_toggle": "Tutti i file",
     "panel.scope_row_file": "Solo in: %{file}",
     "panel.scope_row_unnamed": "Solo in: (buffer non salvato)",
-    "panel.replace_all_in_file_btn": "Sostituisci tutto in %{file} (Alt+Ret)"
+    "panel.replace_all_in_file_btn": "Sostituisci tutto in %{file} (Alt+Ret)",
+    "status.replace_wait_for_search": "Ricerca in corso — attendere e riprovare."
   },
   "ja": {
     "cmd.search_replace": "プロジェクト内で検索と置換",
@@ -333,7 +339,8 @@
     "panel.all_files_toggle": "全ファイル",
     "panel.scope_row_file": "対象: %{file}",
     "panel.scope_row_unnamed": "対象: (未保存バッファ)",
-    "panel.replace_all_in_file_btn": "%{file} 内ですべて置換 (Alt+Ret)"
+    "panel.replace_all_in_file_btn": "%{file} 内ですべて置換 (Alt+Ret)",
+    "status.replace_wait_for_search": "検索中です — 完了後にもう一度お試しください。"
   },
   "ko": {
     "cmd.search_replace": "프로젝트에서 검색 및 바꾸기",
@@ -381,7 +388,8 @@
     "panel.all_files_toggle": "모든 파일",
     "panel.scope_row_file": "범위: %{file}",
     "panel.scope_row_unnamed": "범위: (저장되지 않은 버퍼)",
-    "panel.replace_all_in_file_btn": "%{file} 에서 모두 바꾸기 (Alt+Ret)"
+    "panel.replace_all_in_file_btn": "%{file} 에서 모두 바꾸기 (Alt+Ret)",
+    "status.replace_wait_for_search": "검색 중입니다 — 완료된 후 다시 시도하세요."
   },
   "pt-BR": {
     "cmd.search_replace": "Pesquisar e Substituir no Projeto",
@@ -429,7 +437,8 @@
     "panel.all_files_toggle": "Todos os arquivos",
     "panel.scope_row_file": "Somente em: %{file}",
     "panel.scope_row_unnamed": "Somente em: (buffer não salvo)",
-    "panel.replace_all_in_file_btn": "Substituir tudo em %{file} (Alt+Ret)"
+    "panel.replace_all_in_file_btn": "Substituir tudo em %{file} (Alt+Ret)",
+    "status.replace_wait_for_search": "Pesquisa em andamento — aguarde e tente novamente."
   },
   "ru": {
     "cmd.search_replace": "Поиск и замена в проекте",
@@ -477,7 +486,8 @@
     "panel.all_files_toggle": "Все файлы",
     "panel.scope_row_file": "Только в: %{file}",
     "panel.scope_row_unnamed": "Только в: (несохранённый буфер)",
-    "panel.replace_all_in_file_btn": "Заменить все в %{file} (Alt+Ret)"
+    "panel.replace_all_in_file_btn": "Заменить все в %{file} (Alt+Ret)",
+    "status.replace_wait_for_search": "Поиск ещё выполняется — подождите и попробуйте снова."
   },
   "th": {
     "cmd.search_replace": "ค้นหาและแทนที่ในโปรเจกต์",
@@ -525,7 +535,8 @@
     "panel.all_files_toggle": "ไฟล์ทั้งหมด",
     "panel.scope_row_file": "เฉพาะใน: %{file}",
     "panel.scope_row_unnamed": "เฉพาะใน: (บัฟเฟอร์ที่ยังไม่ได้บันทึก)",
-    "panel.replace_all_in_file_btn": "แทนที่ทั้งหมดใน %{file} (Alt+Ret)"
+    "panel.replace_all_in_file_btn": "แทนที่ทั้งหมดใน %{file} (Alt+Ret)",
+    "status.replace_wait_for_search": "กำลังค้นหา — กรุณารอแล้วลองอีกครั้ง"
   },
   "uk": {
     "cmd.search_replace": "Пошук та заміна в проекті",
@@ -573,7 +584,8 @@
     "panel.all_files_toggle": "Усі файли",
     "panel.scope_row_file": "Лише в: %{file}",
     "panel.scope_row_unnamed": "Лише в: (незбережений буфер)",
-    "panel.replace_all_in_file_btn": "Замінити все в %{file} (Alt+Ret)"
+    "panel.replace_all_in_file_btn": "Замінити все в %{file} (Alt+Ret)",
+    "status.replace_wait_for_search": "Триває пошук — зачекайте та спробуйте знову."
   },
   "vi": {
     "cmd.search_replace": "Tìm và Thay thế trong Dự án",
@@ -621,7 +633,8 @@
     "panel.all_files_toggle": "Tất cả tệp",
     "panel.scope_row_file": "Chỉ trong: %{file}",
     "panel.scope_row_unnamed": "Chỉ trong: (bộ đệm chưa lưu)",
-    "panel.replace_all_in_file_btn": "Thay thế tất cả trong %{file} (Alt+Ret)"
+    "panel.replace_all_in_file_btn": "Thay thế tất cả trong %{file} (Alt+Ret)",
+    "status.replace_wait_for_search": "Đang tìm kiếm — vui lòng chờ rồi thử lại."
   },
   "zh-CN": {
     "cmd.search_replace": "在项目中搜索和替换",
@@ -669,6 +682,7 @@
     "panel.all_files_toggle": "所有文件",
     "panel.scope_row_file": "仅在: %{file}",
     "panel.scope_row_unnamed": "仅在: (未保存的缓冲区)",
-    "panel.replace_all_in_file_btn": "在 %{file} 中全部替换 (Alt+Ret)"
+    "panel.replace_all_in_file_btn": "在 %{file} 中全部替换 (Alt+Ret)",
+    "status.replace_wait_for_search": "搜索仍在进行中 — 请稍候再试。"
   }
 }

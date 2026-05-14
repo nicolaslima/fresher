@@ -289,6 +289,26 @@ function getLineByteOffset(lineNum: number): number {
 }
 
 /**
+ * Find the 0-indexed line containing the given byte position.
+ * Uses blameState.lineByteOffsets, where offsets[i] is the start of line i.
+ */
+function lineForBytePos(bytePos: number): number {
+  const offsets = blameState.lineByteOffsets;
+  if (offsets.length === 0) return 0;
+  let lo = 0;
+  let hi = offsets.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (offsets[mid] <= bytePos) {
+      lo = mid;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return lo;
+}
+
+/**
  * Group blame lines into blocks by commit, with byte offset information
  */
 function groupIntoBlocks(lines: BlameLine[]): BlameBlock[] {
@@ -414,6 +434,12 @@ async function show_git_blame() : Promise<void> {
 
   editor.setStatus(editor.t("status.loading"));
 
+  // Capture the source cursor byte position before opening blame, so we can
+  // jump to the same line in the blame view. The blame buffer mirrors the
+  // file content byte-for-byte (modulo unsaved edits), so the byte position
+  // maps to the same line index.
+  const sourceCursorPos = editor.getCursorPosition();
+
   // Store state before opening blame
   blameState.splitId = editor.getActiveSplitId();
   blameState.sourceBufferId = activeBufferId;
@@ -489,6 +515,19 @@ async function show_git_blame() : Promise<void> {
 
     // Add virtual lines for blame headers (persistent state model)
     addBlameHeaders();
+
+    // Jump to the same byte position the user was on in the source buffer.
+    // The blame buffer mirrors the file content, so this lands on the same
+    // line. setBufferCursor also runs ensure_cursor_visible so the line is
+    // scrolled into view. Clamp to the blame buffer's content length to
+    // tolerate any unsaved edits in the source buffer.
+    const fileLen = blameState.fileContent.length;
+    const targetByte = Math.min(sourceCursorPos, fileLen);
+    editor.setBufferCursor(result.bufferId, targetByte);
+    if (blameState.splitId !== null) {
+      const targetLine = lineForBytePos(targetByte);
+      editor.scrollToLineCenter(blameState.splitId, result.bufferId, targetLine);
+    }
 
     editor.setStatus(editor.t("status.blame_ready", { count: String(blameState.blocks.length) }));
     editor.debug("Git blame panel opened with virtual lines architecture");

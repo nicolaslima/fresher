@@ -541,8 +541,9 @@ impl Editor {
         let mut buffer_metadata: HashMap<BufferId, BufferMetadata> = HashMap::new();
         buffer_metadata.insert(buffer_id, BufferMetadata::new());
 
-        // Read orchestrator persistence (`.fresh/windows.json` and
-        // `.fresh/state/*.json`) before the LSP and base-window
+        // Read orchestrator persistence (windows.json + plugin
+        // state files under `data_dir/orchestrator/<encoded
+        // working dir>/`) before the LSP and base-window
         // construction below. Pulling persistence in here lets the
         // factory build the right windows up front: previously this
         // ran from `main.rs` after construction, so the freshly
@@ -554,10 +555,12 @@ impl Editor {
         // sees a well-formed windows map.
         let persisted_env = crate::app::orchestrator_persistence::read_persisted_windows_env(
             filesystem.as_ref(),
+            &dir_context.data_dir,
             &working_dir,
         );
         let plugin_global_state = crate::app::orchestrator_persistence::read_persisted_plugin_state(
             filesystem.as_ref(),
+            &dir_context.data_dir,
             &working_dir,
         );
 

@@ -371,11 +371,161 @@ plan ships in three stackable PRs:
 
 1. **PR 1: `spawnProcess` extensions** — `stdoutTo` (items 1–5) +
    kill plumbing (item 6). Independently useful for any plugin that
-   spawns long-running processes.
-2. **PR 2: `refreshBufferFromDisk` + `largeFile` option** — items 7–8.
-   Independently useful for any "tail-f"-style buffer.
-3. **PR 3: git-log plugin rewire** — pure plugin code, no host changes.
-   Drops numstat, drops entry-array build, opens stream directly.
+   spawns long-running processes. **Shipped** (commits `319acb6` +
+   `5c4fc9b`).
+2. **PR 2: `refreshBufferFromDisk` + `openFileStreaming`** — items 7–8.
+   Independently useful for any "tail-f"-style buffer. **Shipped**
+   (commit `1d14d91`). Final API ended up as two paired primitives:
+   `editor.openFileStreaming(path)` (force large-file mode, returns
+   buffer id) + `editor.refreshBufferFromDisk(bufferId)` (re-stat and
+   extend). Item 7's `openFile({largeFile:true})` flag became a
+   dedicated `openFileStreaming` API instead — cleaner since it also
+   has to return a buffer id for the plugin to refresh later.
+3. **PR 3: git-log plugin rewire** — one new host primitive
+   (`setBufferGroupPanelBuffer`) plus the plugin rewrite. Design
+   resolved below.
+
+## PR 3 design: re-target panel at a per-commit file-backed buffer
+
+The git-log UI today is a buffer group with a `log` panel and a
+`detail` panel. Both panels hold virtual buffers. To stream `git show`
+output into the detail panel without buffering 43 MB in JS, the
+detail panel must show a **file-backed buffer**, but the buffer-group
+"single tab" UX must be preserved.
+
+**Chosen approach: Option B — re-target the panel at a different
+buffer when the user switches commits.** Each commit gets its own
+file-backed buffer (created via `openFileStreaming`); on switch, the
+plugin tells the panel to point at a different buffer id. Old buffers
+are kept in a JS-side LRU cache for instant back/forward.
+
+Rejected:
+
+- **Option A** (`loadFileIntoBuffer` — keep one detail buffer, mutate
+  its contents). Tangles cancellation (commit-1's git write keeps
+  going into the shared buffer's file after switch), loses per-commit
+  scroll position, no caching path. Cheaper but worse mental model.
+- **Option C** (no host primitive; cling to virtual buffers). Doesn't
+  achieve the goal — virtual buffers store entries, not files.
+
+### Option-A vs Option-B trade-offs
+
+| | A | B |
+|---|---|---|
+| Host LOC | ~30 | ~25 |
+| Plugin LOC | smaller | slightly larger (cache map) |
+| Cancellation correctness | error-prone | obvious |
+| Back/forward UX | re-spawn each visit | instant with cache |
+| Scroll position memory | lost on switch | preserved per commit |
+| Syntax/lang per buffer | one global | per-buffer (each `.diff`) |
+| Memory for cached commits | n/a | tiny (`Unloaded` ref per commit) |
+| Mental model | "mutating shared state" | "graph of immutable views" |
+
+### Host change for PR 3
+
+One new plugin command + handler + binding:
+
+```rust
+// fresh-core/src/api.rs
+SetBufferGroupPanelBuffer {
+    group_id: BufferGroupId,
+    panel_name: String,
+    buffer_id: BufferId,
+    request_id: u64,        // resolves to bool
+}
+```
+
+Handler (`plugin_dispatch.rs`) does two `BufferId` writes:
+
+1. `group.panel_buffers.insert(panel_name.clone(), buffer_id)`
+2. `split_view_states[panel_split_id].active_buffer = buffer_id` (and
+   `ensure_buffer_state` for the new id so its `BufferViewState` is
+   initialised with per-buffer cursors/scroll defaults).
+
+Plus mark the leaf's `layout_dirty = true` so the next render sees
+the swap. ~25 LOC end-to-end (binding + d.ts + handler).
+
+The primitive doesn't care whether `buffer_id` is virtual or file-
+backed — it just re-points. Buffer lifecycle (closing old panel
+buffers when the group closes; eviction from the JS LRU) stays in
+the plugin via existing `editor.closeBuffer(id)`.
+
+### Plugin rewire (`git_log.ts` / `git_history.ts`)
+
+```ts
+// per-commit cache + in-flight spawn handle
+const buffers: Map<string, number> = new Map();   // sha → bufferId
+let inFlight: { hash: string; handle: ProcessHandle<SpawnResult> } | null = null;
+
+async function showCommit(hash: string) {
+  // Cancel previous spawn if user moved on before it finished.
+  if (inFlight && inFlight.hash !== hash) {
+    inFlight.handle.kill?.();
+    inFlight = null;
+  }
+
+  let bufId = buffers.get(hash);
+  if (bufId === undefined) {
+    const tempPath = `${cacheDir(cwd)}/${hash}`;
+    const handle = editor.spawnProcess(
+      "git", ["show", "--patch", hash], cwd,
+      { stdoutTo: tempPath },
+    );
+    inFlight = { hash, handle };
+    bufId = await editor.openFileStreaming(tempPath);
+    buffers.set(hash, bufId);
+    // Poll while git writes; stop on completion or supersession.
+    void pollUntilDone(hash, bufId, handle);
+  }
+  await editor.setBufferGroupPanelBuffer(state.groupId, "detail", bufId);
+}
+
+async function pollUntilDone(hash: string, bufId: number, h: ProcessHandle<SpawnResult>) {
+  let done = false;
+  void h.then(() => { done = true; });
+  while (!done) {
+    await editor.delay(200);
+    await editor.refreshBufferFromDisk(bufId);
+  }
+  await editor.refreshBufferFromDisk(bufId);   // final catch-up
+}
+```
+
+Net plugin changes vs today:
+
+- **Remove** `fetchCommitShow` (the `--numstat` pre-pass + the 43 MB
+  string assembly). Per-file collapse for oversized files moves to a
+  render-time heuristic (out of scope for this PR; the diff is just
+  on disk, the user can scroll past lock files at the wrap cost).
+- **Remove** `buildCommitDetailEntries` and the per-line entry loop
+  (`git_history.ts:543`-ish). 1 M `TextPropertyEntry` objects gone.
+- **Remove** `renderDetailForCommit` + `set_panel_content` for the
+  detail panel. Replaced by `setBufferGroupPanelBuffer`.
+- **Add** the per-commit cache + spawn handle tracking shown above.
+- **Add** an SHA cache directory under `~/.cache/fresh/git-show/`.
+  Existence check before spawn skips git entirely on cache hit.
+
+### Open sub-decisions (PR 3)
+
+1. **Buffer-group close behaviour**: when the user closes the git-log
+   group, the plugin's `git_log_close` should iterate `buffers.values()`
+   and call `editor.closeBuffer(id)` for each. The existing
+   `close_buffer_group` handler closes the panel buffer slot but
+   leaves orphans referenced by the JS map.
+2. **Initial detail panel buffer**: `createBufferGroup` creates a
+   virtual buffer for the detail slot. On first `setBufferGroupPanelBuffer`,
+   we leave the virtual buffer detached but allocated. The plugin
+   should `closeBuffer` it once the first real buffer is installed.
+3. **Cache cap**: keep all visited commits' buffers, or LRU at N?
+   Each cached buffer is one `Unloaded` ref + the on-disk file. For
+   a long browsing session, "keep all" is fine memory-wise; the
+   on-disk files are the real cost (a few MB per commit max).
+   Recommendation: **keep all until group closes**; revisit if it
+   becomes a problem.
+4. **Diff syntax**: rely on existing `.diff` grammar detection from
+   the file extension. Since the cache path ends in `/<sha>` (no
+   extension), need to either (a) name the file `<sha>.diff`, or (b)
+   set the language explicitly on the buffer. (a) is simpler.
 
 ## Out of scope (separate work)
 

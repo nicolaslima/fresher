@@ -596,7 +596,20 @@ function renderFlatItemEntry(item: FlatItem, W: number): TextPropertyEntry {
   const group = panel.fileGroups[item.fileIndex];
   const result = group.matches[item.matchIndex!];
   const location = `${group.relPath}:${result.match.line}`;
-  const context = result.match.context.trim();
+  // Hard-cap the context length BEFORE any per-codepoint work below.
+  // Minified CSS / JSON / single-line generated files routinely have
+  // match context strings 5 000-50 000 chars long. The downstream
+  // `truncate()` does `for (const c of s)` (per-codepoint iteration
+  // + O(N²) string concatenation in QuickJS); at 5 000 chars and 50
+  // items per flush that adds up to several hundred ms of JS work
+  // per pump iteration, blocking Tab and other queued requests.
+  // A panel viewport is at most a few hundred chars wide, so anything
+  // past ~512 chars is invisible anyway.
+  const CONTEXT_HARD_CAP = 512;
+  const rawCtx = result.match.context;
+  const context = (rawCtx.length > CONTEXT_HARD_CAP
+    ? rawCtx.slice(0, CONTEXT_HARD_CAP)
+    : rawCtx).trim();
   // Host prefix consumes:
   //   indent (depth=1) = 2
   //   leaf-alignment   = 2 (in lieu of disclosure glyph)
@@ -1053,10 +1066,7 @@ async function performSearch(pattern: string, silent?: boolean): Promise<SearchR
     let truncated = false;
     let producerError: string | null = null;
 
-    let pumpIter = 0;
     while (true) {
-      pumpIter++;
-      const _pumpT0 = Date.now();
       // Discard the in-flight search if a newer one started while we slept.
       if (generation !== currentSearchGeneration || !panel) {
         try { handle.cancel(); } catch (_e) { /* ignore */ }
@@ -1224,8 +1234,6 @@ async function performSearch(pattern: string, silent?: boolean): Promise<SearchR
       // carryover, wait the usual pump interval so we don't hot-loop
       // on `handle.take()`.
       const yieldMs = moreInQueue ? 0 : SEARCH_PUMP_INTERVAL_MS;
-      const _pumpDur = Date.now() - _pumpT0;
-      editor.debug(`PUMP_ITER iter=${pumpIter} dur=${_pumpDur}ms chunk=${chunk.length} flushed=${dueToFlush} queue=${pendingMatches.length} producerFinished=${producerFinished}`);
       await editor.delay(yieldMs);
     }
 

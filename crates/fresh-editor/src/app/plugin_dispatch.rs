@@ -868,9 +868,10 @@ impl Editor {
                 command,
                 args,
                 cwd,
+                stdout_to,
                 callback_id,
             } => {
-                self.handle_spawn_process(command, args, cwd, callback_id);
+                self.handle_spawn_process(command, args, cwd, stdout_to, callback_id);
             }
 
             PluginCommand::SpawnHostProcess {
@@ -3269,6 +3270,7 @@ impl Editor {
         command: String,
         args: Vec<String>,
         cwd: Option<String>,
+        stdout_to: Option<std::path::PathBuf>,
         callback_id: fresh_core::api::JsCallbackId,
     ) {
         if let (Some(runtime), Some(bridge)) = (&self.tokio_runtime, &self.async_bridge) {
@@ -3281,7 +3283,11 @@ impl Editor {
             let spawner = self.authority.process_spawner.clone();
             runtime.spawn(async move {
                 #[allow(clippy::let_underscore_must_use)]
-                match spawner.spawn(command, args, effective_cwd).await {
+                let outcome = match stdout_to {
+                    Some(path) => spawner.spawn_to_file(command, args, effective_cwd, path).await,
+                    None => spawner.spawn(command, args, effective_cwd).await,
+                };
+                match outcome {
                     Ok(result) => {
                         let _ = sender.send(AsyncMessage::PluginProcessOutput {
                             process_id: callback_id.as_u64(),

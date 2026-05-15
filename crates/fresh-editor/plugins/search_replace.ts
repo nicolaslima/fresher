@@ -986,10 +986,15 @@ let pendingNewExpandedKeys: string[] = [];
  *  Compared against UI_FLUSH_INTERVAL_MS to decide when to flush. */
 let lastUiFlush = 0;
 /** Don't flush more often than this. */
-const UI_FLUSH_INTERVAL_MS = 200;
-/** Force a flush if the pending delta grows beyond this many items
- *  (regardless of the time interval) to bound memory + visible lag. */
-const UI_FLUSH_MAX_DELTA = 2000;
+const UI_FLUSH_INTERVAL_MS = 80;
+/** Hard cap on each `appendTreeNodes` flush payload. Each TreeNode in
+ *  the payload costs ~60 µs in `js_to_json` + `serde_json::from_value`
+ *  on the JS thread (measured: AppendTreeNodes(1296) = 88 ms).
+ *  Larger payloads → longer per-iteration JS block → user input
+ *  (Tab, typed char, Esc) waits in the plugin thread's request
+ *  channel. Keeping the cap at ~100 keeps each flush ≤ 10 ms so
+ *  queued Tab requests can interleave between pump iterations. */
+const UI_FLUSH_MAX_DELTA = 100;
 
 /**
  * Perform a streaming search using a pull-based handle. The host writes
@@ -1048,7 +1053,10 @@ async function performSearch(pattern: string, silent?: boolean): Promise<SearchR
     let truncated = false;
     let producerError: string | null = null;
 
+    let pumpIter = 0;
     while (true) {
+      pumpIter++;
+      const _pumpT0 = Date.now();
       // Discard the in-flight search if a newer one started while we slept.
       if (generation !== currentSearchGeneration || !panel) {
         try { handle.cancel(); } catch (_e) { /* ignore */ }
@@ -1076,7 +1084,13 @@ async function performSearch(pattern: string, silent?: boolean): Promise<SearchR
         batchError = batch.error ?? null;
         for (const m of batch.matches) pendingMatches.push(m);
       }
-      const CHUNK = 250;
+      // Hard cap on per-iteration work. Each match in the chunk turns
+      // into a TreeNode in the `appendTreeNodes` flush, and each
+      // TreeNode costs ~60 µs in `js_to_json` + `from_value` on the
+      // JS thread. Keeping the chunk small means each pump iteration
+      // stays ≤ ~10 ms — short enough that queued Tab/typed-char
+      // requests interleave smoothly between iterations.
+      const CHUNK = 80;
       const chunkSize = Math.min(CHUNK, pendingMatches.length);
       const chunk = pendingMatches.splice(0, chunkSize);
       const moreInQueue = pendingMatches.length > 0;
@@ -1210,6 +1224,8 @@ async function performSearch(pattern: string, silent?: boolean): Promise<SearchR
       // carryover, wait the usual pump interval so we don't hot-loop
       // on `handle.take()`.
       const yieldMs = moreInQueue ? 0 : SEARCH_PUMP_INTERVAL_MS;
+      const _pumpDur = Date.now() - _pumpT0;
+      editor.debug(`PUMP_ITER iter=${pumpIter} dur=${_pumpDur}ms chunk=${chunk.length} flushed=${dueToFlush} queue=${pendingMatches.length} producerFinished=${producerFinished}`);
       await editor.delay(yieldMs);
     }
 

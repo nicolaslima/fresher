@@ -470,15 +470,26 @@ struct Observation {
 }
 
 impl Observation {
+    /// The invariant under test:
+    ///
+    /// > A window must recover with exactly the same tabs/buffers as
+    /// > were open when it was last quit. Each project is a separate
+    /// > orchestrator window — projects must never mix into a single
+    /// > window.
+    ///
+    /// Under that invariant, **the post-quit `windows.json`
+    /// containing a separate window entry for project B is correct,
+    /// not a leak** — B's session is meant to persist as its own
+    /// window so the user can return to it later. What violates the
+    /// invariant is foreign-project content appearing inside this
+    /// launch's active window — i.e. project B file paths showing up
+    /// in the active window's tab/buffer list when the user launched
+    /// at a cwd that is not inside project B.
     fn leaks_project_b(&self, project_b: &Path) -> bool {
         let b_str = project_b.to_string_lossy().to_string();
-        self.post_quit_window_roots
+        self.active_buffer_paths
             .iter()
-            .any(|p| p.starts_with(project_b))
-            || self
-                .active_buffer_paths
-                .iter()
-                .any(|p| p.contains(&b_str) || p.contains("leaked.txt"))
+            .any(|p| p.contains(&b_str) || p.contains("leaked.txt"))
     }
 }
 

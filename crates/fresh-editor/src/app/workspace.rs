@@ -43,6 +43,32 @@ use crate::workspace::{
 use super::bookmarks::{Bookmark, BookmarkState};
 use super::Editor;
 
+/// Project-scope guard for the per-window workspace invariant:
+///
+/// > A window's persisted state contains only files that belong to
+/// > the window's `working_dir`. Files outside it belong to a
+/// > different project (a different orchestrator window) and must
+/// > not be captured into, nor restored from, this window's
+/// > workspace file.
+///
+/// Returns `true` when `path` (resolved against `working_dir` if
+/// relative, canonicalised on both sides) sits inside the working
+/// directory subtree. Used at save (to refuse persisting foreign
+/// paths) and at restore (to drop foreign paths from legacy files
+/// that were written before this guard existed).
+fn path_is_in_working_dir(path: &Path, working_dir: &Path) -> bool {
+    let abs = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        working_dir.join(path)
+    };
+    let abs_c = abs.canonicalize().unwrap_or(abs);
+    let wd_c = working_dir
+        .canonicalize()
+        .unwrap_or_else(|_| working_dir.to_path_buf());
+    abs_c.starts_with(&wd_c)
+}
+
 /// Resolve a saved fold's header_line against the current buffer, using
 /// `header_text` to detect drift from external edits (issue #1568).
 ///
@@ -378,24 +404,29 @@ impl Editor {
             &self.working_dir,
         );
 
-        // Capture external files (files outside working_dir)
-        // These are stored as absolute paths since they can't be made relative.
-        // Skip plugin-managed transient surfaces (e.g. git_log's per-commit
-        // `<dataDir>/git-show/<sha>.diff` buffers opened via
-        // `openFileStreaming`) — they're flagged `hidden_from_tabs` and
-        // would otherwise reappear as garbage tabs on the next launch.
-        let external_files: Vec<PathBuf> = self
+        // External files (paths outside working_dir) used to be
+        // persisted here. They violate the per-window project-scope
+        // invariant — a file in project B has no business being part
+        // of project A's restored state — so we no longer record
+        // them. Files opened in-process that happen to live outside
+        // working_dir stay open for this session; they simply aren't
+        // resurrected on the next launch of this window.
+        let foreign_count = self
             .active_window()
             .buffer_metadata
             .values()
             .filter(|meta| !meta.hidden_from_tabs && !meta.is_virtual())
             .filter_map(|meta| meta.file_path())
-            .filter(|abs_path| abs_path.strip_prefix(&self.working_dir).is_err())
-            .cloned()
-            .collect();
-        if !external_files.is_empty() {
-            tracing::debug!("Captured {} external files", external_files.len());
+            .filter(|abs_path| !path_is_in_working_dir(abs_path, &self.working_dir))
+            .count();
+        if foreign_count > 0 {
+            tracing::info!(
+                "workspace save: dropped {foreign_count} foreign-project buffer(s) from window state \
+                 (working_dir={:?})",
+                self.working_dir
+            );
         }
+        let external_files: Vec<PathBuf> = Vec::new();
 
         // Capture read-only file paths. Store relative when inside
         // working_dir (matches how open_tabs paths are stored), otherwise
@@ -990,6 +1021,20 @@ impl Editor {
         );
         let mut path_to_buffer: HashMap<PathBuf, BufferId> = HashMap::new();
         for rel_path in file_paths {
+            // `Path::join` lets an absolute right operand replace
+            // `working_dir` outright. Pre-fix workspace files
+            // sometimes stored absolute foreign-project paths
+            // directly in `open_tabs`; refuse those — they violate
+            // the per-window project-scope invariant.
+            if !path_is_in_working_dir(&rel_path, &self.working_dir) {
+                tracing::info!(
+                    "workspace restore: dropping foreign-project tab path {:?} \
+                     (working_dir={:?})",
+                    rel_path,
+                    self.working_dir
+                );
+                continue;
+            }
             let abs_path = self.working_dir.join(&rel_path);
             tracing::trace!(
                 "Checking file: {:?} (exists: {})",
@@ -1012,7 +1057,14 @@ impl Editor {
         path_to_buffer
     }
 
-    /// Restore files that live outside the working directory (stored as absolute paths).
+    /// `external_files` used to seed buffers for paths outside the
+    /// working directory. Under the per-window project-scope
+    /// invariant those entries belong to a different window and
+    /// must not be restored into this one. The field is preserved on
+    /// the on-disk schema for backward compatibility but is no
+    /// longer mounted; entries living outside `working_dir` are
+    /// dropped with an INFO log so a pre-fix workspace file can't
+    /// reintroduce the cross-project tab bleed.
     fn restore_external_files(
         &mut self,
         external_files: &[PathBuf],
@@ -1021,12 +1073,20 @@ impl Editor {
         if external_files.is_empty() {
             return;
         }
-        tracing::debug!(
-            "Restoring {} external files: {:?}",
-            external_files.len(),
-            external_files
-        );
-        for abs_path in external_files {
+        let working_dir = self.working_dir.clone();
+        let (kept, dropped): (Vec<_>, Vec<_>) = external_files
+            .iter()
+            .partition(|p| path_is_in_working_dir(p, &working_dir));
+        if !dropped.is_empty() {
+            tracing::info!(
+                "workspace restore: dropped {} foreign-project external file(s) from window state \
+                 (working_dir={:?}): {:?}",
+                dropped.len(),
+                working_dir,
+                dropped
+            );
+        }
+        for abs_path in kept {
             if !abs_path.exists() {
                 tracing::debug!("Skipping non-existent external file: {:?}", abs_path);
                 continue;
@@ -2240,6 +2300,25 @@ fn serialize_split_node_pruned(
                 return None;
             }
 
+            // Foreign-project leaves (the leaf's active buffer
+            // points at a file outside `working_dir`) violate the
+            // per-window project-scope invariant: that file belongs
+            // to a different window's persisted state. Drop the
+            // leaf so the parent Split collapses to its sibling, the
+            // way we already do for virtual buffers above.
+            if let Some(abs_path) = meta.and_then(|m| m.file_path()) {
+                if !abs_path.as_os_str().is_empty()
+                    && !path_is_in_working_dir(abs_path, working_dir)
+                {
+                    tracing::info!(
+                        "workspace save: dropping foreign-project leaf {:?} (working_dir={:?})",
+                        abs_path,
+                        working_dir
+                    );
+                    return None;
+                }
+            }
+
             let file_path = meta.and_then(|m| m.file_path()).and_then(|abs_path| {
                 if abs_path.as_os_str().is_empty() {
                     None // unnamed buffer
@@ -2356,11 +2435,17 @@ fn serialize_split_view_state(
                         active_tab_index = Some(tab_index);
                     }
                 } else {
-                    // External file (outside working_dir) - store absolute path
-                    open_tabs.push(SerializedTabRef::File(abs_path.to_path_buf()));
-                    if Some(*buffer_id) == active_buffer {
-                        active_tab_index = Some(tab_index);
-                    }
+                    // Foreign-project file. Per the per-window
+                    // project-scope invariant, this tab is not part
+                    // of this window's persisted state. Skip it; the
+                    // buffer stays open in the running editor but is
+                    // not resurrected on the next launch of this
+                    // window.
+                    tracing::info!(
+                        "workspace save: dropping foreign-project tab {:?} (window working_dir={:?})",
+                        abs_path,
+                        working_dir
+                    );
                 }
             }
         }

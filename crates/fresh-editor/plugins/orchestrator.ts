@@ -1035,7 +1035,13 @@ function buildOpenSpec(): WidgetSpec {
             items,
             itemKeys,
             selectedIndex: selIdx,
-            visibleRows: openDialog.listVisibleRows,
+            // The "N in other projects" affordance (separator + line)
+            // sits below the list and eats into the column's height
+            // budget. Shrink the list's reserved rows by exactly those
+            // rows so the sessions column keeps the same total height
+            // as the preview pane — otherwise the extra rows push the
+            // footer hint bar off the bottom of the fixed-height panel.
+            visibleRows: Math.max(1, openDialog.listVisibleRows - otherAffordance.length),
             // Excluded from the Tab cycle — Up/Down on the
             // filter input forwards to this list via host
             // smart-keys, so Tab jumps straight to the action

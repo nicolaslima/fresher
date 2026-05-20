@@ -480,10 +480,12 @@ function renderListItem(id: number, activeId: number): TextPropertyEntry {
   }
   // Project tag: in the "all projects" view, label every row with
   // its project so a cross-project session is obvious at a glance
-  // rather than blending into the current project's sessions.
+  // rather than blending into the current project's sessions. Use
+  // the project's basename (not the full parent/base label) so it
+  // fits the sessions column without truncating.
   if (openDialog?.scope === "all" && projectKeyOf(s) !== currentProjectKey()) {
     entries.push({
-      text: `  · ${projectLabel(projectKeyOf(s))}`,
+      text: `  · ${editor.pathBasename(projectKeyOf(s))}`,
       style: { fg: "ui.menu_disabled_fg", italic: true },
     });
   }
@@ -962,6 +964,14 @@ function buildOpenSpec(): WidgetSpec {
   const sectionLabel = scope === "current"
     ? `${curName} · this project (${filtered.length})`
     : `Sessions (${filtered.length})`;
+  // Visible, clickable scope toggle. The chevrons mark it as a
+  // cycle; clicking (or Alt+P) flips between this-project and
+  // all-projects. Inert while a confirm prompt is up (drop the key)
+  // so it can't steal focus from Cancel/Confirm.
+  const scopeToggleLabel = scope === "current" ? "‹ This project ›" : "‹ All projects ›";
+  const scopeToggleButton = button(scopeToggleLabel, {
+    key: openDialog.pendingConfirm !== null ? undefined : "scope-toggle",
+  });
   const otherCount = otherProjectSessionCount();
   const otherAffordance: WidgetSpec[] = scope === "current" && otherCount > 0
     ? [
@@ -1007,9 +1017,13 @@ function buildOpenSpec(): WidgetSpec {
     row(
       labeledSection({
         label: sectionLabel,
-        widthPct: 25,
-        // Sessions column: new-session button, separator,
-        // filter, separator, list. The button is first so it
+        // 34% (was 25%): wide enough that the per-row project tag in
+        // the all-projects view (`· <project>`) and longer session
+        // labels render without truncating to `· tmp_o…`. The preview
+        // pane still keeps the majority for the live window embed.
+        widthPct: 34,
+        // Sessions column: new-session button, separator, filter,
+        // scope toggle, separator, list. The button is first so it
         // gets initial focus (Enter immediately opens the new
         // session form). Separators are long `─` strings that
         // the renderer truncates to the column's inner width —
@@ -1030,18 +1044,28 @@ function buildOpenSpec(): WidgetSpec {
           ),
           sessionsSeparator(),
           filterInput,
+          // Scope toggle: a visible, clickable control for the
+          // current-project ↔ all-projects switch (Alt+P also flips
+          // it). The chevrons hint it cycles; the footer + the "N in
+          // other projects" affordance spell out the alternative.
+          row(scopeToggleButton, flexSpacer()),
           sessionsSeparator(),
           list({
             items,
             itemKeys,
             selectedIndex: selIdx,
-            // The "N in other projects" affordance (separator + line)
-            // sits below the list and eats into the column's height
-            // budget. Shrink the list's reserved rows by exactly those
-            // rows so the sessions column keeps the same total height
-            // as the preview pane — otherwise the extra rows push the
-            // footer hint bar off the bottom of the fixed-height panel.
-            visibleRows: Math.max(1, openDialog.listVisibleRows - otherAffordance.length),
+            // The scope-toggle row (always present) and the "N in
+            // other projects" affordance (separator + line, scoped
+            // view only) sit outside the list but inside the sessions
+            // column, eating into its height budget. Shrink the list's
+            // reserved rows by exactly those rows so the sessions
+            // column keeps the same total height as the preview pane —
+            // otherwise the extra rows push the footer hint bar off the
+            // bottom of the fixed-height panel.
+            visibleRows: Math.max(
+              1,
+              openDialog.listVisibleRows - 1 - otherAffordance.length,
+            ),
             // Excluded from the Tab cycle — Up/Down on the
             // filter input forwards to this list via host
             // smart-keys, so Tab jumps straight to the action
@@ -1759,7 +1783,7 @@ registerHandler("orchestrator_open_new_from_picker", () => {
   openForm({ fromPicker: true });
 });
 
-registerHandler("orchestrator_toggle_scope", () => {
+function toggleScope(): void {
   if (!openDialog) return;
   openDialog.scope = openDialog.scope === "current" ? "all" : "current";
   // Keep the highlighted session selected across the scope flip
@@ -1771,7 +1795,9 @@ registerHandler("orchestrator_toggle_scope", () => {
   const nextIdx = prevId !== undefined ? openDialog.filteredIds.indexOf(prevId) : -1;
   openDialog.selectedIndex = nextIdx >= 0 ? nextIdx : 0;
   refreshOpenDialog();
-});
+}
+
+registerHandler("orchestrator_toggle_scope", toggleScope);
 
 // =============================================================================
 // New-session floating form
@@ -3323,6 +3349,10 @@ editor.on("widget_event", (e) => {
     if (e.event_type === "activate" && e.widget_key === "new-session") {
       closeOpenDialog();
       openForm({ fromPicker: true });
+      return;
+    }
+    if (e.event_type === "activate" && e.widget_key === "scope-toggle") {
+      toggleScope();
       return;
     }
     if (e.event_type === "activate" && e.widget_key === "toggle-details") {

@@ -91,6 +91,11 @@ fn open_dialog_scopes_to_current_project_then_reveals_all() {
          foregrounding so nothing feels hidden.\nScreen:\n{}",
         screen,
     );
+    assert!(
+        screen.contains("This project"),
+        "Scoped view must render the visible scope-toggle control.\nScreen:\n{}",
+        screen,
+    );
 
     // Toggle scope (Alt+P) → every session, across every project.
     harness
@@ -110,6 +115,11 @@ fn open_dialog_scopes_to_current_project_then_reveals_all() {
     assert!(
         screen.contains(LABEL_B),
         "Project B's session must still be listed in the all-projects view.\nScreen:\n{}",
+        screen,
+    );
+    assert!(
+        screen.contains("All projects"),
+        "All-projects view must show the scope-toggle in its 'all' state.\nScreen:\n{}",
         screen,
     );
 }

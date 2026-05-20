@@ -521,58 +521,72 @@ total.
 
 ### Wireframe — new, default (scoped to current project)
 
+_As shipped (the title carries the project; a clickable scope
+toggle sits under the filter; the "N in other projects" affordance
+spells out the alternative):_
+
 ```
-╭─ ORCHESTRATOR :: Sessions ─ projB ──────────────────────────────╮
-│ ╭ [type to filter…      ]  Scope: ‹ current › ⌥P  searches all ╮│
-│ ╰───────────────────────────────────────────────────────────────╯│
+╭─ ORCHESTRATOR :: Sessions  —  projB ────────────────────────────╮
 │ ╭─ projB · this project (2) ─╮ ╭─ [3] blog-redesign ──────────╮ │
-│ │ [ + New Session  ⌥N ]      │ │ Project: /…/projB            │ │
-│ │ ▸ [3] ACT  blog-redesign   │ │ State:   ACT       Age: 3m   │ │
-│ │   [4] RUN  hotfix-2031     │ │ ──────────────────────────── │ │
-│ │ ── 2 in other projects ─── │ │ ▸ Dive · Stop⌥S · Arch⌥A …   │ │
-│ │      press ⌥P to show      │ │                              │ │
+│ │ [ + New Session  ⌥N ]      │ │ [ Visit ]  [Details][Stop]…  │ │
+│ │ [type to filter…         ] │ │                              │ │
+│ │ [ ‹ This project › ]       │ │   (live session preview)     │ │
+│ │ [3] ACT  blog-redesign     │ │                              │ │
+│ │ [4] RUN  hotfix-2031       │ │                              │ │
+│ │ 2 in other projects · ⌥P   │ │                              │ │
 │ ╰────────────────────────────╯ ╰──────────────────────────────╯ │
-│  ↑↓ nav · Enter dive · ⌥P all projects · ⌥N new · Esc close     │
+│  ↑↓ nav · Enter dive · ⌥P all projects · Tab focus · Esc close  │
 ╰──────────────────────────────────────────────────────────────────╯
 ```
 
-### Wireframe — new, all-projects view (`⌥P`, grouped)
+### Wireframe — new, all-projects view (`⌥P`)
 
 ```
-╭─ ORCHESTRATOR :: Sessions ─ all projects ───────────────────────╮
-│ ╭ [type to filter…      ]  Scope: ‹ all ›    ⌥P current only   ╮│
-│ ╰───────────────────────────────────────────────────────────────╯│
-│ ╭─ Sessions (4) ─────────────╮ ╭─ [1] fresh ──────────────────╮ │
-│ │ [ + New Session  ⌥N ]      │ │ Project: /…/projA            │ │
-│ │ ▾ projB  · current         │ │ ⚠ different project than this │ │
-│ │   [3] ACT  blog-redesign   │ │   window                     │ │
-│ │   [4] RUN  hotfix-2031     │ │ State:   RUN (BASE)  Age: 1d  │ │
-│ │ ▾ projA                    │ │ ──────────────────────────── │ │
-│ │   [1] RUN  fresh    BASE   │ │ ▸ Dive (switches project) ·… │ │
-│ │   [2] RUN  feature-login   │ │                              │ │
+╭─ ORCHESTRATOR :: Sessions  —  all projects ─────────────────────╮
+│ ╭─ Sessions (4) ─────────────╮ ╭─ [3] blog-redesign ──────────╮ │
+│ │ [ + New Session  ⌥N ]      │ │ [ Visit ]  [Details][Stop]…  │ │
+│ │ [type to filter…         ] │ │                              │ │
+│ │ [ ‹ All projects › ]       │ │   (live session preview)     │ │
+│ │ [3] ACT  blog-redesign     │ │                              │ │
+│ │ [4] RUN  hotfix-2031       │ │                              │ │
+│ │ [1] RUN  fresh BASE · A    │ │                              │ │
+│ │ [2] RUN  feature-login · A │ │                              │ │
 │ ╰────────────────────────────╯ ╰──────────────────────────────╯ │
-│  ↑↓ nav · Enter dive · ⌥P current only · ⌥N new · Esc close     │
+│  ↑↓ nav · Enter dive · ⌥P current only · Tab focus · Esc close  │
 ╰──────────────────────────────────────────────────────────────────╯
 ```
+
+Sessions sort current-project-first; cross-project rows carry an
+inline `· <project>` basename tag rather than separator-row group
+headers (the list widget has no non-selectable rows, and threading
+headers through the selection/lifecycle indexing wasn't worth the
+regression risk). Current-first ordering already clusters each
+project, and the wider sessions column keeps the tags from
+truncating.
 
 ### Interaction notes
 
-- **Scope toggle** (`⌥P`) flips current ↔ all and is rendered in
-  the filter row through `format_keybinding` (chord registered in
-  the `orchestrator-open` mode, same pipeline as Stop/Archive/
-  Delete). Persist the last-used scope per editor session.
+- **Scope toggle**: a visible, clickable `[ ‹ This project › ]` /
+  `[ ‹ All projects › ]` button under the filter, plus the `⌥P`
+  chord (registered in the `orchestrator-open` mode, rendered via
+  `format_keybinding`, same pipeline as Stop/Archive/Delete). Both
+  call the same `toggleScope()`. Scope is also legible from the
+  title suffix and the section caption; the scoped view's "N in
+  other projects · ⌥P" affordance advertises the alternative.
 - **Filter is always global**: typing in the scoped view still
-  matches sessions in other projects and auto-reveals them under
-  their project header (so search never hides a session the user
-  is clearly looking for).
-- **Grouping** reuses the existing list widget: project headers
-  are non-selectable separator rows; the current project's group
-  sorts first and is labeled `· current`.
-- **Boot behavior** (separate from the dialog): replace the
-  cross-project auto-activate in `pick_active_window_for_cwd` with
-  "clean base window for the cwd + optional Resume affordance."
-  This is the single highest-impact fix and is independent of the
-  dialog redesign.
+  matches sessions in other projects (search never hides a session
+  the user is clearly looking for).
+- **Height budget**: the scope-toggle row (always) and the
+  affordance row (scoped view) are subtracted from the list
+  widget's `visibleRows` so the sessions column stays the same
+  height as the preview pane — otherwise the extra rows push the
+  footer hint off the fixed-height panel.
+- **Boot behavior** (separate from the dialog, shipped): the editor
+  reopens the session last used **in the launch cwd's project**
+  (`pick_active_window_for_cwd` — `env.active` if it belongs to the
+  cwd, else the most-recent session for the cwd, else a clean base
+  window). The pick is strictly cwd-scoped, so a different project's
+  session is never auto-activated.
 
 ## Open questions
 

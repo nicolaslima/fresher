@@ -188,19 +188,12 @@ pub(crate) fn read_persisted_windows_env(
 ///      project, but this one has sessions of its own."
 ///   3. Else `None` — the caller boots a clean base window at `cwd`.
 ///
-/// A window "belongs to" `cwd` only when its `root` equals `cwd` after
-/// canonicalization — i.e. it is a window that actually opens *at* the
-/// launch directory. We deliberately do NOT match on `project_path`:
-/// an orchestrator session lives in its own worktree (`root` =
-/// worktree) but carries `project_path` = the parent project, so
-/// matching on `project_path` would resurrect a worktree session as
-/// the active window whenever the user launches in the project it was
-/// spawned from — dragging the worktree's files, file-explorer, and
-/// title into what should be a clean project window (issue #2056).
-/// Worktree sessions still survive as inactive shells; the user
-/// reaches them by diving in through the orchestrator, never by a
-/// plain `fresh .`. The previous base (id 1, root = cwd) is eligible —
-/// reopening it is just a clean editor at the cwd.
+/// A window "belongs to" `cwd` when its `project_path` (preferred for
+/// orchestrator sessions, which always carry one) or its `root`
+/// (legacy / non-orchestrator windows) equals `cwd` after
+/// canonicalization. The previous base (id 1) is eligible too — if it
+/// was the user's last-used window in this cwd, reopening it is just a
+/// clean editor at the cwd.
 pub(crate) fn pick_active_window_for_cwd<'a>(
     env: Option<&'a PersistedWindows>,
     cwd: &Path,
@@ -220,11 +213,8 @@ pub(crate) fn pick_active_window_for_cwd<'a>(
 }
 
 fn window_matches_cwd(w: &PersistedWindow, cwd: &Path) -> bool {
-    // Match on `root` only: the active window at launch must be the
-    // window rooted *at* the launch cwd. A worktree session's `root`
-    // is its worktree (≠ cwd), so it is correctly excluded here even
-    // though its `project_path` equals the cwd (issue #2056).
-    paths_equal(&w.root, cwd)
+    let candidate = w.project_path.as_deref().unwrap_or(&w.root);
+    paths_equal(candidate, cwd)
 }
 
 fn paths_equal(a: &Path, b: &Path) -> bool {
@@ -856,45 +846,6 @@ mod tests {
             ],
         );
         assert!(pick_active_window_for_cwd(Some(&env), Path::new("/repoC")).is_none());
-    }
-
-    #[test]
-    fn pick_active_skips_worktree_session_rooted_outside_cwd() {
-        // Issue #2056: a worktree session has root = its worktree but
-        // project_path = the parent project. Launching `fresh .` in the
-        // project must NOT resurrect the worktree session as the active
-        // window, even when it is env.active.
-        let env = env_with(
-            2,
-            vec![
-                make_window(1, "/project", Some("/project")),
-                make_window(2, "/worktrees/ralestone", Some("/project")),
-            ],
-        );
-        let picked = pick_active_window_for_cwd(Some(&env), Path::new("/project"))
-            .expect("the project's own base window matches the cwd");
-        assert_eq!(
-            picked.id, 1,
-            "must pick the window rooted at the cwd, not the worktree session at env.active=2"
-        );
-    }
-
-    #[test]
-    fn pick_active_returns_none_when_only_worktree_sessions_exist() {
-        // Only worktree sessions for this project are persisted (no
-        // base window rooted at the cwd). The launch must fall back to
-        // a clean base at the cwd, not adopt a worktree root.
-        let env = env_with(
-            2,
-            vec![
-                make_window(1, "/worktrees/anna", Some("/project")),
-                make_window(2, "/worktrees/ralestone", Some("/project")),
-            ],
-        );
-        assert!(
-            pick_active_window_for_cwd(Some(&env), Path::new("/project")).is_none(),
-            "no window is rooted at the cwd, so the caller boots a clean base"
-        );
     }
 
     #[test]

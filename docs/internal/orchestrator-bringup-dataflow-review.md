@@ -204,42 +204,117 @@ one causing #2056.
 
 ---
 
-## 8. How this simplifies the new design
+## 8. How this simplifies the new design — and status
 
-Implementing the spec with the changes above, in order of leverage:
+In order of leverage (✅ = landed on this branch):
 
-1. **Derive `working_dir` from `active_window().root`** (§2) — deletes a
-   field, 7 sync sites, and the restore dance; makes the boot invariant
-   unconditional. *Fixes the title and most of the bug class outright.*
-2. **Pick on `root` only** (§4) — one-line change to `window_matches_cwd`;
-   removes the worktree-hijack and a branch.
-3. **Non-colliding fallback base id** (§5) — removes the cross-project
-   drop and the id-1 special-casing.
-4. **Explorer roots at the active window's `root`** (§3) — closes defect
-   #3; trivial after §2.
-5. **Unify the restore path** (§6) — removes harness/production drift.
+1. ✅ **Pick on `root` only** (§4) — `window_matches_cwd` matches the
+   window's `root`; removes the worktree-hijack and the
+   `project_path`-vs-`root` branch.
+2. ✅ **Non-colliding fallback base id** (§5) — a foreign id-1 window is
+   re-id'd and preserved as a shell rather than dropped.
+3. ✅ **Explorer roots at the active window's `root`** (§3) — and the
+   constructor moved onto `Window` (see §3 / Stage 2).
+4. ✅ **Derive `working_dir` from `active_window().root`** (§2) — the
+   field is deleted; the boot invariant is unconditional; the two
+   batch-workspace functions no longer flip a `working_dir` copy.
+5. ⬜ **Workspace capture/restore as a per-window factory** (§10) — the
+   remaining cleanup; removes the `active_window`-flip dances entirely.
+6. ⬜ **Unify the restore path** (§6) — first-run vs restart vs harness.
 
-Net effect on the branch/state matrix:
-- `project_path`-vs-`root` pick branch → gone (§4).
-- `working_dir` vs `active_window().root` divergence → impossible (§2).
-- id-1 fallback collision special-case → gone (§5).
-- explorer "first-init sticky at working_dir" hazard → gone (§3).
-- two restore implementations → one (§6).
-
-The remaining bring-up is then a single linear pipeline whose only real
-decision is the `root`-matched pick (reopen the cwd-rooted window, or a
-clean base at the cwd), with every downstream consumer reading the one
-canonical per-window `root`.
+Net effect on the branch/state matrix (✅ already realized):
+- ✅ `project_path`-vs-`root` pick branch → gone.
+- ✅ `working_dir` vs `active_window().root` divergence → unrepresentable.
+- ✅ id-1 fallback collision special-case → gone.
+- ✅ explorer "first-init sticky at working_dir" hazard → gone.
+- ⬜ active-window-flip dance in workspace save/restore → §10.
+- ⬜ two restore implementations → one (§6).
 
 ---
 
-## 9. Test hooks already in place
+## 9. Test coverage (acceptance criteria) — green
 
-The `tests/orchestrator_bringup_*` suite already pins the target
-behavior (currently red, fix reverted):
-- `*_characterization` — the pick across persistence layouts;
+`tests/orchestrator_bringup_*` pins the full invariant and passes:
+- `*_characterization` — the pick across persistence layouts, incl. the
+  converse (`launching_in_a_worktree_restores_that_worktree_session`).
 - `*_render_verify` — rendered explorer root / title / dive re-rooting
-  (defect #3);
+  (defect #3), and faithful per-window workspace restore incl.
+  `external_files` (`launch_restores_the_projects_own_workspace_…`).
 - `*_plugin_verify` — same with the orchestrator plugin loaded.
 
-Driving those green is the acceptance criterion for the changes in §8.
+The two gap tests were verified discriminating: temporarily reverting
+`window_matches_cwd` to the `project_path` match makes both fail.
+
+---
+
+## 10. Stage 1 plan — workspace capture/restore as a per-window factory
+
+**Problem (recap):** `capture_workspace` / `save_workspace` /
+`try_restore_workspace` / `apply_workspace` implicitly act on the active
+window (114 `active_window` refs across 18 `restore_*`/`apply_*`
+helpers). To save/restore a *non-active* window, the two batch functions
+(`save_all_windows_workspaces`, `restore_inactive_window_workspaces`)
+temporarily flip the global `active_window` pointer. That flip is a
+window-scoped operation faked with editor-global state.
+
+**Design:** express restore as **construction**, not seed-then-mutate.
+
+### `impl Window` — pure, rooted at `self.root` / `self.resources`
+```rust
+/// Snapshot self into a Workspace (inverse of from_workspace). Pure read.
+pub(crate) fn capture_workspace(&self) -> Workspace;
+
+/// Construct a fully-restored window from a serialized workspace:
+/// split tree, open tabs, external_files, cursors/scroll, terminals,
+/// explorer state — all built from `root` + `resources`. Born in its
+/// final state; replaces `Window::new` + `apply_workspace`.
+pub(crate) fn from_workspace(
+    id: WindowId, label: String, root: PathBuf,
+    resources: WindowResources, ws: &Workspace,
+) -> Window;
+```
+The 18 `restore_*`/`open_workspace_files` helpers move here as private
+methods (they already only touch `self.buffers`/splits).
+
+### `impl Editor` — orchestration by explicit `WindowId` (no active flip)
+```rust
+pub fn save_workspace_for(&mut self, id: WindowId) -> Result<(), WorkspaceError>;
+pub fn restore_workspace_for(&mut self, id: WindowId) -> Result<bool, WorkspaceError>;
+// existing names stay as thin wrappers over the active window:
+pub fn save_workspace(&mut self)        -> Result<(), WorkspaceError> { self.save_workspace_for(self.active_window) }
+pub fn try_restore_workspace(&mut self) -> Result<bool, WorkspaceError> { self.restore_workspace_for(self.active_window) }
+// batch ops become plain loops — the flip dance is deleted:
+pub fn save_all_windows_workspaces(&mut self) -> Result<(), WorkspaceError>;   // for id in ids { save_workspace_for(id) }
+pub fn restore_inactive_window_workspaces(&mut self);                          // for id != active { restore_workspace_for(id) }
+```
+
+### Two boundaries the constructor can't own (Editor does these around it)
+1. **hot-exit recovery** (unsaved buffer contents via `recovery_service`)
+   and **plugin_global_state** are editor-global. `from_workspace` builds
+   the pure layout; `restore_workspace_for` applies recovery / plugin
+   state *after* the window is handed back.
+2. **Lazy shells.** Inactive windows are built lazily today
+   (`Window::new`, `splits = None`, re-warm on first dive). Preserve that
+   by having a shell **hold its `Workspace`** and call `from_workspace`
+   on first activation — keeps the constructor *and* the laziness, rather
+   than eagerly rebuilding every persisted window at startup.
+
+### Sequencing in `editor_init`
+- Active window with a workspace file → `Window::from_workspace(...)`
+  instead of `Window::new(...)` + later `apply_workspace`.
+- Active window with none → `Window::new(...)` (clean seed).
+- Shells → `Window::new(...)` carrying their `Workspace`; `from_workspace`
+  on first dive.
+
+### Acceptance
+- `capture` / `from_workspace` are a clean inverse pair (round-trip test:
+  `from_workspace(capture(w))` reproduces the window's layout).
+- `save_all_windows_workspaces` / `restore_inactive_window_workspaces`
+  contain **no** `self.active_window = …` writes.
+- All existing `orchestrator_bringup_*` specs stay green, plus the
+  per-window workspace-restore test.
+
+### Why deferred
+No correctness payoff (post-§2 the flip is transient and restored), and
+it rewrites the behavior-sensitive workspace path. Do it once the
+workspace path has per-window round-trip coverage to de-risk it.

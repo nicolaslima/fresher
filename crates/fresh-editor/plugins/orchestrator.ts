@@ -1870,13 +1870,43 @@ const HISTORY_CAP = 100;
 let formFocusCycle: string[] = [];
 let formFocusIndex = 0;
 
+// True when `p` is Fresh's data dir or anything inside it. A worktree
+// created here would have its full path re-encoded into the worktree
+// key (`slugify`), nesting another duplicate checkout one level deeper
+// on every sub-session — the runaway growth that fills the data dir.
+function isInsideDataDir(p: string): boolean {
+  const data = editor.getDataDir();
+  return p === data || p.startsWith(data + "/") || p.startsWith(data + "\\");
+}
+
+// The project path the form will act on: typed value wins, else the
+// probed canonical default, else the editor cwd. Shared by the
+// renderer and the focus-cycle builder so they agree on enable state.
+function formResolvedProjectPath(): string {
+  if (!form) return editor.getCwd();
+  return form.projectPath.value.trim() || form.defaultProjectPath ||
+    editor.getCwd();
+}
+
+// Why "Create a new git worktree" is unavailable for the current path,
+// as a short human-readable reason — or null when it's available.
+// Non-git paths have nowhere to add a worktree; paths inside Fresh's
+// own data dir are refused to avoid recursively nesting duplicate
+// checkouts (the session just runs in place instead).
+function worktreeDisabledReason(): string | null {
+  if (!form) return null;
+  if (isInsideDataDir(formResolvedProjectPath())) return "inside Fresh data dir";
+  if (form.projectPathIsGit === false) return "non-git";
+  return null;
+}
+
 function rebuildFormFocusCycle(): void {
   if (!form) {
     formFocusCycle = [];
     formFocusIndex = 0;
     return;
   }
-  const worktreeEnabled = form.projectPathIsGit !== false;
+  const worktreeEnabled = worktreeDisabledReason() === null;
   const branchInert = !(worktreeEnabled && form.createWorktree);
   const cycle: string[] = ["project_path"];
   if (worktreeEnabled) cycle.push("worktree");
@@ -2209,7 +2239,8 @@ function buildFormSpec(): WidgetSpec {
   // when the resolved Project Path is not inside a git working
   // tree. `null` (probe in flight) keeps it in its last-known
   // state — no flicker on rapid typing.
-  const worktreeEnabled = form.projectPathIsGit !== false;
+  const worktreeReason = worktreeDisabledReason();
+  const worktreeEnabled = worktreeReason === null;
   const effectiveCreateWorktree = worktreeEnabled && form.createWorktree;
   const branchInert = !effectiveCreateWorktree;
 
@@ -2218,9 +2249,9 @@ function buildFormSpec(): WidgetSpec {
   // inert when worktree creation is off.
   let branchPlaceholder: string;
   if (branchInert) {
-    branchPlaceholder = worktreeEnabled
-      ? "shared worktree — N/A"
-      : "no git — N/A";
+    branchPlaceholder = worktreeReason === "non-git"
+      ? "no git — N/A"
+      : "shared worktree — N/A";
   } else if (!form.defaultBranch) {
     branchPlaceholder = "detecting default branch…";
   } else if (form.defaultBranchIsHeadFallback) {
@@ -2289,7 +2320,7 @@ function buildFormSpec(): WidgetSpec {
                 style: { fg: "editor.whitespace_indicator_fg" },
               },
               {
-                text: "  (disabled — non-git)",
+                text: `  (disabled — ${worktreeReason ?? "non-git"})`,
                 style: { fg: "editor.whitespace_indicator_fg", italic: true },
               },
             ]),
@@ -2830,7 +2861,13 @@ async function submitForm(): Promise<void> {
   // Enter while the debounced probe was still in flight).
   const isGit = await pathIsInsideGitWorkTree(projectPath);
   if (!form) return;
-  const createWorktree = isGit === true && form.createWorktree;
+  // Refuse to add a worktree when the target is inside Fresh's data
+  // dir: slugify would re-encode the whole data-dir path into the new
+  // worktree's dir name and nest a full duplicate checkout one level
+  // deeper for every sub-session. Run in place (shared worktree)
+  // instead — same fallback as a non-git path.
+  const createWorktree = isGit === true && form.createWorktree &&
+    !isInsideDataDir(projectPath);
 
   // Resolve the repo's main worktree root when we're in a
   // worktree-create flow — same logic as before, but rooted at

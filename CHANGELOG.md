@@ -1,5 +1,53 @@
 # Release Notes
 
+## 0.3.9
+
+### Features
+
+#### Universal Search (multi-scope Live Grep)
+
+Live Grep grows into a universal search overlay: search across multiple **scopes** — project files, open **Buffers**, and **Terminals** scrollback — with **Word** and **Regex** search modes (each keybindable). The overlay gets a clickable widget toolbar (focusable provider button, toggle controls), a full-width header band, and inline status shown in the overlay itself. Closed-terminal scrollback is retained so it stays searchable (#2099).
+
+#### Orchestrator & git worktrees
+
+* **Attach sessions to existing git worktrees** and discover them automatically (#2095).
+* Multi-select **bulk actions**, worktree ordering, and a *Show all worktrees* filter toggle.
+* Draggable scrollbars on the picker lists, with bulk-pane reorder.
+
+#### Editor
+
+* **Move to Next / Previous Paragraph** actions, including translations (#2084, contributed by @PavelLoparev; requested in #2083).
+
+#### Language Support
+
+* **C3** (`.c3`) syntax highlighting and LSP (#2101, requested by @data-man).
+
+#### Plugins & API
+
+* New `getWorkingDataDir()` (per-working-dir data root) and `getTerminalDir()` plugin APIs.
+* Overlay toolbar widget APIs — clickable `Toggle`/`Button` controls, `toggleOverlayToolbarWidget`, and a `Row { wrap }` layout that reflows toolbars across lines.
+
+### Improvements
+
+* Homebrew install simplified now that fresh-editor is in homebrew-core — `brew install fresh-editor`, no tap step.
+
+### Bug Fixes
+
+* Plugin `getCursorLine()` now returns the real cursor line instead of `0` (#2076, reported by @pmburov).
+* **Reduced serial-console lag** by not repainting on non-visual plugin async events (#2100, reported by @jetpax).
+* **Custom theme colours** no longer silently ignored for many UI fields (#2080, contributed by @flexiondotorg; reported in #2079).
+* `PageDown`/`PageUp` no longer overshoot on a single soft-wrapped line (#2085).
+* **Workspace restore** no longer mixes tabs from multiple projects in one window (#2056, reported by @mandolyte).
+* **Live Grep**: *Resume* keeps the query and opens the selected result; overlay preview and input-box undo/redo corrected; Buffers scope finds unmodified open buffers; non-file-scope previews and read-only data-dir files fixed.
+* `getKeybindingLabel` resolves correctly for bound plugin actions.
+
+### Internal
+
+* Major window refactor: window-scoped save/restore (`Window::from_workspace`), `WindowId`-parameterized persistence, `working_dir` derived from the active window, and `open_file`/LSP/watch helpers moved onto `Window`.
+* Orchestrator bring-up characterization tests and fixtures across persistence layouts.
+* Serial-console lag benchmark/diagnostic scripts; theme-key resolver schema-drift guard.
+* Internal docs excluded from the public docs build.
+
 ## 0.3.8
 
 ### Features / Improvements

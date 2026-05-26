@@ -1,5 +1,22 @@
 # Fresh Editor — TUI Agent Knowledge Base
 
+## ⚠️ FALSE POSITIVE PATTERNS — READ BEFORE TESTING
+
+The following things look like bugs but are NOT. Run #1 wasted time on all of these.
+Check this list before filing any issue.
+
+| Observation | What it actually is |
+|-------------|---------------------|
+| File opens with `[+]` / asterisk and unread content on fresh launch | **Hot exit.** Fresh restores all unsaved buffers on startup. `hot_exit` is on by default. Use `fresh --no-restore` if you need a clean slate. |
+| `Ctrl+W` selects a word instead of closing the tab | **Intentional.** Fresh's `Ctrl+W` = Select word. VS Code's `Ctrl+W` = Close tab. Use command palette → "Close Buffer" to close. |
+| `Ctrl+H` deletes a word instead of opening Find & Replace | **Terminal compatibility.** `Ctrl+H` = Find & Replace is intended and documented, but terminals transmit it as ASCII `0x08` = Backspace. Use `Ctrl+R` for reliable Replace. |
+| Menu arrow-key navigation appears unresponsive | **Highlight is subtle.** Selection uses `[48;5;25m]` (dark blue). Use `tmux capture-pane -e` (ANSI mode) to verify which item is active — plain `-p` hides it. |
+| `File > Revert` triggers "Cannot reload: buffer has unsaved modifications" | **You triggered the wrong menu item.** That error comes from "Reload with Encoding...". `File > Revert` correctly shows a `(r)evert/(c)ancel` confirmation prompt. Verify selection with ANSI capture. |
+| `[No Name]*` buffer appears on launch | **Hot exit** restored an unnamed scratch buffer from a previous session. |
+| "Split Vertical" command produces stacked (horizontal) panes | **Naming convention.** Fresh's "vertical" refers to the split line direction. Stacked panes = horizontal divider. Not a bug. |
+
+---
+
 ## Application Overview
 - **Name:** Fresh — a modern terminal text editor
 - **Version:** 0.3.8

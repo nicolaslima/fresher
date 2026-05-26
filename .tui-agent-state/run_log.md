@@ -1,79 +1,137 @@
 # TUI Agent Run Log
 
-## Run #1 - 2026-05-26
+---
 
-### Status: COMPLETED
+## Run #1 — 2026-05-26
 
-### Summary
-First run. Built the Fresh editor from source, set up testing infrastructure, and executed 30+ test cases covering core launch, file operations, editing, search/replace, and views/layout.
+### Status: COMPLETED (with post-run self-correction)
 
-### Actions Taken
-- Created `.tui-agent-state/` directory with state files
-- Built `fresh` binary from source via `cargo build --release --bin fresh` (16s build time)
-- Started tmux session `fresh-testing`
-- Executed TC-001 through TC-053 (partial)
-- Discovered and confirmed 4 bugs
+### What Was Done
+- Built Fresh binary from source (`cargo build --release --bin fresh`, 16s)
+- Initialized all state files for the first time
+- Launched tmux session, executed 30+ test cases across core launch, file ops, editing, search/replace, and views
+- Filed 4 GitHub issues
+- **Post-run:** Reviewed documentation, discovered 2 of 4 issues were false positives
+- Closed #2108 and #2110, updated #2109 and #2111
 
-### Test Results (Run #1)
-| Test ID | Name | Result |
-|---------|------|--------|
-| TC-001 | Launch with no args | ✅ PASSED |
-| TC-002 | Launch with file arg | ✅ PASSED (⚠ BUG-003) |
-| TC-003 | Menu bar navigation | ✅ PASSED |
-| TC-004 | Status bar visible | ✅ PASSED |
-| TC-005 | Ctrl+P command palette | ✅ PASSED |
-| TC-006 | Escape closes palette | ✅ PASSED |
-| TC-007 | Type text in editor | ✅ PASSED |
-| TC-008 | Ctrl+Z undo | ✅ PASSED |
-| TC-009 | Ctrl+S save dialog | ✅ PASSED |
-| TC-010 | Close Buffer with unsaved | ✅ PASSED |
-| TC-011 | Ctrl+Q quit | ✅ PASSED |
-| TC-020 | Ctrl+N new file | ✅ PASSED |
-| TC-021 | Ctrl+O file dialog | ✅ PASSED |
-| TC-022 | Open existing file | ✅ PASSED |
-| TC-023 | Save new file | ✅ PASSED |
-| TC-024 | Save existing file | ✅ PASSED |
-| TC-026 | Close unsaved file prompt | ✅ PASSED |
-| TC-030 | Undo/redo cycle | ✅ PASSED |
-| TC-031 | Shift+Arrow selection | ✅ PASSED |
-| TC-032 | Ctrl+A select all | ✅ PASSED |
-| TC-033 | Copy and paste | ✅ PASSED |
-| TC-035 | Multi-cursor Ctrl+D | ✅ PASSED |
-| TC-040 | Ctrl+F search | ✅ PASSED |
-| TC-041 | Search highlights matches | ✅ PASSED |
-| TC-042 | Enter navigates to match | ⚠ PARTIAL (BUG-004) |
-| TC-044 | Escape closes search | ✅ PASSED |
-| TC-045 | Ctrl+R replace (NOT Ctrl+H) | ✅ PASSED (discovered BUG-002) |
-| TC-047 | Replace all occurrences | ✅ PASSED |
-| TC-050 | Split view | ✅ PASSED |
-| TC-051 | Navigate splits Alt+] | ✅ PASSED |
-| TC-052 | Close split | ✅ PASSED |
-| TC-053 | File explorer Ctrl+B | ✅ PASSED |
-| TC-054 | Explorer navigation | ✅ PASSED |
+### Test Results Summary
+| Category | Passed | Failed | Notes |
+|----------|--------|--------|-------|
+| Core launch (TC-001–011) | 11 | 0 | |
+| File operations (TC-020–026) | 7 | 0 | |
+| Editing (TC-030–035) | 6 | 0 | |
+| Search/replace (TC-040–047) | 6 | 1 partial | TC-042 Enter behavior |
+| Views/layout (TC-050–054) | 5 | 0 | |
 
-### Bugs Found (Run #1)
-| Bug ID | Description | Severity |
-|--------|-------------|----------|
-| BUG-001 | Revert fails with unsaved changes | High |
-| BUG-002 | Ctrl+H deletes word (not Replace) | Medium |
-| BUG-003 | File opens as modified after session restore | Medium |
-| BUG-004 | Search Enter stays at match when cursor is AT match | Low-Medium |
+### Issues Filed
+| Issue | Final Status | Verdict |
+|-------|-------------|---------|
+| #2108 Revert fails | **Closed** | False positive — wrong menu item tested |
+| #2109 Ctrl+H terminal compat | **Open** | Real issue — terminal sends 0x08 as Backspace |
+| #2110 File opens modified | **Closed** | False positive — hot exit feature by design |
+| #2111 Search F3 navigation | **Open** | Needs re-test with search bar closed |
 
-### Key Learnings
-1. Replace is Ctrl+R (not Ctrl+H)
-2. Close Buffer has no shortcut (use command palette)
-3. File Explorer toggle is Ctrl+B (not Ctrl+E)
-4. Split commands: via command palette (no default Ctrl+\ shortcut confirmed)
-5. tmux send-keys: must send keys individually, not combined
-6. Menu highlights using dark blue `[48;5;25m]` - subtle but works
+### False Positive Rate: 50% (2 of 4)
 
 ---
 
-## Run #2 - TBD
+## LESSONS LEARNED — Run #1
 
-### Status: PENDING
+These are concrete, actionable lessons. The next agent MUST read this section before starting.
 
-### Planned Actions
-- File GitHub issues for BUG-001 through BUG-004
-- Continue testing from test_plan.md backlog
-- Focus on: tabs, terminal, line numbers, regex search, file explorer open
+### Lesson 1: Read documentation BEFORE touching the keyboard
+**What happened:** We tested for 2 hours before reading `docs/features/`. Two of our four bug reports were for documented, intentional features (hot exit, Revert prompt logic).
+
+**Rule:** At the start of every run, spend the first 5 minutes reading:
+- `docs/features/` — authoritative feature list and keybindings
+- `docs/configuration/keyboard.md` — actual keybinding table
+- `CHANGELOG.md` entries for the current version — features that look surprising are often announced here
+
+**Do NOT file a bug until you have confirmed it is not documented behavior.**
+
+---
+
+### Lesson 2: Verify menu item selection with ANSI capture
+**What happened:** We navigated to what we thought was "Revert" but actually triggered "Reload with Encoding...". We filed a bug about Revert's behavior based on the wrong command's error message.
+
+**Rule:** Whenever testing a menu item:
+1. Open the menu and navigate to the target item
+2. Run `tmux capture-pane -t SESSION -p -e` (note the `-e` flag for ANSI)
+3. Grep for `[48;5;25m` to confirm WHICH item is currently highlighted
+4. Only then press Enter
+
+**The plain `-p` capture hides the selection highlight. Always use `-e` for menu verification.**
+
+---
+
+### Lesson 3: Know the key divergences from VS Code before testing
+**What happened:** We assumed Fresh uses VS Code keybindings throughout and filed issues when shortcuts behaved differently.
+
+**The known intentional divergences from VS Code:**
+
+| Key | VS Code | Fresh |
+|-----|---------|-------|
+| `Ctrl+W` | Close tab | **Select word under cursor** |
+| `Ctrl+H` | Find & Replace | Intended: Find & Replace; Actual in terminals: Backspace (compatibility issue) |
+| `Ctrl+R` | Recent files | **Find & Replace** (reliable) |
+| `Ctrl+B` | Toggle sidebar | **Toggle File Explorer** |
+| `Ctrl+E` | (various) | Appears to open File Explorer (not confirmed as toggle) |
+
+**Do not file a bug for key differences until checking `docs/configuration/keyboard.md`.**
+
+---
+
+### Lesson 4: tmux send-keys sends multiple keys as literal text
+**What happened:** The command `tmux send-keys -t SESSION "S-Left S-Left S-Left" ""` typed the literal text "S-Left S-Left S-Left" into the buffer, corrupting the test file.
+
+**Rule:** ALWAYS send one key per send-keys call:
+```bash
+# CORRECT
+tmux send-keys -t SESSION "S-Left" ""; sleep 0.2
+tmux send-keys -t SESSION "S-Left" ""; sleep 0.2
+tmux send-keys -t SESSION "S-Left" ""; sleep 0.2
+
+# WRONG — sends literal text
+tmux send-keys -t SESSION "S-Left S-Left S-Left" ""
+```
+
+If you accidentally corrupt the test file, use `C-z` repeated times or `File > Revert`.
+
+---
+
+### Lesson 5: Hot exit affects every test run — account for it
+**What happened:** We opened a file with a clean test, made edits, discarded them, made more edits across multiple tests, then quit. The next launch showed the file as "modified" because hot exit preserved the session state from the final state before quit.
+
+**Rules:**
+- When testing "initial launch" behavior, always use `fresh --no-restore` to skip hot exit restoration
+- When testing hot exit itself, do it deliberately (see TC-NEW-002/003 in test_plan.md)
+- After a test run that made edits, note that the next run will start with restored state
+
+---
+
+### Lesson 6: Reproduce bugs at least twice before filing
+**What happened:** All four bugs were filed after single observations. Two turned out to be false positives that a second look would have caught.
+
+**Rule:** Before filing a GitHub issue:
+1. Reproduce the behavior at least twice in separate tmux sessions
+2. Check the docs (Lesson 1)
+3. Verify via ANSI capture where applicable (Lesson 2)
+4. Ask: "Could this be a documented feature?" before assuming it's a bug
+
+---
+
+### Lesson 7: Check for existing GitHub issues with broader search terms
+**What happened:** We searched with specific phrases like "revert unsaved modifications" but hot exit and Ctrl+H issues might have existing issues under different terms.
+
+**Rule:** Search with at least 3 different query variations before concluding no duplicate exists. Use: feature name, symptom description, key combination involved.
+
+---
+
+## Run #2 — PENDING
+
+See `test_plan.md` → "Immediate Next Action (Run #2)" for the priority list.
+Key items:
+- Verify F3 works after search bar closes (TC-BUG004-VERIFY)
+- Test hot exit deliberately with `fresh --no-restore` clean baseline
+- Complete TC-025 through TC-058 backlog
+- Test `File > Revert` correctly via ANSI-verified menu navigation

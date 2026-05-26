@@ -14,12 +14,15 @@
 
 ---
 
-### BUG-004 - Search F3 Navigation Needs Verification
+### BUG-004 - F3 Does Not Navigate While Search Bar Is Open
 - **Date:** 2026-05-26
-- **Severity:** Low (may not be a bug)
-- **Description:** `F3`/`Shift+F3` were tested WHILE the search bar was open. Docs confirm these are the find-next/prev shortcuts. Need to verify they work AFTER the search bar closes.
-- **GitHub Issue:** https://github.com/sinelaw/fresh/issues/2111 (updated)
-- **Next Action:** Test F3 after closing search bar in Run #2.
+- **Severity:** Medium (UX friction — contradicts VS Code/Sublime/browser behavior)
+- **Description:** Pressing F3 while the search bar is open has no effect. The current workflow requires pressing Enter first (which closes the bar), then F3 to navigate. In VS Code, Sublime Text, and all major browsers, F3 navigates to the next match while the search bar remains visible. This is the dominant paradigm Fresh users will expect.
+- **Expected:** F3 advances to next match without closing the search bar
+- **Actual:** F3 is silently ignored while search bar is open; must press Enter to close first
+- **Workaround:** Enter → closes bar, then F3 works (but this is non-obvious and nothing in the UI explains it)
+- **GitHub Issue:** https://github.com/sinelaw/fresh/issues/2111 (updated with clear expected vs actual)
+- **Status:** Confirmed usability bug; no further verification needed
 
 ---
 

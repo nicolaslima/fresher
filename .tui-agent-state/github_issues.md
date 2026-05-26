@@ -13,7 +13,7 @@ Last updated: Run #1, 2026-05-26
 | # | Title | Filed | Status | Notes for next run |
 |---|-------|-------|--------|-------------------|
 | [#2109](https://github.com/sinelaw/fresh/issues/2109) | Ctrl+H doesn't open Find & Replace in terminals (Ctrl+H = Backspace) | Run #1 | **Open** | Terminal sends `0x08`. Verify whether Calibrate Keyboard wizard detects it. Do NOT re-file. |
-| [#2111](https://github.com/sinelaw/fresh/issues/2111) | Search: F3/Shift+F3 next/previous navigation not verified | Run #1 | **Open** | F3 was tested while search bar was open. **Run #2 must test F3 after search closes.** If F3 works correctly, close this issue. If it doesn't, add reproduction steps. |
+| [#2111](https://github.com/sinelaw/fresh/issues/2111) | Search: F3 does not navigate to next match while search bar is open | Run #1 | **Open** | Confirmed usability bug: F3 silently ignored while search bar is open. Contradicts VS Code/Sublime/browser behavior. Issue updated with clear expected vs actual. Do NOT re-file. |
 
 ---
 
@@ -35,7 +35,7 @@ Even if the symptom looks fresh, these have already been fully investigated:
 | `File > Revert` shows "Cannot reload" error | Wrong menu — that's "Reload with Encoding..." | #2108 closed |
 | File opens with `[+]` / `*` on fresh launch | Hot exit restoring previous session | #2110 closed |
 | `Ctrl+H` deletes a word | Terminal compat: `0x08` = Backspace | #2109 open |
-| Search Enter doesn't cycle matches | F3 is the correct next-match key; needs re-test post-close | #2111 open |
+| F3 does nothing during active search | F3 silently ignored while search bar is open; Enter closes bar first, then F3 works | #2111 open |
 
 ---
 

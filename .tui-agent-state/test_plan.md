@@ -72,9 +72,10 @@
 
 - [x] **TC-040** PASSED - Ctrl+F opens search bar with case-sensitive/whole-word/regex toggles
 - [x] **TC-041** PASSED - Search highlights all matches in ANSI colors
-- [x] **TC-042** PARTIAL - Enter navigates to first match then CLOSES search bar; re-open Ctrl+F for next
-          ⚠️ BUG-004: Enter doesn't advance when cursor IS AT a match
-- [ ] **TC-043** Shift+Enter/F3 for previous match - F3 and Shift+Enter NOT CONFIRMED to work
+- [x] **TC-042** PARTIAL - Enter navigates to first match then CLOSES search bar
+          ⚠️ BUG-004 (confirmed): F3 silently ignored while search bar is open. Correct workflow:
+          Enter → closes bar → F3 navigates next. But this contradicts VS Code/browser behavior.
+- [ ] **TC-043** Shift+F3 for previous match (after search bar closes) — still to confirm works
 - [x] **TC-044** PASSED - Escape closes search bar
 - [x] **TC-045** TERMINAL COMPAT ISSUE - Ctrl+H IS intended to open find & replace (documented)
           but terminals send Ctrl+H as Backspace (0x08). Use Ctrl+R as the reliable Replace shortcut.
@@ -158,7 +159,7 @@
 - Check `CHANGELOG.md` for 0.3.x features
 
 ### Priority Tests to Complete:
-1. **TC-BUG004-VERIFY**: Test F3 AFTER closing search bar (press Ctrl+F, Enter, then F3)
+1. **TC-043**: Confirm Shift+F3 works after search bar closes (BUG-004 is already confirmed as a usability bug — F3 silently ignored while bar is open)
 2. TC-025: Save As (Ctrl+Shift+S)
 3. TC-027/028/029: Multiple tabs (Ctrl+Tab to switch)
 4. TC-034: Cut with Ctrl+X

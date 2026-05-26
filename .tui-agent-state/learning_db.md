@@ -14,6 +14,9 @@ Check this list before filing any issue.
 | `File > Revert` triggers "Cannot reload: buffer has unsaved modifications" | **You triggered the wrong menu item.** That error comes from "Reload with Encoding...". `File > Revert` correctly shows a `(r)evert/(c)ancel` confirmation prompt. Verify selection with ANSI capture. |
 | `[No Name]*` buffer appears on launch | **Hot exit** restored an unnamed scratch buffer from a previous session. |
 | "Split Vertical" command produces stacked (horizontal) panes | **Naming convention.** Fresh's "vertical" refers to the split line direction. Stacked panes = horizontal divider. Not a bug. |
+| Arrow keys don't move cursor / navigation seems broken | **DECCKM terminal mode.** Fresh uses application cursor key mode. Must send `$'\033O[A-D]'` NOT tmux `Up`/`Down` key names. See tmux automation section below. |
+| `DC` tmux key name doesn't delete forward | **Wrong escape.** Use `$'\033[3~'` for the Delete key in Fresh. |
+| Search/Replace panel shows "No matches found" for open file | **Workspace scoping bug (#2112).** The search backend only searches within the git project root. Files from /tmp or outside the workspace fail silently. |
 
 ---
 
@@ -113,6 +116,8 @@ Log your search queries in the issue body so future runs don't repeat the same s
 | `Ctrl+Q` | Quit | Hot exit saves state |
 | `Ctrl+B` | Toggle File Explorer sidebar | NOT Ctrl+E |
 | `Ctrl+W` | **Select word under cursor** | ⚠️ NOT "close buffer" (different from VS Code!) |
+| `Alt+W` | Close current tab | Closes the tab in the focused split; prompts if unsaved |
+| Close Buffer | No default shortcut | Use `Ctrl+P → "Close Buffer"` for buffer-level close |
 
 ### Editing
 | Key | Action | Notes |
@@ -158,6 +163,52 @@ Log your search queries in the issue body so future runs don't repeat the same s
 ### Close Buffer (no default shortcut)
 - Use: `Ctrl+P` → "Close Buffer" → `Enter`
 - Prompt: `(s)ave, (d)iscard, (C)ancel?` → press letter then `Enter`
+
+### Utility Dock & Terminal
+| Key | Action | Notes |
+|-----|--------|-------|
+| `Alt+\`` | Open terminal in utility dock | Splits screen; terminal at bottom |
+| `Ctrl+Space` | Toggle terminal focus | Defocused = read-only; focus status shown in bar |
+| `Alt+J` | Toggle dock focus | Switch focus between editor and bottom dock |
+
+---
+
+## tmux Automation Notes (CRITICAL — Run #2 Discovery)
+
+### Arrow Keys MUST Use DECCKM Sequences
+Fresh operates in DECCKM (application cursor key mode). Standard VT100 arrow sequences are **silently ignored**.
+
+```bash
+# CORRECT — DECCKM application sequences
+tmux send-keys -t SESSION $'\033OA'   # Up
+tmux send-keys -t SESSION $'\033OB'   # Down
+tmux send-keys -t SESSION $'\033OC'   # Right
+tmux send-keys -t SESSION $'\033OD'   # Left
+
+# WRONG — VT100 sequences (ignored by Fresh)
+tmux send-keys -t SESSION Up
+tmux send-keys -t SESSION Down
+tmux send-keys -t SESSION $'\033[A'   # Also ignored
+```
+
+### Delete Key
+```bash
+tmux send-keys -t SESSION $'\033[3~'   # CORRECT — forward delete
+# NOT: tmux send-keys -t SESSION DC    # DC key name is NOT forwarded correctly
+```
+
+### Keyboard Timing
+- Allow 200-300ms between key sends: `sleep 0.3`
+- Allow 1-2s for panel operations (search, replace): `sleep 2`
+- Multi-key sequences (multiple BSpace): add delay between each: `sleep 0.1` per key
+
+### Command Palette Mode Switching
+The palette opens with `>` (command mode). To switch modes:
+- BSpace to remove `>` → file/fuzzy-finder mode (shows project files)
+- Type `:` → line mode
+- Type `#` → buffer mode
+- Ctrl+U does NOT clear the input (sends literal in editor instead)
+- Use multiple BSpace presses with delays; watch for input leak bug (#2113)
 
 ---
 

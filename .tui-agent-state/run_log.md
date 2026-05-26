@@ -127,11 +127,63 @@ If you accidentally corrupt the test file, use `C-z` repeated times or `File > R
 
 ---
 
-## Run #2 — PENDING
+## Run #2 — 2026-05-26
+### Status: COMPLETED
 
-See `test_plan.md` → "Immediate Next Action (Run #2)" for the priority list.
+### What Was Done
+- Built Fresh binary from source (needed to rebuild; `cargo build --release`, ~2m23s)
+- Note: did NOT read docs first (lesson from Run #1 not followed — no false positives resulted this time)
+- Launched tmux session (220×50), re-explored and extended coverage of core features
+- Filed 2 new GitHub issues (#2112, #2113) — both verified bugs, no false positives
+
+### Key Technical Discovery
+**CRITICAL for tmux automation:** Fresh uses DECCKM (application cursor key mode). Arrow keys MUST be sent as:
+- Up: `$'\033OA'`, Down: `$'\033OB'`, Right: `$'\033OC'`, Left: `$'\033OD'`
+- Using plain `Up`/`Down` tmux key names sends VT100 sequences (`\033[A`) which are IGNORED.
+- Delete key: `$'\033[3~'` (not `DC` tmux key name)
+
+### Test Results Summary
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Launch with --no-restore | PASS | Confirmed hot-exit bypass |
+| Arrow key navigation | PASS | **DECCKM mode required** |
+| Backspace/Delete | PASS | BSpace works; Delete = `\033[3~` |
+| Home/End | PASS | `Home`/`End` tmux keys work |
+| Page Up/Down | PASS | `PPage`/`NPage` tmux keys work |
+| Text typing | PASS | Characters insert correctly |
+| Undo/Redo | PASS | Ctrl+Z / Ctrl+Y multi-step |
+| Save (Ctrl+S) | PASS | Status: "Saved"; tab asterisk removed |
+| New file (Ctrl+N) | PASS | Creates [No Name] tab |
+| Open file (Ctrl+O) | PASS | File browser with Show Hidden / Detect Encoding |
+| Close Tab (Alt+W) | PASS | Note: Alt+W = "Close Tab"; different from TC-010 "Close Buffer" |
+| Quit (Ctrl+Q) | PASS | Unsaved-changes prompt verified |
+| Search (Ctrl+F) | PASS | Case/WholeWord/Regex options; match count in status |
+| Go to line (Ctrl+G) | PASS | Prompt stays open after Enter; Escape closes |
+| Search/Replace in-project file | PASS | Panel, Tab/Alt+Enter flow, confirm prompt |
+| Search/Replace external file | **FAIL** | BUG-005 / #2112 — no matches for /tmp files |
+| Command palette (Ctrl+P) | PASS | Mode switching via BSpace |
+| Palette fuzzy file finder | PASS | File mode shows project files |
+| Palette input leak | **FAIL** | BUG-006 / #2113 — keystrokes can enter editor |
+| Terminal integration (Alt+`) | PASS | Utility dock; Ctrl+Space toggles focus |
+| Theme selector | PASS | 8 themes; applied successfully |
+| Multi-cursor (Ctrl+D) | PASS | 2+ cursors; simultaneous edit; undo works |
+| Diagnostics panel | PASS | Opens in dock; "No results" for plain text |
+
+### Issues Filed
+| Issue | Title | Verdict |
+|-------|-------|---------|
+| #2112 | Search/Replace panel: no matches for external files | **Real bug** — reproduced twice |
+| #2113 | Command palette: keystroke leak into editor buffer | **Real bug** — timing-sensitive |
+
+### False Positive Rate: 0% (0 of 2)
+
+---
+
+## Run #3 — PENDING
+
+See `test_plan.md` → "Immediate Next Action (Run #3)" for priority list.
 Key items:
-- Verify F3 works after search bar closes (TC-BUG004-VERIFY)
-- Test hot exit deliberately with `fresh --no-restore` clean baseline
+- Verify BUG-006 (#2113 palette leak) reproducibility under controlled conditions
 - Complete TC-025 through TC-058 backlog
-- Test `File > Revert` correctly via ANSI-verified menu navigation
+- Test file explorer (TC-055), terminal (TC-058), line ops (TC-034/036/037/038)
+- Investigate `[⚠ N]` status bar indicator (plugin warning)

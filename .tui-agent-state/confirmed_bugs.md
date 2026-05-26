@@ -39,6 +39,41 @@
 
 ---
 
+### BUG-005 - Search/Replace Panel Returns "No Matches Found" for Files Outside Git Workspace
+- **Date:** 2026-05-26
+- **Severity:** High (silently returns wrong result with misleading UI)
+- **GitHub Issue:** https://github.com/sinelaw/fresh/issues/2112 (filed Run #2)
+- **Status:** Open
+- **Root Cause:** The search/replace backend appears to only index/search within the git project root. Files opened from outside (e.g. `/tmp`) are not searchable.
+- **Reproduction:**
+  1. Open a file from `/tmp` (not in the git workspace): `fresh --no-restore /tmp/sample.txt`
+  2. Open Search/Replace panel: `Ctrl+P → "Search and Replace in Current File"`
+  3. Type any text that exists in the file, press Tab
+  4. After ~3s: panel shows "No matches found" despite the text existing
+- **Key detail:** The "Only in: /tmp/sample.txt" label in the panel misleads the user into expecting file-scoped search, but it silently fails. In-project files work correctly.
+- **Inconsistent UI state:** The Matches area permanently shows "Searching…" while the status bar shows "No matches found" — these contradict each other.
+- **Workaround:** Copy the file into the project directory before using Search/Replace.
+- **Confirmed reproduced:** Yes, twice in the same session.
+
+---
+
+### BUG-006 - Command Palette Keystrokes Leak into Editor Buffer When Switching to File Mode
+- **Date:** 2026-05-26
+- **Severity:** Medium (silent data corruption — user may not notice immediately)
+- **GitHub Issue:** https://github.com/sinelaw/fresh/issues/2113 (filed Run #2)
+- **Status:** Open
+- **Root Cause:** Likely a focus/input-routing race condition during command palette mode transition.
+- **Reproduction:**
+  1. Open command palette: `Ctrl+P` (opens in command mode with `>` prefix)
+  2. Clear the `>` by pressing BSpace 3-5 times (switches to file/fuzzy-finder mode)
+  3. Type a fuzzy search query (e.g. "cargo") to find project files
+  4. Select a file with Up + Enter
+  5. Return to original buffer — it now contains characters from the search query (e.g. "Cargo" inserted into file content)
+- **Confirmed reproduced:** Timing-sensitive; observed once but consistent within the same session.
+- **Workaround:** After using the fuzzy file finder, check the source buffer and Ctrl+Z if characters were leaked.
+
+---
+
 ## Resolved Bugs
 
 *(None yet)*

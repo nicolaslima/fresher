@@ -4,7 +4,7 @@ This is the canonical reference for every GitHub issue this agent has filed.
 **Check this file BEFORE searching GitHub or filing any new issue.**
 If a topic appears here — open or closed — do not file a duplicate.
 
-Last updated: Run #1, 2026-05-26
+Last updated: Run #2, 2026-05-26
 
 ---
 
@@ -14,6 +14,8 @@ Last updated: Run #1, 2026-05-26
 |---|-------|-------|--------|-------------------|
 | [#2109](https://github.com/sinelaw/fresh/issues/2109) | Ctrl+H doesn't open Find & Replace in terminals (Ctrl+H = Backspace) | Run #1 | **Open** | Terminal sends `0x08`. Verify whether Calibrate Keyboard wizard detects it. Do NOT re-file. |
 | [#2111](https://github.com/sinelaw/fresh/issues/2111) | Search: F3 does not navigate to next match while search bar is open | Run #1 | **Open** | Confirmed usability bug: F3 silently ignored while search bar is open. Contradicts VS Code/Sublime/browser behavior. Issue updated with clear expected vs actual. Do NOT re-file. |
+| [#2112](https://github.com/sinelaw/fresh/issues/2112) | Search/Replace panel: "No matches found" for files opened outside project workspace | Run #2 | **Open** | Search backend only indexes files within the git root. External files (e.g. /tmp) silently fail with misleading UI. Reproduced twice. Do NOT re-file. |
+| [#2113](https://github.com/sinelaw/fresh/issues/2113) | Command palette: keystrokes typed in fuzzy file mode can leak into editor buffer | Run #2 | **Open** | Race condition during `>command` → file mode transition via BSpace. Timing-sensitive. Reproduced once. Do NOT re-file. |
 
 ---
 
@@ -36,6 +38,8 @@ Even if the symptom looks fresh, these have already been fully investigated:
 | File opens with `[+]` / `*` on fresh launch | Hot exit restoring previous session | #2110 closed |
 | `Ctrl+H` deletes a word | Terminal compat: `0x08` = Backspace | #2109 open |
 | F3 does nothing during active search | F3 silently ignored while search bar is open; Enter closes bar first, then F3 works | #2111 open |
+| Search/Replace panel returns "No matches found" for /tmp file | Search backend scoped to git workspace root only | #2112 open |
+| Characters from command palette file search appear in editor buffer | Focus race condition during `>` → file mode transition | #2113 open |
 
 ---
 

@@ -20,6 +20,7 @@
 | Run # | Date | Status | Tests Run | Bugs Found |
 |-------|------|--------|-----------|------------|
 | 1     | 2026-05-26 | COMPLETED | 30+ | 4 filed → 2 real, 2 false positives |
+| 2     | 2026-05-26 | COMPLETED | 20+ | 2 filed → 2 real, 0 false positives |
 
 ---
 
@@ -157,34 +158,42 @@
 
 ---
 
-## Immediate Next Action (Run #2)
+## Immediate Next Action (Run #3)
 
 ### FIRST: Documentation Review (mandatory before testing)
 - Read `docs/features/editing.md` for complete keybinding table
-- Read `docs/features/search-replace.md` for search workflow
 - Check `CHANGELOG.md` for 0.3.x features
+- Note: Run #2 did NOT read docs first — still got 0 false positives, but should still verify
 
-### Priority Tests to Complete:
-1. **TC-043**: Confirm Shift+F3 works after search bar closes (BUG-004 is already confirmed as a usability bug — F3 silently ignored while bar is open)
-2. TC-025: Save As (Ctrl+Shift+S)
-3. TC-027/028/029: Multiple tabs (Ctrl+Tab to switch)
-4. TC-034: Cut with Ctrl+X
-5. TC-036: Block selection (Alt+Shift+Arrow)
-6. TC-037: Comment/uncomment line
-7. TC-038: Auto-indent
+### CRITICAL tmux Notes (discovered Run #2):
+- **Arrow keys MUST use DECCKM sequences:** `$'\033O[A-D]'` NOT `Up`/`Down` key names
+- **Delete key:** `$'\033[3~'` NOT `DC` tmux key name
+- **Alt+W** = Close Tab (not Ctrl+W which selects word)
+
+### Priority Tests to Complete (Run #2 leftover):
+1. TC-025: Save As (Ctrl+Shift+S)
+2. TC-027/028/029: Multiple tabs; switch tabs (Alt+W to close, what to switch?)
+3. TC-034: Cut with Ctrl+X
+4. TC-036: Block selection (Alt+Shift+Arrow)
+5. TC-037: Comment/uncomment line (Ctrl+/)
+6. TC-038: Auto-indent
+7. TC-043: Shift+F3 for previous match (after search bar closes)
 8. TC-048/049: Case-sensitive (Alt+C) and regex (Alt+R) search toggles
 9. TC-055: Open file from file explorer (Enter on file in explorer)
 10. TC-056/057: Toggle line numbers/wrap (via View menu or command palette)
-11. TC-058: Integrated terminal (command palette → "Terminal")
-12. TC-NEW-001: Verify `File > Revert` shows `(r)evert/(c)ancel` prompt when buffer modified
-13. TC-NEW-002: Test `fresh --no-restore` launches with clean state (no hot exit)
-14. TC-NEW-003: Test hot exit: make edits, Ctrl+Q, relaunch — verify changes restored
-15. TC-NEW-004: Test Ctrl+W selects word under cursor
+11. TC-058: Integrated terminal (opened via Alt+\` — confirmed in Run #2; test more features)
+12. TC-NEW-001: Verify `File > Revert` shows `(r)evert/(c)ancel` prompt (never re-tested since Run #1 false positive)
+13. TC-NEW-002: Confirm hot exit behavior with `--no-restore`
+14. TC-NEW-003: Test Ctrl+W selects word under cursor (confirmed by Run #1; verify)
+15. TC-NEW-005: Investigate `[⚠ N]` status bar warning indicator — what triggers it?
+16. TC-NEW-006: Verify BUG-006 (#2113 palette leak) reproducibility under controlled conditions
 
-### Reminders from Run #1 Lessons:
-- Always verify menu item selection with ANSI capture before asserting behavior
+### Reminders from Run #1 + Run #2 Lessons:
+- Verify menu item selection with ANSI capture before asserting behavior
 - tmux sends Ctrl+H as Backspace — use Ctrl+R for Replace
-- Ctrl+W = select word (not close buffer)
-- Close Buffer = Ctrl+P → "Close Buffer"
+- Ctrl+W = select word (not close buffer); Alt+W = close tab
+- Close Buffer = Ctrl+P → "Close Buffer"  
 - File Explorer toggle = Ctrl+B
-- F3 navigates search AFTER search bar closes
+- F3 navigates search AFTER search bar closes (BUG-004 usability issue)
+- Arrow keys need DECCKM sequences in tmux (`$'\033O[A-D]'`)
+- Search/Replace only works for in-project files (BUG-005 / #2112)

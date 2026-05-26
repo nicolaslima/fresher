@@ -2,6 +2,43 @@
 
 ---
 
+## Run #6 — 2026-05-26
+
+### Status: COMPLETED
+
+### What Was Done
+- Built Fresh binary from source (`cargo build --release --bin fresh`, ~50s)
+- Checked out `tui-automated-testing-state` branch, loaded state from 5 prior runs
+- Launched tmux session `fresh_test` (200×50)
+- Executed 7 test objectives covering theme editor, auto-save, env manager, tour, review diff, orchestrator, workspace trust
+
+### Test Results Summary
+| Test | Result | Notes |
+|------|--------|-------|
+| TC-THEME-EDITOR (complete) | **PASSED** | Color edit + Save As → custom theme created in ~/.config/fresh/themes/ |
+| TC-AUTO-SAVE | **PASSED** | Enable in config; file auto-saved within 8s (5s interval); tab loses asterisk |
+| TC-ENV-MANAGER | **PASSED** | Show Status → Activate (direnv) → Deactivate: all 3 commands working |
+| TC-TOUR | **PASSED** | Load .fresh-tour.json; navigate Step 1→2→3→4→Exit; each step opens correct file |
+| TC-REVIEWDIFF-STAGE | **PASSED** | Stage hunk with `s`: 3 added lines moved to STAGED section |
+| TC-ORCHESTRATOR-NEW | **PASSED** | Alt+N → form → Tab×6 to Create Session → session-1 worktree created |
+| TC-WORKSPACE-TRUST | **PASSED** | T to trust → status bar confirms "Workspace trusted" |
+
+### Issues Found This Run
+- **PENDING BUG INVESTIGATION**: Settings UI checkboxes NOT reachable via Tab key. Tab navigates to number/text inputs and footer buttons, skipping checkboxes (e.g., "Auto Save Enabled"). Needs investigation whether this is by design or a bug.
+- **NOTE**: Orchestrator "Create Session" button requires exactly 6 Tab presses from the dialog open state to reach the button. More than 6 = cycles back to checkbox. Important UX discovery.
+- **NOTE**: Tour panel button navigation: Tab focuses buttons, Up/Down navigates within tour panel. Pressing Enter when "Next →" is focused advances the tour.
+
+### False Positive Rate: 0% (0 of 0 bugs filed)
+
+### Settings Navigation Discovery
+The Settings UI uses a complex navigation model:
+- `↑↓` in left panel: navigate sections
+- `Tab`: jump to next focusable widget IN THE RIGHT PANEL (number inputs and text inputs only; checkboxes are NOT tab-navigable)
+- `Enter` on section: scrolls right panel to show that section
+- Auto-save was enabled by directly editing /root/.config/fresh/config.json (demonstrated it persists and works)
+
+---
+
 ## Run #1 — 2026-05-26
 
 ### Status: COMPLETED (with post-run self-correction)

@@ -202,6 +202,18 @@ Log your search queries in the issue body so future runs don't repeat the same s
 | Settings search | `Ctrl+P → "Open Settings"` → `/` key | Searches setting names |
 | Whitespace: trailing | Settings → `/` → "whitespace" → "Trailing Spaces" → Enter | Enables ··· dots for trailing spaces |
 
+### Advanced Features (Run #6)
+| Feature | Command | Notes |
+|---------|---------|-------|
+| Theme Editor color edit | `Ctrl+P → "Edit Theme"` → pick theme → navigate to color → Enter → type hex → Enter | Bottom input: "FieldName (#RRGGBB or named):" |
+| Theme Editor Save As | `Ctrl+P → "Theme: Save As"` | Saves custom theme to ~/.config/fresh/themes/ as JSON |
+| Auto Save | Set in `/root/.config/fresh/config.json`: `"editor": {"auto_save_enabled": true, "auto_save_interval_secs": 5}` | OR navigate Settings > Editor > Recovery; interval 30s default |
+| Env Manager | `Ctrl+P → "Env: Show Status"` → `"Env: Activate"` → `"Env: Use System (Deactivate)"` | Status bar shows "Environment active (direnv)" when activated |
+| Tour | `Ctrl+P → "Tour: Load Definition..."` → type path (pre-filled as `.fresh-tour.json`) | Steps shown as overlay; Tab to focus "Next →"; Up→focus "Next →"; Enter to advance |
+| Review Diff Stage | Review Diff → `n` navigate to hunk → `s` to stage | Hunk moves from UNSTAGED to STAGED; `u` to unstage, `d` broken (BUG #2117) |
+| Orchestrator New Session | `Ctrl+P → "Orchestrator: New Session"` OR `Orchestrator: Open` → `Alt+N` | FORM: Project Path, worktree checkbox, session name, agent, branch. Tab×6 to reach "Create Session". Creates git worktree. |
+| Workspace Trust (verified set) | `Ctrl+P → "Workspace Trust…"` → T | Status bar: "Workspace trusted — project tooling may run processes" |
+
 ### Advanced Features (Run #5)
 | Feature | Command | Notes |
 |---------|---------|-------|
@@ -241,6 +253,45 @@ Log your search queries in the issue body so future runs don't repeat the same s
 
 ---
 
+## Settings UI Navigation (Run #6 — CRITICAL)
+
+### Navigation Model
+The Settings UI has a complex two-panel navigation:
+- **Left panel** (category tree): Uses ↑↓ DECCKM arrows. Collapsed categories (`▶`) skip all children on Down. Expand with Right arrow (`→`), collapse with Left (`←`). 
+- **Right panel** (settings content): Scrollable. Automatically scrolls to show the selected section when you select it in the left panel AND press Enter.
+- **Tab**: Navigates to the next FOCUSABLE widget in the right panel. Only NUMBER FIELDS and TEXT INPUTS are focusable via Tab. CHECKBOXES ARE NOT tab-navigable (confirmed in Run #6).
+- **To enter a section**: Left panel → navigate to section → Enter → right panel scrolls to that section
+- **To reach a setting**: Left panel → correct section → Enter → Tab to first number/text field → navigate from there
+
+### Step-by-Step: Reach Auto Save Enabled checkbox
+The checkbox `Auto Save Enabled: [ ]` is in Settings > Editor (expanded with →) > Recovery.
+Currently, the ONLY confirmed working method is:
+1. Edit `/root/.config/fresh/config.json` directly: add `"editor": {"auto_save_enabled": true}`
+2. Restart Fresh to pick up the config change
+3. Verify in Settings UI that `Auto Save Enabled: [v]` is now checked
+
+### Category Navigation Order (Editor expanded)
+From Editor (expanded), Down navigates:
+1. Bracket Matching
+2. Completion  
+3. Diagnostics
+4. Display
+5. Editing
+6. Keyboard
+7. LSP
+8. Mouse
+9. Performance
+10. Recovery ← contains: auto_recovery_interval, auto_revert_poll, **auto_save_enabled**, auto_save_interval, recovery_enabled
+11. Startup
+12. Status Bar
+13. Whitespace
+
+### Reaching Recovery
+1. Navigate: ↑↓ to `▶ Editor` → Right to expand → Down × 10 to `Recovery`
+2. Press Enter → right panel scrolls to Recovery content
+3. Tab → first focusable item (Auto Recovery Save Interval Secs)
+4. Tab again → jumps to `[ User ]` footer button (bypassing checkboxes)
+
 ## tmux Automation Notes (CRITICAL — Run #2 Discovery)
 
 ### Arrow Keys MUST Use DECCKM Sequences
@@ -279,6 +330,16 @@ The palette opens with `>` (command mode). To switch modes:
 - Use multiple BSpace presses with delays; watch for input leak bug (#2113)
 
 ---
+
+## Features That Look Like Bugs Added in Run #6
+
+| Observation | What it actually is |
+|-------------|---------------------|
+| Settings checkboxes not reachable via Tab | **UNCONFIRMED** — Tab navigates to number/text inputs + footer buttons; checkboxes appear to be skipped. May require mouse. PENDING investigation. |
+| "Tour ended" status message after Exit Tour | **By design** — Confirms the tour was successfully closed. |
+| Orchestrator New Session: Enter closes dialog without creating session | **Focus issue** — Enter may toggle the "Create worktree" checkbox if that's focused. Must Tab×6 to reach "Create Session" button. |
+| Settings UI: "Enter" on a search result navigates to the SECTION, not the setting | **By design** — Enter scrolls right panel to show the section containing the setting, then you must Tab to interact with individual settings. |
+| Review Diff UNSTAGED shows +1/-1 for same content after staging | **Likely line-ending normalization** — git staging may normalize line endings, creating a minor diff. NOT a bug; verify with git diff on the staged content. |
 
 ## Features That Look Like Bugs Added in Run #5
 

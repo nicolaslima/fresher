@@ -24,6 +24,7 @@
 | 3     | 2026-05-26 | COMPLETED | 20+ | 0 filed → 0 confirmed new bugs |
 | 4     | 2026-05-26 | COMPLETED | 30+ | 0 filed → 0 confirmed new bugs |
 | 5     | 2026-05-26 | COMPLETED | 15+ | 1 filed → 1 real bug (#2117) |
+| 6     | 2026-05-26 | COMPLETED | 7   | 0 filed → 0 confirmed new bugs; 1 PENDING investigation |
 
 ---
 
@@ -196,44 +197,62 @@
 - [x] **TC-ORCHESTRATOR** PASSED - Orchestrator: Open shows session selector
 - [x] **TC-WORKSPACE-TRUST** PASSED - Workspace Trust dialog: ⚠ warning, T/K options, .envrc detected
 
+## Completed Tests (Run #6)
+- [x] **TC-THEME-EDITOR** PASSED (complete) - Color editing: navigate → Enter → type hex → confirm; Save As creates ~/.config/fresh/themes/my-test-theme.json
+- [x] **TC-AUTO-SAVE** PASSED - Enable in config; edit file; wait >8s; tab loses asterisk + status bar loses [+]
+- [x] **TC-ENV-MANAGER** PASSED - Show Status → Activate (direnv) → Deactivate; "Environment active (direnv)" status confirmed
+- [x] **TC-TOUR** PASSED - Load .fresh-tour.json; all 4 steps navigate correctly; Exit Tour works; status: "Tour ended"
+- [x] **TC-REVIEWDIFF-STAGE** PASSED - Stage hunk: 3 lines moved from UNSTAGED to STAGED; 'n' navigates hunk; 's' stages
+- [x] **TC-ORCHESTRATOR-NEW** PASSED - Orchestrator: New Session; Alt+N opens form; Tab×6 to Create Session; worktree created
+- [x] **TC-WORKSPACE-TRUST-SET** PASSED - Press T to trust in new session; status: "Workspace trusted — project tooling may run processes"
+
 ---
 
-## Immediate Next Action (Run #6)
+## Immediate Next Action (Run #7)
 
-### FIRST: Documentation Review
+### FIRST: Version Check
 - Check CHANGELOG.md for any new version since 0.3.8
-- Check `docs/features/` for any new docs since last run
+- Check if BUG #2117 (Review Diff discard) has been fixed
 
-### Priority Tests for Run #6:
-1. **Theme Editor: Color Editing** (complete the partial from Run #5)
-   - `Ctrl+P → "Edit Theme"` → select any theme
-   - Navigate to a color field with ↑↓; Enter opens field editor
-   - Tab switches between left tree panel and right color editor panel
-   - In right panel: navigate to Hex input field → type new value → verify live preview
-   - Verify "Save As" creates custom theme in `~/.config/fresh/themes/`
-2. **Auto-save behavior**
-   - `Ctrl+P → "Open Settings"` → search "auto_save" → enable `auto_save_enabled`
-   - Edit a file, wait >30s without saving → verify tab loses `[+]`
-3. **Environment Manager (0.3.8)**
-   - `Ctrl+P → "Env: Show Status"` — see current env state
-   - `Ctrl+P → "Env: Activate"` — on fresh project (.envrc present)
-   - `Ctrl+P → "Env: Use System (Deactivate)"` — restore system env
-4. **Workspace Trust: set level and verify**
-   - `Ctrl+P → "Workspace Trust…"` → press T to trust → verify persists
-5. **Tour feature**
-   - `Ctrl+P → "Tour: Load Definition..."` → load `.fresh-tour.json` from /home/user/fresh
-6. **Review Diff: stage hunk** (workaround for broken discard)
-   - Since `d` discard is broken (BUG #2117), test `s` stage instead
-   - Make a change → `n` → `s` to stage → verify it appears in "STAGED" section
-7. **Orchestrator: New Session**
-   - `Ctrl+P → "Orchestrator: New Session"` — spawn a second editor session
-   - Navigate between sessions in the orchestrator
+### Priority Tests for Run #7:
+1. **INVESTIGATE: Settings UI Checkboxes not Tab-navigable**
+   - Open Settings (Ctrl+P → "Open Settings")
+   - Navigate to Editor > Recovery section
+   - Verify: can Tab reach "Auto Save Enabled: [ ]" checkbox or not?
+   - If confirmed: file bug with clear reproduction steps
+   - If NOT an issue (e.g. there's a non-Tab way to toggle): document the correct method
+   
+2. **confirm_quit setting** — test `editor.confirm_quit`
+   - Open Settings → `/confirm_quit` → enable it
+   - Verify Ctrl+Q shows a confirmation prompt before quitting
+   - Disable it again
+   
+3. **LSP over SSH test** (partial)
+   - Fresh 0.3.8 claims "LSP over SSH now runs language server on remote host"
+   - Open a Rust/TypeScript file and check if LSP status indicator shows up (even if LSP server not installed)
+   - Document what the LSP status shows in "LSP (off)" state vs. potential enabled states
 
-### CRITICAL Reminders for Run #6:
-- **Tab switching**: `C-NPage` / `C-PPage` (NOT Ctrl+Tab)
-- **Arrow keys**: DECCKM sequences `$'\033O[A-D]'`
-- **Settings persist**: config at /root/.config/fresh/config.json
-- **Theme editor**: Tab switches between left-panel tree and right-panel color editor
-- **Review Diff discard BROKEN**: BUG #2117 — use `s` (stage) instead
-- **Palette command highlight**: Always check ANSI (`[48;5;25m]`) before pressing Enter
-- **Git Blame**: sub-commands appear below main "Git Blame" — navigate UP multiple times
+4. **Completion popup auto-show**
+   - Settings → `/completion_popup_auto_show` → enable
+   - Edit a Rust/JS file, type a few chars, verify popup appears automatically
+   
+5. **Next / Previous Window commands** (0.3.8 feature)
+   - `Ctrl+P → "Next Window"` — should cycle open windows
+   - Document behavior
+
+6. **Auto Revert behavior**  
+   - Open a file in Fresh; modify it externally (via shell); verify Fresh auto-reverts
+
+7. **Scroll Sync in split view**
+   - Open same file in two splits (Split Vertical → Ctrl+P → buffer navigation)
+   - `Ctrl+P → "Toggle Scroll Sync"` → verify scroll synchronizes
+
+### CRITICAL Reminders for Run #7:
+- **Settings checkbox navigation**: Tab only reaches number/text inputs. Checkboxes may require mouse or a different key. INVESTIGATE before filing bug.
+- **Orchestrator New Session**: Tab×6 from dialog open to reach "Create Session" button
+- **Auto-save enabled**: Currently ON in /root/.config/fresh/config.json (5s interval) — may affect test results
+- **Theme**: my-test-theme.json is active theme (orange cursor) — may affect visual test results
+- **Config file**: /root/.config/fresh/config.json — check and reset auto_save before testing if it interferes
+- **Review Diff discard**: BUG #2117 still open — use `s` (stage) instead of `d` (discard)
+- **Tour**: Tested and working. Tab to focus "Next →" button, Up arrow also works
+- **Worktree cleanup**: session-1 worktree at /root/.local/share/fresh/orchestrator/home_user_fresh/session-1 exists

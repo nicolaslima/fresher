@@ -74,6 +74,26 @@
 
 ---
 
+---
+
+### BUG-007 — Review Diff: "Discard hunk" fails with "patch does not apply" even when patch is valid
+- **Date:** 2026-05-26
+- **Severity:** High (core git workflow broken — discard hunk is a primary operation in Review Diff)
+- **GitHub Issue:** https://github.com/sinelaw/fresh/issues/2117 (filed Run #5)
+- **Status:** Open
+- **Root Cause:** Unknown — Fresh generates a reverse patch internally and applies it via `git apply`, but the patch fails with "error: patch failed: README.md:275" even though the identical patch works from the command line (`git diff HEAD -- file | git apply --reverse`).
+- **Reproduction (3 confirmed times):**
+  1. Open a git-tracked file and add 2 lines at the end
+  2. Save with Ctrl+S
+  3. `Ctrl+P → "Review Diff"` → navigate up to select "Review Diff" → Enter
+  4. Press `n` to navigate to hunk (status bar: "Hunk 1 of 1")
+  5. Press `d` → picker appears "Discard hunk / Cancel"
+  6. Press Enter (on "Discard hunk")
+  7. Result: status bar shows "Patch failed: error: patch failed: README.md:275error: README.md: patch does not apply"
+- **Workaround:** Use `git diff HEAD -- <file> | git apply --reverse` from the shell
+
+---
+
 ## Resolved Bugs
 
 *(None yet)*

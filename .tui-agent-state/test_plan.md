@@ -23,6 +23,7 @@
 | 2     | 2026-05-26 | COMPLETED | 20+ | 2 filed → 2 real, 0 false positives |
 | 3     | 2026-05-26 | COMPLETED | 20+ | 0 filed → 0 confirmed new bugs |
 | 4     | 2026-05-26 | COMPLETED | 30+ | 0 filed → 0 confirmed new bugs |
+| 5     | 2026-05-26 | COMPLETED | 15+ | 1 filed → 1 real bug (#2117) |
 
 ---
 
@@ -147,10 +148,10 @@
 
 ---
 
-## Priority 8: Edge Cases & Stress Tests (PARTIALLY COMPLETED - Run #4)
+## Priority 8: Edge Cases & Stress Tests (COMPLETED - Run #5)
 ### Objective: Find stability issues
 
-- [ ] **TC-080** Open a very large file (100MB+) — NOT YET TESTED
+- [x] **TC-080** PASSED - Large file (159MB text): byte offsets in gutter, "Scan Line Index" builds line index, navigation to line 1,000,000 works
 - [x] **TC-081** PASSED - Binary file: opens as `[BIN]` tab, content as `<FF><FE>..`, marked `[RO]`, no crash
 - [x] **TC-082** PASSED - Empty file: opens with single blank line, `~` for empty buffer, editable
 - [x] **TC-083** PASSED - Rapid key presses: burst text input received all characters; 100+ rapid undo stable
@@ -161,76 +162,78 @@
 
 ## Backlog (Future Runs)
 - LSP features (go to definition, hover, diagnostics) — requires LSP server installed
-- Git integration: git grep, git blame, Review Diff with actual changes
 - Plugin system testing: installing a plugin from URL
-- Multi-language syntax highlighting (Rust, Python, JS files)
-- TC-080: Very large file (100MB+)
-- Theme editor (Edit Theme command)
-- Whitespace indicators (toggle in Settings UI)
-- Code folding (gutter fold indicators, Toggle Fold command)
 - Scroll Sync (split view with same buffer)
-- Vertical rulers (Add Ruler command)
 - Current line/column highlight toggle
 - Auto-save behavior
-- File encoding handling (non-UTF8 files)
+- Theme editor: complete color editing workflow (requires mouse or precise keyboard navigation)
+- Review Diff: verify BUG #2117 is fixed when a fix is released
+- Environment manager: test `Env: Activate` on a project with `.envrc` or `.venv`
+- Workspace Trust: test setting trust level (T to trust, K to restrict) and verifying LSP behavior changes
+- Tour feature: `Ctrl+P → "Tour: Load Definition..."` — test `.fresh-tour.json`
+- Diagnostics panel: test inline diagnostics toggle (enable `diagnostics_inline_text`)
+- `confirm_quit` setting: enable and verify quit prompt appears
+- `auto_save_enabled`: test auto-save interval behavior
+- Multi-window: test Orchestrator "New Session" spawning a second window
+- "Review Range (Commit or Branch)": test reviewing a specific git range
 
 ---
 
-## Immediate Next Action (Run #5)
+## Completed Tests (Run #5)
+- [x] **TC-080** PASSED - Large file (159MB), byte offsets, Scan Line Index, line 1,000,000 navigation
+- [x] **TC-RUST** PASSED - Rust syntax highlighting (keywords, functions, strings, numbers in ANSI)
+- [x] **TC-PYTHON** PASSED - Python syntax highlighting confirmed
+- [x] **TC-JS** PASSED - JavaScript syntax highlighting confirmed  
+- [x] **TC-FOLD** PASSED - Code folding: ▸/▾, Toggle Fold, navigation skips folded regions
+- [x] **TC-BLAME** PASSED - Git Blame: commit blocks, b/q navigation
+- [x] **TC-REVIEWDIFF** PASSED (partial) - Review Diff opens, shows hunks, n/p nav; discard BUGS (#2117)
+- [x] **TC-WHITESPACE** PASSED - Trailing spaces show as ··· indicators
+- [x] **TC-ENCODING** PASSED - Latin-1 file: Windows-1252 auto-detected, éàñ decoded
+- [x] **TC-THEME-EDITOR** PARTIAL - Opens, shows colors, field selection via ANSI; editing keyboard workflow unclear
+- [x] **TC-MOVE-EXPLORER** PASSED - "Move File Explorer to Other Side" works (0.3.8)
+- [x] **TC-LIVE-DIFF** PASSED - Live Diff: vs HEAD shows green + lines, status confirms mode
+- [x] **TC-RULERS** PASSED - Add Ruler at col 80 shows tinted column
+- [x] **TC-ORCHESTRATOR** PASSED - Orchestrator: Open shows session selector
+- [x] **TC-WORKSPACE-TRUST** PASSED - Workspace Trust dialog: ⚠ warning, T/K options, .envrc detected
 
-### FIRST: Documentation Review (mandatory before testing)
-- Check `docs/features/lsp.md` for LSP setup requirements
-- Check `docs/features/editing.md` for code folding and whitespace docs
-- Check `docs/features/themes.md` for theme editor docs
-- Check CHANGELOG.md for any new version since 0.3.9
+---
 
-### Priority Tests for Run #5:
-1. TC-080: Very large file (100MB+)
-   - Create a 100MB file with `dd` or similar
-   - Open it in Fresh and verify: no hang, byte offsets shown, "Scan Line Index" available
-   - Test search within large file
-2. Theme Editor
-   - `Ctrl+P → "Edit Theme"` — opens visual color editor
-   - Navigate sections (Editor, UI, Search, Diagnostics, Syntax)
-   - Try editing a color value; verify live preview
-   - Verify "Save As" creates a custom theme file
-3. Multi-language syntax highlighting
-   - Create small Rust (.rs), Python (.py), JS (.js) files
-   - Verify syntax highlighting activates (ANSI colors on keywords)
-   - Verify fold indicators appear for Rust (which uses tree-sitter)
-4. Code Folding
-   - Open a Rust or JS file
-   - `Ctrl+P → "Toggle Fold"` to fold a block
-   - Verify gutter indicator changes (▸ = folded, ▾ = expanded)
-   - Test Up/Down navigation skips folded regions
-5. Git Blame
-   - `Ctrl+P → "Git Blame"` on a tracked file
-   - Verify blame panel opens with author/date info per line
-6. Review Diff with actual changes
-   - Make a small edit to a tracked file
-   - `Ctrl+P → "Review Diff"` — should show the hunk
-   - Test `n` / `p` navigation, then `d` to discard the change
-7. File encoding
-   - Create a Latin-1 encoded file (with `echo -e '\xe9\xe0\xf1' > /tmp/latin1.txt`)
-   - Open via File > Open, toggle "Detect Encoding" (Alt+E in dialog)
-   - Verify encoding shown in status bar changes accordingly
-8. Whitespace indicators
-   - `Ctrl+P → "Open Settings"` → Editor → Whitespace Indicators
-   - Toggle "show trailing" and verify trailing spaces shown as ·
-9. Live Diff
-   - Edit a git-tracked file
-   - `Ctrl+P → "Live Diff: vs Disk"` → verify diff opens in split
+## Immediate Next Action (Run #6)
 
-### CRITICAL Reminders for Run #5:
+### FIRST: Documentation Review
+- Check CHANGELOG.md for any new version since 0.3.8
+- Check `docs/features/` for any new docs since last run
+
+### Priority Tests for Run #6:
+1. **Theme Editor: Color Editing** (complete the partial from Run #5)
+   - `Ctrl+P → "Edit Theme"` → select any theme
+   - Navigate to a color field with ↑↓; Enter opens field editor
+   - Tab switches between left tree panel and right color editor panel
+   - In right panel: navigate to Hex input field → type new value → verify live preview
+   - Verify "Save As" creates custom theme in `~/.config/fresh/themes/`
+2. **Auto-save behavior**
+   - `Ctrl+P → "Open Settings"` → search "auto_save" → enable `auto_save_enabled`
+   - Edit a file, wait >30s without saving → verify tab loses `[+]`
+3. **Environment Manager (0.3.8)**
+   - `Ctrl+P → "Env: Show Status"` — see current env state
+   - `Ctrl+P → "Env: Activate"` — on fresh project (.envrc present)
+   - `Ctrl+P → "Env: Use System (Deactivate)"` — restore system env
+4. **Workspace Trust: set level and verify**
+   - `Ctrl+P → "Workspace Trust…"` → press T to trust → verify persists
+5. **Tour feature**
+   - `Ctrl+P → "Tour: Load Definition..."` → load `.fresh-tour.json` from /home/user/fresh
+6. **Review Diff: stage hunk** (workaround for broken discard)
+   - Since `d` discard is broken (BUG #2117), test `s` stage instead
+   - Make a change → `n` → `s` to stage → verify it appears in "STAGED" section
+7. **Orchestrator: New Session**
+   - `Ctrl+P → "Orchestrator: New Session"` — spawn a second editor session
+   - Navigate between sessions in the orchestrator
+
+### CRITICAL Reminders for Run #6:
 - **Tab switching**: `C-NPage` / `C-PPage` (NOT Ctrl+Tab)
 - **Arrow keys**: DECCKM sequences `$'\033O[A-D]'`
 - **Settings persist**: config at /root/.config/fresh/config.json
-- **Macro**: palette → "Record Macro" → digit+Enter → actions → F5 stop → F4 play
-- **Bookmarks**: palette → "Set Bookmark" → digit+Enter; Alt+N to jump
-- **Binary file**: opens [BIN], [RO], hex-escaped content
-- **Smart Home**: first press → non-whitespace col; second → col 1
-- **Position History**: Alt+Left navigates back; Alt+Right forward
-- **Surround**: select text, type bracket/quote → wraps selection
-- **Live Grep**: palette → "Live Grep" → type to search; Buffers/Files/Terminals scoped
-- **Review Diff**: n/p hunks, s/u/d stage/unstage/discard; Enter to jump to file
-- **Git Log**: q to close, arrows to navigate, Enter to preview commit diff
+- **Theme editor**: Tab switches between left-panel tree and right-panel color editor
+- **Review Diff discard BROKEN**: BUG #2117 — use `s` (stage) instead
+- **Palette command highlight**: Always check ANSI (`[48;5;25m]`) before pressing Enter
+- **Git Blame**: sub-commands appear below main "Git Blame" — navigate UP multiple times

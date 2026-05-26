@@ -4,7 +4,7 @@ This is the canonical reference for every GitHub issue this agent has filed.
 **Check this file BEFORE searching GitHub or filing any new issue.**
 If a topic appears here — open or closed — do not file a duplicate.
 
-Last updated: Run #2, 2026-05-26
+Last updated: Run #5, 2026-05-26
 
 ---
 
@@ -16,6 +16,7 @@ Last updated: Run #2, 2026-05-26
 | [#2111](https://github.com/sinelaw/fresh/issues/2111) | Search: F3 does not navigate to next match while search bar is open | Run #1 | **Open** | Confirmed usability bug: F3 silently ignored while search bar is open. Contradicts VS Code/Sublime/browser behavior. Issue updated with clear expected vs actual. Do NOT re-file. |
 | [#2112](https://github.com/sinelaw/fresh/issues/2112) | Search/Replace panel: "No matches found" for files opened outside project workspace | Run #2 | **Open** | Search backend only indexes files within the git root. External files (e.g. /tmp) silently fail with misleading UI. Reproduced twice. Do NOT re-file. |
 | [#2113](https://github.com/sinelaw/fresh/issues/2113) | Command palette: keystrokes typed in fuzzy file mode can leak into editor buffer | Run #2 | **Open** | Race condition during `>command` → file mode transition via BSpace. Timing-sensitive. Reproduced once. Do NOT re-file. |
+| [#2117](https://github.com/sinelaw/fresh/issues/2117) | Review Diff: "Discard hunk" fails with "patch does not apply" even when patch is valid | Run #5 | **Open** | Confirmed 3x. Fresh's internal `git apply --reverse` fails; manual shell command works fine. Do NOT re-file. |
 
 ---
 
@@ -40,6 +41,7 @@ Even if the symptom looks fresh, these have already been fully investigated:
 | F3 does nothing during active search | F3 silently ignored while search bar is open; Enter closes bar first, then F3 works | #2111 open |
 | Search/Replace panel returns "No matches found" for /tmp file | Search backend scoped to git workspace root only | #2112 open |
 | Characters from command palette file search appear in editor buffer | Focus race condition during `>` → file mode transition | #2113 open |
+| Review Diff `d` discard shows "Patch failed: error: patch failed" | Fresh's internal patch application is broken; manual `git apply --reverse` works | #2117 open |
 
 ---
 

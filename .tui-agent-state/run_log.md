@@ -339,3 +339,105 @@ None — 0 new bugs confirmed.
 - The action bound is still the built-in `save` action, so Ctrl+S still saves correctly
 - This is cosmetic — the description says "Plugin Demo" but functionality is unchanged
 - NOT a bug — the welcome plugin uses the built-in save action for demonstration
+
+---
+
+## Run #5 — 2026-05-26
+
+### Status: COMPLETED
+
+### What Was Done
+- Built Fresh binary from source (`cargo build --release --bin fresh`, ~8 min)
+- Executed 15+ test cases across large files, syntax highlighting, code folding, git features, themes, encoding, whitespace indicators, new 0.3.8 features
+- Filed 1 new GitHub issue (#2117 — Review Diff discard hunk patch failure)
+
+### Test Results Summary
+| Category | Passed | Failed | Partial | Notes |
+|----------|--------|--------|---------|-------|
+| TC-080: Large file (159MB) | 1 | 0 | 0 | Byte offsets shown, Scan Line Index works, line nav to 1,000,000 |
+| Multi-language syntax highlighting | 3 | 0 | 0 | Rust, Python, JS all confirmed with ANSI color codes |
+| Code Folding | 1 | 0 | 0 | Toggle Fold works, gutter ▸/▾, nav skips folded regions |
+| Git Blame | 1 | 0 | 0 | Opens *blame:tab*, shows commit blocks, q to close |
+| Review Diff (basic) | 1 | 0 | 0 | Opens diff view with +/- hunks, n/p navigation confirmed |
+| Review Diff (discard) | 0 | 1 | 0 | **BUG #2117**: d→Enter fails "Patch failed" consistently |
+| Whitespace Indicators | 1 | 0 | 0 | Trailing spaces show as ··· (dot indicators) |
+| File Encoding (Latin-1) | 1 | 0 | 0 | Windows-1252 auto-detected, éàñ decoded correctly |
+| Theme Editor | 0 | 0 | 1 | Opens, navigation works, color swatch display confirmed; editing complex via keyboard |
+| Move File Explorer to Other Side | 1 | 0 | 0 | NEW 0.3.8 feature works: explorer moves left↔right |
+| Live Diff | 1 | 0 | 0 | vs HEAD shows green +lines; status bar confirms mode |
+| Vertical Rulers | 1 | 0 | 0 | Add Ruler at col 80 shows [48;5;236m] tinted column |
+| Orchestrator (Alt+Q) | 1 | 0 | 0 | Opens session selector; fresh BASE visible in left panel |
+| Workspace Trust | 1 | 0 | 0 | NEW 0.3.8: dialog shows ⚠ warning, T/K options, auto-detects .envrc |
+
+### Issues Filed
+| Issue | Final Status | Verdict |
+|-------|-------------|---------|
+| #2117 Review Diff: discard hunk "patch does not apply" | **Open** | Confirmed bug — reproduced 3 times consistently |
+
+### False Positive Rate: 0%
+
+---
+
+## LESSONS LEARNED — Run #5
+
+### Lesson 19: Large file mode byte offsets
+- Files larger than a threshold open with byte offsets in the gutter (0, 111, 222...)
+- Status bar shows "Byte 0" instead of "Ln N, Col N"
+- Run "Scan Line Index" from command palette to build line index first
+- Status bar confirms "Line index built successfully"
+- After scan: `:1000000` in palette → Enter navigates to line 1,000,000
+
+### Lesson 20: Code folding workflow
+- Fold indicators appear in gutter when file has tree-sitter grammar (Rust, Python, JS)
+- `▾` = expanded (can fold), `▸` = collapsed (can unfold)
+- Folded blocks show `...` preview on fold line
+- Navigation (Down arrow) skips folded lines (e.g. line 1 folded→ Down goes to line 7)
+- Command: `Ctrl+P → "Toggle Fold"` while cursor is on the block opener
+
+### Lesson 21: Git Blame workflow
+- `Ctrl+P → "Git Blame"` opens *blame:filename* tab (read-only)
+- Shows commit blocks as separators: `── be6b4d1 (Author, time) "commit msg" ──`
+- Status bar: "Git blame: N blocks | b: blame at parent | q: close"
+- Close with `q`
+
+### Lesson 22: Review Diff discard requires a picker dialog
+- Pressing `d` on a hunk row triggers a picker: "Discard hunk" (Permanently lose) vs "Cancel"
+- Default selection is "Discard hunk"; press Enter to confirm
+- **BUG**: The discard fails with "Patch failed: error: patch failed: README.md:275error: README.md: patch does not apply" even on valid patches
+- The raw `git diff HEAD -- file | git apply --reverse` command works fine from shell
+
+### Lesson 23: Workspace Trust dialog (0.3.8)
+- `Ctrl+P → "Workspace Trust…"` opens a security warning overlay in the editor
+- Shows project path, detected config files (.envrc, Cargo.toml, package.json)
+- Options: `[T]rust folder & Allow Tooling` and `[K]eep Restricted (Default)`
+- Close with Escape (does not change trust level)
+- The enforcement gate is OFF by default in 0.3.8 (untrusted = treated as trusted)
+
+### Lesson 24: Move File Explorer to Other Side (0.3.8)
+- `Ctrl+P → "Move File Explorer to Other Side"` switches explorer between left and right
+- Takes effect immediately; persisted to config
+- Confirm: Explorer appears on RIGHT side after command
+
+### Lesson 25: Review Diff keyboard hint clarification
+- The bottom bar shows: `[n] next hunk  [p] prev hunk ... [d] discard ... [S U D] file-level`
+- `[S U D]` uppercase = FILE-level stage/unstage/discard
+- `[d]` lowercase = HUNK-level discard → opens confirmation picker
+- Both `d` and `D` result in the "Patch failed" bug (BUG #2117)
+
+### Lesson 26: Settings UI Trailing Spaces
+- `Ctrl+P → "Open Settings"` → press `/` to search → type "whitespace" to find all whitespace settings
+- "Trailing Spaces: [ ]" is the key setting to enable trailing space dots
+- After enabling and saving: files show `···` (dim dots) after trailing spaces
+- Config key: `editor.whitespace_trailing_spaces` (or whitespace_show as master toggle)
+
+### Lesson 27: Discard confirmation selection via ANSI
+- Review Diff's discard confirmation is a 2-item picker overlay at the bottom of screen
+- "Discard hunk" is highlighted first by default (`[48;5;25m]` dark blue)
+- Pressing Enter confirms the highlighted item
+- The picker appears AFTER pressing `d` (lowercase) — looking for `d` + Enter is WRONG, need `d` then check ANSI then Enter
+
+### Lesson 28: Palette search returns ALL related commands
+- When searching "Git Blame", results also include sub-commands: "Git Blame: Close", "Git Blame: Go Back"
+- The main "Git Blame" command is above the visible area by default
+- Navigate UP (multiple times) to reveal and select the main command
+- Always check ANSI capture (`[48;5;25m]` = highlighted) before pressing Enter

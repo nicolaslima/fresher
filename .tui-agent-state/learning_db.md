@@ -191,14 +191,30 @@ Log your search queries in the issue body so future runs don't repeat the same s
 | `Alt+V → ☐ Mouse Support` | Toggle mouse support | Via View menu |
 | `Alt+V → ☑ Vertical Scrollbar` | Toggle scrollbar | Via View menu |
 
-### Settings & Theme (Run #4)
+### Settings & Theme (Run #4 + Run #5)
 | Action | Method | Notes |
 |--------|--------|-------|
 | Open Settings UI | `Ctrl+P → "Open Settings"` | Full visual UI with categories |
 | Change Theme | `Ctrl+P → "Select Theme"` | Arrow keys (DECCKM) to navigate |
-| Edit Theme (visual) | `Ctrl+P → "Edit Theme"` | Color swatch editor |
+| Edit Theme (visual) | `Ctrl+P → "Edit Theme"` | Select theme → color tree opens |
 | Keybinding Editor | `Ctrl+P → "Open Keybinding Editor"` | 843 bindings, / search, r record-key |
 | Settings persist | Saved to `/root/.config/fresh/config.json` | theme, keybindings |
+| Settings search | `Ctrl+P → "Open Settings"` → `/` key | Searches setting names |
+| Whitespace: trailing | Settings → `/` → "whitespace" → "Trailing Spaces" → Enter | Enables ··· dots for trailing spaces |
+
+### Advanced Features (Run #5)
+| Feature | Command | Notes |
+|---------|---------|-------|
+| Large file mode | Open any file >threshold | Byte offsets in gutter; "Byte 0" in status bar |
+| Scan Line Index | `Ctrl+P → "Scan Line Index"` | Builds line index; then `:N` palette nav works |
+| Code Folding | `Ctrl+P → "Toggle Fold"` | ▸=folded, ▾=expanded; Down skips folded |
+| Vertical Ruler | `Ctrl+P → "Add Ruler"` → type col → Enter | Column tinted with `[48;5;236m]` background |
+| Remove Ruler | `Ctrl+P → "Remove Ruler"` | Removes ruler from current buffer |
+| Move File Explorer | `Ctrl+P → "Move File Explorer to Other Side"` | Switches left↔right; persists to config |
+| Live Diff: vs HEAD | `Ctrl+P → "Live Diff: vs HEAD"` | Green + lines in gutter; status: "Live Diff: comparing against HEAD" |
+| Orchestrator | `Ctrl+P → "Orchestrator: Open"` | Session selector popup; Alt+Q may not work via tmux |
+| Workspace Trust | `Ctrl+P → "Workspace Trust…"` | Security dialog; T=trust, K=restrict; Esc=cancel |
+| Environment Manager | `Ctrl+P → "Env: Show Status"` | Shows active environment; Env: Activate to inject |
 
 ### Advanced Features (Run #4)
 | Feature | Command | Notes |
@@ -261,6 +277,17 @@ The palette opens with `>` (command mode). To switch modes:
 - Type `#` → buffer mode
 - Ctrl+U does NOT clear the input (sends literal in editor instead)
 - Use multiple BSpace presses with delays; watch for input leak bug (#2113)
+
+---
+
+## Features That Look Like Bugs Added in Run #5
+
+| Observation | What it actually is |
+|-------------|---------------------|
+| Review Diff: "Discard hunk" fails with "Patch failed: error: patch failed..." | **Real bug #2117** — NOT by design. File `git apply --reverse` works fine from shell; Fresh's internal patch application is broken. |
+| Alt+Q doesn't open Orchestrator in tmux | **tmux interference** — Alt+Q might not be forwarded correctly by tmux. Use `Ctrl+P → "Orchestrator: Open"` instead. |
+| Theme Editor left panel shows `*tree* [RO]` with "Editing disabled" | **By design** — the tree panel is read-only; Tab to switch to the right editing panel to actually change a color value. |
+| Review Diff palette shows "Git Blame: Close" before "Git Blame" | **Palette ordering** — sub-commands appear below the main command in fuzzy-match results. Always navigate UP multiple times to find the main "Git Blame" command. |
 
 ---
 

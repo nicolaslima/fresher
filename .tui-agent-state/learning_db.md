@@ -590,3 +590,62 @@ Always use `tmux capture-pane -p -e` (with ANSI) to confirm which menu item is h
 - Launching Fresh from `/tmp/fresh-test-project` restores (or starts fresh) for that directory only
 - External files opened from outside the project (e.g., `/tmp/file.txt` from a project session) ARE included in that project's session restore
 - No cross-project tab mixing observed — issue #2056 appears resolved
+
+---
+
+## Lessons Added in Run #9
+
+### Lesson 44: LSP Popup Navigation — Confirmed Plain Up/Down (final verification)
+- Plain `Up`/`Down` tmux key names navigate LSP popup item lists correctly (confirmed Run #9)
+- `Down` from the first highlighted item moves to the next selectable action item (skipping dimmed/non-selectable items)
+- `Up` from "View Log" moved back to "Disable LSP for javascript" — navigation is bidirectional
+- ANSI highlight `[48;5;25m]` confirms which item is currently selected in the popup
+- Summary of popup structure for typescript-language-server: Status line (not selectable) → Install hint (dimmed, not selectable) → Disable LSP (selectable) → View Log (selectable) → Dismiss (Esc)
+
+### Lesson 45: Quickfix Buffer Has No Navigation Keybindings (BUG #2124)
+- The `*Quickfix*` buffer is a plain `[RO]` text buffer — NO special panel-mode bindings exist
+- Pressing `Enter` on a match line shows "Editing disabled in this buffer" — does NOT jump to location
+- `F8` (next error) also does not navigate Quickfix entries
+- Keybinding Editor `/quickfix` shows ONLY export bindings (`Alt+M`, `Alt+Q` in `prompt` context)
+- The internal design doc (`tui-editor-layout-design.md`) explicitly says Enter should navigate — but this was not implemented
+- Workaround: manually read `file:line:col` and use `Ctrl+O` + `:N` palette navigation
+- BUG #2124 filed
+
+### Lesson 46: Diagnostics Panel Shortcuts Not Working (BUG #2125)
+- Status bar hint `a: toggle filter | RET: goto | q: close` is shown when panel opens but these keys DON'T work
+- Pressing `q`, `a`, or `Enter` in `*Diagnostics* [RO]` all produce "Editing disabled in this buffer"
+- The panel body text `Enter:select | Esc:close` is display text only — NOT active keybindings
+- Same root cause as BUG #2124: plain `[RO]` buffer, no panel-mode keybindings
+- Only way to close: `Ctrl+P → "Toggle Diagnostics Panel"`
+- BUG #2125 filed
+
+### Lesson 47: Shell Command Feature (Alt+| and Alt+Shift+|) — Confirmed Working
+- `Alt+|` (tmux: `M-|`): Opens "Shell command:" prompt at the bottom; runs command on selected text; output goes to NEW tab named `*Shell: <command>*`
+- `Alt+Shift+|` (tmux: via command palette "Shell Command (Replace)"): Opens "Shell command (replace):" prompt; runs command on selection and REPLACES the selection in-place
+- Both work with piped shell commands (tested: `sort`, `sort -r`)
+- The `*Shell: <cmd>*` output buffer appears as a new tab (not a split pane)
+- Both commands work with and without a selection (when no selection, operates on entire buffer)
+- The output buffer is writable (no `[RO]` flag — unlike Quickfix/Diagnostics)
+
+### Lesson 48: Add Cursors to Line Ends — Alt+Shift+I Confirmed Working
+- `Alt+Shift+I` in tmux is sent as `M-I` (capital I) — the `Shift` is already encoded in the uppercase `I`
+- Works correctly: select N lines → `M-I` → places cursor at end of each covered line
+- Status bar confirms: `N cursors | Added cursors to line ends (N)`
+- ANSI capture shows `[7m]` (reverse video) cursor indicator at line ends
+- Tested with 5-line selection (lines 7-12): confirmed 6 cursors at line ends
+- This is a 0.3.7 feature — confirmed working in 0.3.9
+
+### Lesson 49: Settings UI Ctrl+R Behavior Investigation
+- `Ctrl+R` while in the Settings panel CLOSES the Settings UI instead of resetting the focused field
+- This is because `Ctrl+R` routes to the "Open Replace Bar" command globally, even within the Settings overlay
+- The `[ Reset ]` button IS present in the Settings footer: `[ Edit ] [ User ] [ Reset ] [ Save ] [ Cancel ]`
+- Tab cycling: Fields → `[ Edit ]` button → back to Fields (the `[ User ] [ Reset ] [ Save ] [ Cancel ]` buttons are NOT reachable via Tab cycling in the tested workflow)
+- Ctrl+R "resets a field" (CHANGELOG 0.3.8) appears to be intended for when the cursor is INSIDE an active text/number input — further investigation needed
+- WARNING: Settings navigation can leak keystrokes into the editor buffer — always Ctrl+Z undo after closing Settings
+
+### Lesson 50: Settings Navigation Keystroke Leak Warning
+- Settings UI can accidentally SAVE settings if Enter is pressed at wrong time
+- The `/` search in Settings + Enter navigates to a field AND can trigger save
+- The Tab key in the Settings right panel sometimes focuses a number field and immediately marks it as `●` (pending change) — be cautious
+- After Settings interactions, ALWAYS check config file: `cat /root/.config/fresh/config.json`
+- If incorrect values are saved, edit the config file directly and restart Fresh to pick up changes

@@ -27,6 +27,7 @@
 | 6     | 2026-05-26 | COMPLETED | 7   | 0 filed → 0 confirmed new bugs; 1 PENDING investigation |
 | 7     | 2026-05-26 | COMPLETED | 12  | 1 filed → 1 real bug (#2122) |
 | 8     | 2026-05-26 | COMPLETED | 10  | 0 filed → BUG #2117 confirmed FIXED |
+| 9     | 2026-05-26 | COMPLETED | 10  | 2 filed → BUG #2124 (Quickfix Enter nav), BUG #2125 (Diagnostics panel shortcuts) |
 
 ---
 
@@ -238,65 +239,92 @@
 
 ---
 
-## Immediate Next Action (Run #9)
+## Completed Tests (Run #9)
+- [x] **TC-LSP-POPUP-NAV-2** CONFIRMED - Plain `Up`/`Down` tmux keys navigate LSP popup correctly (Down → moves down 1 item, Up → moves back); `[48;5;25m]` ANSI highlight confirms selection
+- [x] **TC-QUICKFIX-ENTER** BUG FOUND - Enter on Quickfix match line → "Editing disabled in this buffer"; no jump occurs; F8 also doesn't work; NO navigation keybindings exist → **BUG #2124 filed**
+- [x] **TC-DIAG-PANEL-SHORTCUTS** BUG FOUND - `q`, `a`, `Enter` in Diagnostics panel all → "Editing disabled"; status bar hints `q: close | a: toggle filter | RET: goto` are non-functional → **BUG #2125 filed**
+- [x] **TC-SETTINGS-CTRL-R** PARTIAL - Ctrl+R in Settings overlay CLOSES it (routes to global Find & Replace); `[ Reset ]` button exists in footer but not reachable via Tab cycle in tested flow; further investigation needed
+- [x] **TC-SHELL-CMD** PASSED - `Alt+|` (tmux: `M-|`) opens "Shell command:" prompt; `sort` on selection → new `*Shell: sort*` tab with sorted output
+- [x] **TC-SHELL-CMD-REPLACE** PASSED - `Shell Command (Replace)` via palette; `sort -r` → replaces selection in-place with reverse-sorted content; tab shows `*` (unsaved change)
+- [x] **TC-MULTICURSOR-LINE-ENDS** PASSED - `M-I` (Alt+Shift+I) on 5-line selection → `6 cursors | Added cursors to line ends (6)` in status bar; `[7m]` reverse video cursor visible at each line end
+- [x] **TC-BUG2122-RECHECK** CONFIRMED OPEN - `move_to_paragraph_down/up` still have empty Key column in Keybinding Editor; `select_to_paragraph_*` still have `Ctrl+Shift+↓/↑`; no fix in Run #9
+
+---
+
+## Immediate Next Action (Run #10)
 
 ### FIRST: State Check
 - Version is 0.3.9 (Cargo.toml) — built from master
 - BUG #2117 (Review Diff discard): **FIXED in 0.3.9** — confirmed Run #8
-- BUG #2122 (move_to_paragraph no keybinding): still open — watch for fix
-- Config state: auto_save OFF, confirm_quit OFF, completion_popup_auto_show OFF (all defaults)
+- BUG #2122 (move_to_paragraph no keybinding): still open — confirmed Run #9
+- BUG #2124 (Quickfix Enter navigation): **NEW** — filed Run #9
+- BUG #2125 (Diagnostics panel shortcuts): **NEW** — filed Run #9
+- Config state: `check_for_updates: true` in config (explicitly set by agent accident in Run #9; functionally same as default)
+- WARNING: Reset config if needed — auto_save_interval should be at default 30s (not 60)
 
-### Priority Tests for Run #9:
+### Priority Tests for Run #10:
 
-1. **LSP popup navigation verification**
-   - Confirm that plain `Up`/`Down` tmux key names work for navigating LSP popup options
-   - Test: `Ctrl+P → "Show LSP Status"` → `Down` (tmux key) → Enter on "Start once" option
-   - Verify the correct option is selected (NOT the first)
-   - Document confirmed navigation method
+1. **Settings UI Ctrl+R Reset — Focused Investigation**
+   - Open Settings → navigate to a NUMBER FIELD (e.g., Auto Save Interval) using DECCKM arrows
+   - Press Tab ONCE to "focus" the number input (cursor should appear in `[ 30 ]` box)
+   - Type `99` to change the value
+   - WHILE THE CURSOR IS INSIDE THE INPUT BOX, press Ctrl+R
+   - Expected: value resets to 30 (the default)
+   - If Ctrl+R still closes Settings, it's a bug (global key binding not properly scoped to overlay)
+   - CAUTION: Do NOT press Enter while in Settings (it may save or close unexpectedly)
 
-2. **Quickfix buffer navigation**
-   - `Ctrl+P → "Live Grep"` → search for something → `Alt+M`
-   - Navigate within the `*Quickfix*` buffer
-   - Press `Enter` on a match line — does it jump to that location?
-   - Document the Quickfix buffer's navigation behavior
+2. **Settings UI List Editing — `[+] Add new` and `[x]` rows**
+   - Open Settings → navigate to the LSP section (has server lists)
+   - Test: press Enter on `[+] Add new` to add a new LSP server entry
+   - Test: press Enter on `[x]` to remove an existing entry
+   - Verify inline list editing behavior (0.3.8 feature)
+   - CAUTION: Tab to navigate to these list controls — do NOT use DECCKM arrows within the edit widget
 
-3. **LSP with fake server** (Bash-based simulation)
-   - Check `scripts/fake-lsp/` directory — can we launch a fake LSP to test LSP features?
-   - If fake-lsp exists: test completions, diagnostics, hover with the fake server
-   - This would unlock testing of: auto-completion popup, diagnostics panel, inlay hints
+3. **Alt+/ (Universal Search) — 0.3.9 feature**
+   - Press Alt+/ to open Live Grep (the new binding per CHANGELOG)
+   - This replaces the old Ctrl+P → Live Grep workflow
+   - Verify it works and the prompt opens correctly
 
-4. **Settings UI — new 0.3.9 improvements verification**
-   - `Ctrl+P → "Open Settings"`
-   - Test: `Ctrl+R` to reset a field to default (from CHANGELOG 0.3.8: "Ctrl+R resets a field")
-   - Test: List editing with inline `[+] Add new` / `[x]` rows (e.g., in LSP server list)
-   - Test: Settings search `/` → Enter → then try Tab navigation to the found field
+4. **Review Diff `d` Discard Verification** (regression guard)
+   - Make a small change to a tracked file
+   - `Ctrl+P → "Review Diff"` → `d` to discard
+   - Confirm the fix from 0.3.9 still holds (BUG #2117 remains fixed)
 
-5. **Shell Command feature** (`Alt+|`)
-   - Open a file, select some lines
-   - `Alt+|` → Run shell command on selection → output to new buffer
-   - Test: sort a selection, or run `wc -l` on a file
-   - Verify output appears in a new buffer
+5. **LSP with fake-pylsp** (Bash-based simulation)
+   - The `scripts/fake-lsp/bin/fake-pylsp` server speaks the LSP protocol
+   - It requires `FAKE_DEVCONTAINER_STATE` env variable to be set
+   - Try: `mkdir -p /tmp/fake-lsp-state && export FAKE_DEVCONTAINER_STATE=/tmp/fake-lsp-state`
+   - Investigate if `fake-pylsp` can be launched as a standalone LSP for a `.py` file
+   - Configure it in Fresh settings as `pylsp` for Python files
+   - If LSP diagnostics available: test Diagnostics panel `q/a/RET` shortcuts with real data
 
-6. **Multi-cursor: Add Cursors to Line Ends** (`Alt+Shift+I`)
-   - Open a file with multiple lines
-   - Select 5 lines → `Alt+Shift+I`
-   - Verify cursor appears at end of each selected line
-   - This is a 0.3.7 feature not yet tested
+6. **Auto-complete popup test with LSP** (requires test #5 to work first)
+   - Open a Python file, ensure fake-pylsp is running
+   - Type a partial symbol name and wait for auto-complete popup
+   - Test popup navigation (Up/Down) and selection (Enter/Tab)
+   - Document whether auto-complete triggers correctly
 
-7. **Diagnostics Panel navigation**
-   - `Ctrl+P → "Toggle Diagnostics Panel"` → wait for LSP diagnostics (or check with i18n plugin)
-   - `Ctrl+P → "Show Diagnostics Panel"` 
-   - Navigate with Up/Down, press Enter to jump to diagnostic location
+7. **Keyboard Macro recording and playback** (not yet tested in detail)
+   - `Ctrl+P → "Record Macro"` → digit → Enter (e.g., digit 1)
+   - Perform a sequence of edits (type some text, undo, redo)
+   - Press F5 to stop recording
+   - Press F4 to play the macro back
+   - Verify the exact sequence is replayed
 
-8. **BUG #2122 re-check** 
-   - Check if `move_to_paragraph_down/up` still has no default keybinding
-   - Test via Keybinding Editor → `/paragraph` to confirm status
+8. **Markdown Preview** 
+   - Open a `.md` file (e.g., README.md from the project)
+   - `Ctrl+P → "Markdown: Toggle Compose/Preview"` 
+   - Verify ANSI bold/italic rendered in preview
+   - Test toggle back to edit mode
 
-### CRITICAL Reminders for Run #9:
-- **Popup navigation**: Use plain `Up`/`Down` tmux keys (NOT DECCKM `$'\033O[AB]'`) for popup lists
+### CRITICAL Reminders for Run #10:
+- **Popup navigation**: Use plain `Up`/`Down` tmux keys for popup lists (NOT DECCKM)
+- **Editor cursor movement**: Use DECCKM `$'\033OA/OB/OC/OD'` for cursor movement INSIDE editor buffers
 - **Settings checkboxes**: ↑↓ DECCKM arrows in the right panel → Enter to toggle (NOT Tab)
-- **Settings search**: Press `/` in Settings UI LEFT panel to search settings
-- **Review Diff discard**: NOW FIXED — no longer need to avoid `d` key
+- **Settings number fields**: Tab to focus, then type directly (no `[-]`/`[+]` spinners)
+- **Settings keystroke leak**: After Settings sessions, check config.json and Ctrl+Z undo leaked edits
 - **BUG #2122**: move_to_paragraph keybinding — still open
-- **LSP**: rust-analyzer NOT installed; `rustup` available but no `rust-analyzer` binary
-- **Fake LSP script**: Check `scripts/fake-lsp/` for testing LSP features
+- **BUG #2124**: Quickfix Enter navigation — still open
+- **BUG #2125**: Diagnostics panel shortcuts — still open
+- **LSP**: `rust-analyzer` NOT installed; `rustup` available but no binary on PATH
+- **Fake LSP**: `scripts/fake-lsp/bin/fake-pylsp` — needs FAKE_DEVCONTAINER_STATE env var

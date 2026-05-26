@@ -107,6 +107,43 @@
 
 ---
 
+---
+
+### BUG-009 — Quickfix Buffer Does Not Navigate to Match Location on Enter
+- **Date:** 2026-05-26 (Run #9)
+- **Severity:** High (core feature unusable — Quickfix is described as a "dockable list" but Enter does nothing)
+- **GitHub Issue:** https://github.com/sinelaw/fresh/issues/2124
+- **Status:** Open
+- **Root Cause:** The `*Quickfix*` buffer is implemented as a plain `[RO]` text buffer. No special panel-mode keybindings exist for it. The internal design spec (docs/internal/tui-editor-layout-design.md) says "focus the dock so the user can scroll/Enter into matches" — but this was not implemented.
+- **Reproduction:**
+  1. `Ctrl+P → "Live Grep"` → type `function` → `Alt+M` to export to Quickfix
+  2. `Alt+]` twice to focus the `*Quickfix*` [RO] buffer in the bottom dock
+  3. Navigate to a match line with DECCKM Down arrows
+  4. Press Enter → "Editing disabled in this buffer"
+  5. Try F8 (next error) → no response
+  6. Keybinding Editor `/quickfix` → only export bindings (Alt+Q, Alt+M) — NO navigation bindings
+- **Confirmed reproduced:** Yes, twice in Run #9
+- **Workaround:** Manually read the `file:line:col` from the Quickfix buffer and navigate using Ctrl+O + `:N`
+
+---
+
+### BUG-010 — Diagnostics Panel Keyboard Shortcuts (q/a/RET) Do Not Work
+- **Date:** 2026-05-26 (Run #9)
+- **Severity:** Medium (panel interaction is blocked — hints describe non-functional shortcuts)
+- **GitHub Issue:** https://github.com/sinelaw/fresh/issues/2125
+- **Status:** Open
+- **Root Cause:** Same pattern as BUG-009 — the `*Diagnostics*` buffer is a plain `[RO]` text buffer. The status bar hints (`a: toggle filter | RET: goto | q: close`) describe intended panel-mode shortcuts that are not bound.
+- **Reproduction:**
+  1. `Ctrl+P → "Toggle Diagnostics Panel"` → Enter
+  2. Panel opens, focus on `*Diagnostics* [RO]`. Status bar shows: `a: toggle filter | RET: goto | q: close`
+  3. Press `q` → "Editing disabled in this buffer" (does NOT close panel)
+  4. Press `a` → "Editing disabled in this buffer" (does NOT toggle filter)
+  5. Press `Enter` → "Editing disabled in this buffer" (does NOT goto location)
+- **Confirmed reproduced:** Yes, twice in Run #9
+- **Workaround:** `Ctrl+P → "Toggle Diagnostics Panel"` to close. No workaround for filter/goto.
+
+---
+
 ## Resolved Bugs
 
 ### BUG-007 (resolved) — Review Diff Discard Hunk — FIXED in 0.3.9

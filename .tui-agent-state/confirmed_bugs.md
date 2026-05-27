@@ -14,23 +14,23 @@ Each bug entry:
 
 ---
 
-## BUG-001: Read-Only Special Buffers Ignore Documented Single-Key Shortcuts
+## BUG-001: *Keyboard Shortcuts* Buffer 'q' Does Not Close (Partial fix in #2125)
 - **ID:** BUG-001
 - **Title:** `*Keyboard Shortcuts*` buffer 'q' does not close despite in-buffer documentation
 - **Severity:** Low (Documentation/UX)
-- **Status:** Open — same root cause as issue #2125
-- **GitHub Issue:** [#2125](https://github.com/sinelaw/fresh/issues/2125) — comment added in Run #13
+- **Status:** Open — **Diagnostics panel 'q' FIXED** (commit 89caf72), but `*Keyboard Shortcuts*` still broken
+- **GitHub Issue:** [#2125](https://github.com/sinelaw/fresh/issues/2125) — Run #14 comment: partial fix status
 - **Reproduction:**
-  1. Launch Fresh: `fresh /tmp/any-file.txt`
-  2. `tmux send-keys -t fresh-test 'S-F1'` (Shift+F1) — wait 2s
-  3. Verify buffer opens — line 4 reads: "Press 'q' to close this buffer."
-  4. `tmux send-keys -t fresh-test 'q'`
-  5. `tmux capture-pane -t fresh-test -p | tail -3`
+  1. Launch Fresh with `--no-restore`
+  2. Press `Shift+F1` — `*Keyboard Shortcuts*` buffer opens
+  3. Line 4 reads: "Press 'q' to close this buffer."
+  4. Press `q`
+  5. `tmux capture-pane -t SESSION -p | tail -3`
 - **Expected:** Buffer closes
 - **Actual:** Status bar shows "Editing disabled in this buffer"; buffer stays open
 - **Workaround:** Use `Alt+W` to close
 - **First Seen:** Run #12, 2026-05-27
-- **Confirmed:** Run #13, 2026-05-27 (reproduction count: 3)
+- **Confirmed:** Run #14, 2026-05-27 (after Diagnostics panel fix was applied — KS buffer NOT fixed)
 
 ## BUG-002: Edit Menu "Replace..." Label Maps to Query Replace (Ctrl+Alt+R), Not Basic Replace (Ctrl+R)
 - **ID:** BUG-002

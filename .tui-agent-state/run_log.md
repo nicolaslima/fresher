@@ -2,6 +2,42 @@
 
 ---
 
+## Run #14 — 2026-05-27
+
+### Status: COMPLETED
+
+### What Was Done
+- Synced state from `tui-automated-testing-state`; built release binary from `claude/awesome-clarke-c7jCY`
+- Created tmux session `fresh-test-run14` (220×50)
+- **T47 Rapid keystrokes:** 50-char burst intact; 20 rapid Ctrl+Z all undone correctly. PASS.
+- **T48 Resize reflow:** 220×50 → 80×24 → 180×40 all reflow; mid-typing resize safe. PASS.
+- **Alt+A project-wide Search & Replace:** Panel opened; 9 matches in 4 files found; Space scoping (deselected source files to scope to test_file1.txt); Replace All with confirmation ("Replaced 3 occurrences in 1 files"). PASS.
+- **Calibrate Keyboard wizard:** 24 steps/5 groups (Basic Editing, Line Navigation, Word Navigation, Document Navigation, Emacs-Style). Does NOT test Ctrl+H. s/b/g/a controls all work.
+- **#2125 recheck (Diagnostics panel):** q CONFIRMED FIXED (commit 89caf72). `*Keyboard Shortcuts*` 'q' STILL BROKEN ("Editing disabled"). Comment posted on #2125.
+- **#2112 recheck (outside-workspace search):** CONFIRMED FIXED (commit b7e7e64). /tmp files now found in Search/Replace panel. Comment posted on #2112.
+
+### Test Results Summary
+| Test | Result | Notes |
+|------|--------|-------|
+| T47: Rapid keystrokes | **PASS** | 50-char burst intact, 20 rapid undos clean |
+| T48: Resize reflow | **PASS** | All size transitions smooth, mid-typing resize safe |
+| Alt+A: Project-wide Search | **PASS** | 9 matches/4 files, scoping, replace all with confirmation |
+| Calibrate Keyboard wizard | **TESTED** | 24 steps/5 groups; Ctrl+H NOT tested by wizard |
+| #2125 Diagnostics 'q' fix | **CONFIRMED FIXED** | commit 89caf72 verified via UI |
+| #2125 *Keyboard Shortcuts* 'q' | **STILL BROKEN** | Shows "Editing disabled in this buffer" |
+| #2112 Outside-workspace search | **CONFIRMED FIXED** | commit b7e7e64 verified via UI |
+
+### Issues Filed / Comments
+- No new issues filed
+- Comment on #2125: Diagnostics panel fixed; *Keyboard Shortcuts* still broken
+- Comment on #2112: Confirmed fixed with test procedure
+
+### Cleanup
+- Fresh exited via Ctrl+Q; tmux session `fresh-test-run14` killed
+- Test files removed: `tmp_test_files/`, `/tmp/rapid_test.txt`, `/tmp/outside_workspace_test.txt`
+
+---
+
 ## Run #13 — 2026-05-27
 
 ### Status: COMPLETED

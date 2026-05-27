@@ -14,10 +14,10 @@ Last updated: Run #5, 2026-05-26
 |---|-------|-------|--------|-------------------|
 | [#2109](https://github.com/sinelaw/fresh/issues/2109) | Ctrl+H doesn't open Find & Replace in terminals (Ctrl+H = Backspace) | Run #1 | **Open** | Terminal sends `0x08`. Verify whether Calibrate Keyboard wizard detects it. Do NOT re-file. |
 | [#2111](https://github.com/sinelaw/fresh/issues/2111) | Search: F3 does not navigate to next match while search bar is open | Run #1 | **Open** | Confirmed usability bug: F3 silently ignored while search bar is open. Contradicts VS Code/Sublime/browser behavior. Issue updated with clear expected vs actual. Do NOT re-file. |
-| [#2112](https://github.com/sinelaw/fresh/issues/2112) | Search/Replace panel: "No matches found" for files opened outside project workspace | Run #2 | **Open** | Search backend only indexes files within the git root. External files (e.g. /tmp) silently fail with misleading UI. Reproduced twice. Do NOT re-file. |
+| [#2112](https://github.com/sinelaw/fresh/issues/2112) | Search/Replace panel: "No matches found" for files opened outside project workspace | Run #2 | **FIXED** (Run #14) | Fixed by commit b7e7e64. Confirmed fixed in Run #14: /tmp files now appear in Search/Replace panel results. Comment added. |
 | [#2113](https://github.com/sinelaw/fresh/issues/2113) | Command palette: keystrokes typed in fuzzy file mode can leak into editor buffer | Run #2 | **Open** | Race condition during `>command` → file mode transition via BSpace. Timing-sensitive. Reproduced once. Do NOT re-file. |
 | [#2117](https://github.com/sinelaw/fresh/issues/2117) | Review Diff: "Discard hunk" fails with "patch does not apply" even when patch is valid | Run #5 | **Open** | Confirmed 3x. Fresh's internal `git apply --reverse` fails; manual shell command works fine. Do NOT re-file. |
-| [#2125](https://github.com/sinelaw/fresh/issues/2125) | Diagnostics panel keyboard shortcuts (q: close, a: toggle filter, RET: goto) do not work | Run #9 | **Open** | Comment added Run #13: `*Keyboard Shortcuts*` buffer also affected by same root cause. Do NOT re-file. |
+| [#2125](https://github.com/sinelaw/fresh/issues/2125) | Diagnostics panel keyboard shortcuts (q: close, a: toggle filter, RET: goto) do not work | Run #9 | **Partially fixed** (Run #14) | Diagnostics panel q/a CONFIRMED FIXED (commit 89caf72). *Keyboard Shortcuts* buffer 'q' still broken. Comment added Run #14 with detailed findings. Do NOT re-file. |
 | [#2135](https://github.com/sinelaw/fresh/issues/2135) | Edit menu "Replace..." label maps to Ctrl+Alt+R (Query Replace), not basic Replace (Ctrl+R) | Run #13 | **Open** | Filed Run #13. Do NOT re-file. |
 
 ---
@@ -41,7 +41,7 @@ Even if the symptom looks fresh, these have already been fully investigated:
 | File opens with `[+]` / `*` on fresh launch | Hot exit restoring previous session | #2110 closed |
 | `Ctrl+H` deletes a word | Terminal compat: `0x08` = Backspace | #2109 open |
 | F3 does nothing during active search | F3 silently ignored while search bar is open; Enter closes bar first, then F3 works | #2111 open |
-| Search/Replace panel returns "No matches found" for /tmp file | Search backend scoped to git workspace root only | #2112 open |
+| Search/Replace panel returns "No matches found" for /tmp file | FIXED in b7e7e64. /tmp files now found via explicit queuing of out-of-root buffers. | #2112 fixed |
 | Characters from command palette file search appear in editor buffer | Focus race condition during `>` → file mode transition | #2113 open |
 | Review Diff `d` discard shows "Patch failed: error: patch failed" | Fresh's internal patch application is broken; manual `git apply --reverse` works | #2117 open |
 | Pressing `q` in `*Keyboard Shortcuts*` buffer shows "Editing disabled" | Same root cause as #2125 — `[RO]` special buffers don't handle single-key shortcuts | #2125 open (comment added) |

@@ -183,6 +183,57 @@ Fresh opens binary files gracefully:
 - Default state: ON (confirmed by visual wrap of long lines at startup)
 - No "Toggle Line Wrap" found in command palette — must use View menu
 
+## Alt+A — Project-wide Search & Replace Panel
+
+### Panel Layout
+- Opens at the bottom of the screen as a split panel
+- Two fields: `Search:` and `Replace:` (Tab to navigate between them)
+- Scope checkbox: `[v] All Files` (when checked, searches all project files)
+- Options: `Case (Alt+C)`, `Regex (Alt+R)`, `Whole Word (Alt+W)`
+- Replace button changes context-sensitively to "Replace All in [filename] (Alt+Ret)" when scoped
+- Match list: grouped by file with counts (e.g. `▼ [v] TX tmp_test_files/test_file1.txt (3/3)`)
+- Hint line: `Tab next  Space include/exclude  Enter open  Alt+Ret replace selected  Esc close`
+
+### Key Behaviors
+- **Scope via Space:** Pressing Space on a file group header toggles its inclusion
+  - When pressed on a non-current-file group, it deselects "All Files" and scopes to current file only
+  - Shows `Only in: [filename]` indicator when scoped
+- **Replace confirmation:** "Replace N match(es) in M file(s)? Undo only covers files still open. Press Enter to confirm, Esc to cancel."
+- **Outside-workspace files:** Fixed in commit b7e7e64 — files outside the workspace root (e.g., /tmp) ARE now included in search results
+- **Status**: Shows match count in status bar and "Replaced N occurrences in M files" after replace
+
+## Calibrate Keyboard Wizard
+
+### Overview
+- Command: "Calibrate Keyboard" in command palette
+- Steps: 24 steps across 5 groups
+- Groups: Basic Editing, Line Navigation, Word Navigation, Document Navigation, Emacs-Style
+- Controls: `[s]` Skip key, `[b]` Back, `[g]` Skip group, `[a]` Abort
+
+### Groups and Keys Tested
+1. **Basic Editing**: BACKSPACE, DELETE, TAB, SHIFT+TAB
+2. **Line Navigation**: HOME, END, SHIFT+HOME, SHIFT+END (and others)
+3. **Word Navigation**: ALT+LEFT/RIGHT, ALT+SHIFT+LEFT/RIGHT, CTRL+LEFT/RIGHT, CTRL+SHIFT+LEFT/RIGHT
+4. **Document Navigation**: PAGE UP, PAGE DOWN (and others)
+5. **Emacs-Style**: CTRL+A, CTRL+E, CTRL+K, CTRL+Y
+
+### Key Finding
+- **Does NOT test CTRL+H** — the terminal compatibility issue (#2109, Ctrl+H = Backspace) is NOT addressed by the wizard
+- The wizard would need a group for "Troublesome Keys" to detect this (see IMP-003)
+- Final screen: "Input Calibration - Verify" with `[y] Save [a] Abort`
+- Summary shows: "All Keys Working!" if all captured keys matched expected
+
+### Rapid Input Behavior
+- Fresh handles rapid keystrokes without dropped input (tested: 50 chars at full tmux speed)
+- Rapid Ctrl+Z (20 × with no delay) correctly undoes char-by-char with no corruption
+- All keys in fast-burst sequences are received and processed correctly
+
+### Resize Reflow
+- Fresh adapts layout correctly when tmux window is resized (220×50 → 80×24 → 180×40)
+- Status bar truncates gracefully: `Ln 1, Col 1` becomes `Ln 1, ...` at narrow widths
+- Resize mid-typing produces no corruption or dropped characters
+- Editor remains fully responsive after resize
+
 ## Run History
 - Run 1 (2026-05-26): First run, built binary, tested ~35 test cases across all sprints
   - Sprints 1-9 largely completed
@@ -193,3 +244,10 @@ Fresh opens binary files gracefully:
   - T28 (bracket match), T30 (pos history), T37 (line wrap), T45 (large file), T46 (binary) all PASSED
   - Filed issue #2135; added comment to #2125
   - Binary built with debug profile (target/debug/fresh)
+- Run 14 (2026-05-27): T47/T48/Alt+A/Calibrate Keyboard + bug recheck
+  - T47 PASS (rapid input), T48 PASS (resize reflow)
+  - Alt+A PASS (project-wide search/replace, scoping, confirmation dialog)
+  - Calibrate Keyboard TESTED (24 steps/5 groups, no Ctrl+H)
+  - #2125 PARTIAL FIX: Diagnostics panel q/a confirmed fixed; *Keyboard Shortcuts* 'q' still broken
+  - #2112 CONFIRMED FIXED: /tmp files now found in Search/Replace panel
+  - Binary built from release profile (target/release/fresh) on branch claude/awesome-clarke-c7jCY

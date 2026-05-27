@@ -13,16 +13,19 @@
 
 ---
 
-## RUN #13+ PRIORITY ORDER (work top-down; these are the unfound-bug frontier)
+## RUN #15+ PRIORITY ORDER (work top-down; these are the unfound-bug frontier)
 
-1. **Sprint 10 — Edge cases & stress** (T45 large file, T46 binary, T47 rapid
-   input, T48 resize reflow). Deferred since Run #1; highest bug-yield.
-2. **Project-wide Search & Replace (Alt+A)** — cross-file replace, untested.
-3. **Sprint 11 — Navigation edge cases** (T28 bracket-match, T30 position
-   history Alt+←/→, T37 line-wrap toggle).
-4. **Calibrate Keyboard wizard** — does it detect the Ctrl+H/`0x08` case (#2109)?
-5. **Bug verification** (Sprint 12: TB01–TB03) — batch low-severity findings into
-   `potential_improvements.md` per R3, do not file individually.
+1. **Bug recheck — partial fixes from dev branch:**
+   - `*Keyboard Shortcuts*` 'q' still broken (Diagnostics panel FIXED; KS buffer NOT fixed) — re-test after each new build
+   - Re-check #2117 (Review Diff discard hunk) — still open, no fix commit seen
+2. **Flash: Jump plugin** — jumps to any visible match in any split (command palette)
+3. **Package Manager** — "Package: Packages", "Package: Install from URL" (command palette)
+4. **Live Diff plugin** — vs Default Branch / vs Disk — test both modes
+5. **Live Grep: Cycle Provider** — test different backend providers
+6. **Block selection (Alt+Shift+Arrow)** — tmux key `M-S-Down` did NOT work in Run #12; find correct key
+7. **Dev Container features** — seen in command palette
+
+Note: Sprint 10 COMPLETE (T45/T46/T47/T48 all PASS), Sprint 11 COMPLETE (T28/T30/T37 all PASS), Sprint 12 COMPLETE (TB01/TB02/TB03), Alt+A TESTED (PASS), Calibrate Keyboard wizard TESTED (24 steps/5 groups; does NOT test Ctrl+H).
 
 Everything in "Backlog (Future Runs)" below feeds this order; promote items up
 as they're picked.
@@ -146,14 +149,14 @@ as they're picked.
   - PASS (Run #13): 49MB / 500K line file opened instantly. Navigation to end: immediate. Search "499999" found 2 matches in <2s. Gutter shows BYTE OFFSETS (not line numbers) for large files — Fresh's virtual view mode.
 - [x] **T46** — Open a binary file; verify graceful handling
   - PASS (Run #13): /bin/ls opened gracefully. Tab shows [BIN] tag. Non-printable bytes shown as <XX> hex notation. No crash/freeze.
-- [ ] **T47** — Rapid keystrokes; verify no dropped input
-- [ ] **T48** — Resize tmux window while editing; verify layout reflow
+- [x] **T47** — Rapid keystrokes; verify no dropped input
+  - PASS (Run #14): 50 rapid chars → all intact; 20 rapid Ctrl+Z → all undone correctly. No dropped input, no corruption.
+- [x] **T48** — Resize tmux window while editing; verify layout reflow
+  - PASS (Run #14): Resize 220×50 → 80×24 → 180×40 all reflow correctly. Status bar truncates gracefully at narrow width. Editor remains responsive. Resize mid-typing (100×30 → 160×45 during text entry) produced no corruption.
 
 ---
 
 ## Backlog (Future Runs)
-- T47: Rapid keystrokes stress test
-- T48: Resize tmux window while editing; verify layout reflow
 - LSP features — tested in Run #11 with fake-pylsp; could test more LSP commands
 - Plugin system testing (TypeScript plugins)
 - Git integration features — tested partially; more edge cases possible
@@ -161,14 +164,20 @@ as they're picked.
 - Keyboard macros — tested in Run #10; verify complex multi-step macros
 - Bookmarks — tested in Run #11; verify all bookmark slots (Alt+0-9)
 - F10 reliability: Sometimes inserts `[21~]` escape sequence instead of opening menu (timing-dependent tmux issue)
-- Search and Replace in Project (Alt+A) — cross-file search
-- Calibrate Keyboard wizard
 - Block selection (Alt+Shift+Arrow) — tmux key sequence M-S-Down did NOT work in Run #12; need to find correct tmux key
 - Flash: Jump plugin feature (visible in command palette — jumps to any visible match in any split)
 - Package manager (seen in command palette: "Package: Packages", "Package: Install from URL")
 - Dev Container features (seen in command palette)
 - Live Diff plugin: vs Default Branch / vs Disk — test both modes
 - Live Grep: Cycle Provider — test different backend providers
+
+## Sprint 13: Alt+A + Calibrate Keyboard + Bug Rechecks — COMPLETED (Run #14)
+- [x] **T47** — PASS: Rapid keystrokes, no dropped input (50 chars burst, 20 rapid undos)
+- [x] **T48** — PASS: Resize reflow works (220×50 ↔ 80×24 ↔ 180×40; mid-type resize safe)
+- [x] **Alt+A** — PASS: Project-wide Search & Replace works: 9 matches/4 files, file scoping via Space, Replace All with confirmation dialog, status "Replaced 3 occurrences in 1 files"
+- [x] **Calibrate Keyboard wizard** — TESTED: 24 steps/5 groups (Basic Editing, Line Navigation, Word Navigation, Document Navigation, Emacs-Style). Does NOT test Ctrl+H. s/b/g/a controls all work.
+- [x] **#2125 partial** — Diagnostics panel 'q' CONFIRMED FIXED (commit 89caf72). *Keyboard Shortcuts* 'q' STILL BROKEN.
+- [x] **#2112** — CONFIRMED FIXED (commit b7e7e64). Search/Replace panel now finds matches in /tmp files outside workspace root.
 
 ## Sprint 12: Bug Verification — COMPLETED (Run #13)
 - [x] **TB01** — CONFIRMED: Keyboard Shortcuts buffer 'q' does not close

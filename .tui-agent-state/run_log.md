@@ -2,6 +2,59 @@
 
 ---
 
+## Run #13 — 2026-05-27
+
+### Status: COMPLETED
+
+### What Was Done
+- Loaded state from `tui-automated-testing-state` branch
+- Built fresh debug binary from source (`cargo build --bin fresh --features runtime`, ~3.5 min)
+  - Binary: `target/debug/fresh`
+- Created tmux session `fresh-test` (220×50)
+- **Bug Verification (Sprint 12):**
+  - TB01: CONFIRMED — `*Keyboard Shortcuts*` 'q' close non-functional (BUG-001)
+  - TB02: CONFIRMED — Edit menu "Replace..." mislabeled (BUG-002)
+  - TB03: RESOLVED — Alt+W behavior IS correct (context-sensitive, not a bug)
+- **GitHub Actions:**
+  - Searched for RC12-01: Already covered by issue #2125 → Added comment with Keyboard Shortcuts buffer info
+  - Filed new issue #2135 for RC12-02 (Edit menu label mismatch)
+- **New Feature Tests:**
+  - T28: PASS — Go to Matching Bracket (via command palette; `(` → `)`, `{` → `}`)
+  - T30: PASS — Position History (Alt+Left back, Alt+Right forward)
+  - T37: PASS — Toggle Line Wrap (View menu ☑ Line Wrap)
+  - T45: PASS — Large file (49MB / 500K lines) opens instantly, navigation immediate, search <2s
+  - T46: PASS — Binary file (/bin/ls) opens gracefully with [BIN] tag and hex notation
+
+### Test Results Summary
+| Test | Result | Notes |
+|------|--------|-------|
+| TB01: Keyboard Shortcuts 'q' close | **CONFIRMED BUG** | "Editing disabled" — same root cause as #2125 |
+| TB02: Edit menu Replace label | **CONFIRMED BUG** | Mislabeled "Replace..." → filed #2135 |
+| TB03: Alt+W inconsistency | **RESOLVED - NOT A BUG** | Context-sensitive behavior is correct |
+| T28: Go to Matching Bracket | **PASS** | Works via command palette |
+| T30: Position History | **PASS** | Alt+Left/Right navigate back/forward |
+| T37: Toggle Line Wrap | **PASS** | View menu ☑ toggle works both ways |
+| T45: Large File Performance | **PASS** | 49MB opened instantly; byte-offset mode |
+| T46: Binary File Handling | **PASS** | [BIN] tag; hex notation for non-printable |
+
+### Issues Found / Filed
+- Issue #2135 filed: "Edit menu 'Replace...' label maps to Ctrl+Alt+R (Query Replace)"
+- Comment on #2125: Keyboard Shortcuts buffer also affected by same root cause
+
+### Key Learnings
+- Fresh uses "byte offset mode" for large files (gutter shows bytes, not line numbers)
+- Binary files get `[BIN]` tab tag + `<XX>` hex notation for non-printable bytes  
+- `Ctrl+]` (ASCII 0x1D) doesn't transmit reliably via tmux send-keys; use command palette for bracket matching
+- Alt+W = Close Tab (outside search) is CORRECT behavior; not a bug
+- Line Wrap is in View menu (no command palette entry found in this search)
+
+### Cleanup
+- Fresh exited via Ctrl+Q
+- tmux session `fresh-test` killed
+- Test files /tmp/test_brackets.js, /tmp/test_long_line.txt, /tmp/large_test_file.txt deleted
+
+---
+
 ## Run #12 — 2026-05-27
 
 ### Status: COMPLETED

@@ -76,11 +76,12 @@
 ## Sprint 5: Navigation
 - [x] **T27** — Go to line (Ctrl+G); verify line jump
   - PASS: Dialog at bottom, type line number + Enter
-- [ ] **T28** — Go to bracket/matching bracket; verify jump
-  - NOT TESTED
+- [x] **T28** — Go to bracket/matching bracket; verify jump
+  - PASS (Run #13): Command "Go to Matching Bracket" (Ctrl+]) works via command palette. '(' → ')' and '{' → '}' jumps confirmed. NOTE: Ctrl+] via tmux send-keys is unreliable (Ctrl+] = 0x1D, may not transmit correctly in tmux). Use command palette instead.
 - [x] **T29** — Word movement (Ctrl+Left/Right); verify word-by-word nav
   - PASS: Ctrl+Right jumps to end of each word/token
-- [ ] **T30** — Position history (Alt+Left/Right); verify back/forward nav
+- [x] **T30** — Position history (Alt+Left/Right); verify back/forward nav
+  - PASS (Run #13): Alt+Left goes back in position history; Alt+Right goes forward. Tested with Ctrl+G jumps building history.
 
 ## Sprint 6: Command Palette
 - [x] **T31** — Open command palette (Ctrl+P); verify fuzzy finder appears
@@ -96,7 +97,8 @@
   - PASS: Horizontal split shows two panes with divider; "Split pane horizontally" status
 - [x] **T36** — Toggle line numbers (via command palette "Toggle Line Numbers"); verify display change
   - PASS: Line number gutter shows/hides correctly
-- [ ] **T37** — Toggle line wrap; verify wrap behavior
+- [x] **T37** — Toggle line wrap; verify wrap behavior
+  - PASS (Run #13): View menu → ☑ Line Wrap toggles. OFF = long line on 1 row (truncated). ON = long line wraps to multiple rows. Toggle is bidirectional.
 - [x] **T38** — Switch theme (Select Theme → dracula); verify color changes
   - PASS: Theme picker shows dark/dracula/high-contrast/light/nostalgia/solarized-dark/terminal
   - PASS: Dracula theme applied; confirmed via ANSI color code changes
@@ -119,18 +121,18 @@
   - PASS: "Close Split" closes terminal dock; Ctrl+Space toggles terminal input mode
 
 ## Sprint 10: Edge Cases & Stress
-- [ ] **T45** — Open a large file; verify performance
-- [ ] **T46** — Open a binary file; verify graceful handling
+- [x] **T45** — Open a large file; verify performance
+  - PASS (Run #13): 49MB / 500K line file opened instantly. Navigation to end: immediate. Search "499999" found 2 matches in <2s. Gutter shows BYTE OFFSETS (not line numbers) for large files — Fresh's virtual view mode.
+- [x] **T46** — Open a binary file; verify graceful handling
+  - PASS (Run #13): /bin/ls opened gracefully. Tab shows [BIN] tag. Non-printable bytes shown as <XX> hex notation. No crash/freeze.
 - [ ] **T47** — Rapid keystrokes; verify no dropped input
 - [ ] **T48** — Resize tmux window while editing; verify layout reflow
 
 ---
 
 ## Backlog (Future Runs)
-- T28: Go to matching bracket
-- T30: Position history (Alt+Left/Right)
-- T37: Toggle line wrap (Line Wrap in View menu; verify via command palette search)
-- T45-T48: Edge cases and stress tests
+- T47: Rapid keystrokes stress test
+- T48: Resize tmux window while editing; verify layout reflow
 - LSP features — tested in Run #11 with fake-pylsp; could test more LSP commands
 - Plugin system testing (TypeScript plugins)
 - Git integration features — tested partially; more edge cases possible
@@ -141,25 +143,16 @@
 - Search and Replace in Project (Alt+A) — cross-file search
 - Calibrate Keyboard wizard
 - Block selection (Alt+Shift+Arrow) — tmux key sequence M-S-Down did NOT work in Run #12; need to find correct tmux key
-- Verify Keyboard Shortcuts buffer 'q' close bug (Run #12 candidate RC12-01)
-- Verify Edit menu Replace shortcut discrepancy (Run #12 candidate RC12-02)
-- File GitHub issues for RC12-01 if not already filed (requires GitHub MCP re-auth)
+- Flash: Jump plugin feature (visible in command palette — jumps to any visible match in any split)
+- Package manager (seen in command palette: "Package: Packages", "Package: Install from URL")
+- Dev Container features (seen in command palette)
+- Live Diff plugin: vs Default Branch / vs Disk — test both modes
+- Live Grep: Cycle Provider — test different backend providers
 
-## Sprint 10: Edge Cases & Stress (Run #13+ Priority)
-- [ ] **T45** — Open a large file (100MB+); verify performance (no freeze, lazy loading)
-- [ ] **T46** — Open a binary file (/bin/ls); verify graceful handling
-- [ ] **T47** — Rapid keystrokes: buffer text quickly, verify no dropped input
-- [ ] **T48** — Resize tmux window while editing; verify layout reflow
-
-## Sprint 11: Navigation Edge Cases
-- [ ] **T28** — Go to matching bracket (may need bracket in code file)
-- [ ] **T30** — Position history (Alt+Left/Right)
-- [ ] **T37** — Toggle line wrap; verify visual line wrapping
-
-## Sprint 12: Bug Verification (Run #13+ Priority)
-- [ ] **TB01** — Confirm/refute: Keyboard Shortcuts buffer 'q' does not close
-  - Steps: Shift+F1 → press 'q' → observe status bar
-- [ ] **TB02** — Confirm/refute: Edit menu Replace shortcut Ctrl+Alt+R = Query Replace (not basic Replace)
-  - Steps: F10 → Edit → navigate to Replace... → Enter → observe confirm-each checkbox
-- [ ] **TB03** — Confirm/refute: Alt+W in non-search context inconsistently closes tab vs toggles whole-word
-  - Steps: Open file → press Alt+W multiple times → observe each result
+## Sprint 12: Bug Verification — COMPLETED (Run #13)
+- [x] **TB01** — CONFIRMED: Keyboard Shortcuts buffer 'q' does not close
+  - Same root cause as #2125 (Diagnostics panel). Comment added to #2125. Do NOT re-file.
+- [x] **TB02** — CONFIRMED: Edit menu "Replace..." maps to Ctrl+Alt+R = Query Replace (interactive), not basic Replace (Ctrl+R)
+  - Filed as new issue #2135. Do NOT re-file.
+- [x] **TB03** — RESOLVED (NOT A BUG): Alt+W correctly closes tab in normal editing mode. Status shows "Tab closed".
+  - Context-sensitive: Alt+W in search bar = toggle whole word; outside search = close tab. Expected behavior.

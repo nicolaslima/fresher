@@ -146,8 +146,50 @@ Safer alternative: Use "Close Buffer" or "Close Tab" commands via Ctrl+P.
 ### F10 Reliability
 F10 can sometimes insert escape sequence `[21~]` into the active buffer instead of opening the menu. This is timing-dependent with tmux. If this happens, undo with Ctrl+Z. Prefer using command palette (Ctrl+P) for menu actions.
 
+### Large File Mode
+Fresh enters a "virtual byte-offset mode" for large files (observed at 49MB / 500K lines):
+- Status bar shows: `Byte N` instead of `Ln N, Col N`
+- Gutter shows BYTE OFFSETS (0, 98, 196...) instead of line numbers
+- Navigation (Ctrl+End to bottom) is immediate
+- Search still works (found 2 matches in <2s for 49MB file)
+
+### Binary File Mode
+Fresh opens binary files gracefully:
+- Tab title shows `[BIN]` tag (e.g., `ls [BIN] ×`)
+- Non-printable bytes rendered as `<XX>` hex notation
+- No crash, no freeze
+- Line wrap applies to binary content
+
+### Go to Matching Bracket
+- Command: "Go to Matching Bracket" in command palette
+- Shortcut: `Ctrl+]` (but `Ctrl+]` = ASCII 0x1D may not transmit correctly via tmux send-keys)
+- Use command palette invocation for testing: `Ctrl+P` → type "matching" → Enter
+- Works on: `(` → `)`, `{` → `}`, and presumably `[` → `]`
+
+### Position History
+- `Alt+Left` = Go Back in position history (previous cursor positions)
+- `Alt+Right` = Go Forward in position history
+- History is built by navigating (Ctrl+G jumps, bracket matches, etc.)
+- Works across lines (tested: lines 5 → line 1 via Alt+Left)
+
+### Alt+W Confirmed Behavior (NOT a bug)
+- Normal editing mode (not in search bar): `Alt+W` = **Close Tab** ("Tab closed" status)
+- Search bar active: `Alt+W` = **Toggle Whole Word** (search option)
+- This is correct context-sensitive behavior, not a bug
+
+### Line Wrap Toggle
+- View menu → `☑ Line Wrap` item toggles wrapping
+- No keyboard shortcut (use View menu or command palette if it exists)
+- Default state: ON (confirmed by visual wrap of long lines at startup)
+- No "Toggle Line Wrap" found in command palette — must use View menu
+
 ## Run History
 - Run 1 (2026-05-26): First run, built binary, tested ~35 test cases across all sprints
   - Sprints 1-9 largely completed
   - One bug candidate identified (Alt+W inconsistency)
   - Session cleanup: fresh exited cleanly via Ctrl+Q
+- Run 13 (2026-05-27): Bug verification + new feature tests
+  - TB01 confirmed (BUG-001), TB02 confirmed (BUG-002), TB03 resolved (not a bug)
+  - T28 (bracket match), T30 (pos history), T37 (line wrap), T45 (large file), T46 (binary) all PASSED
+  - Filed issue #2135; added comment to #2125
+  - Binary built with debug profile (target/debug/fresh)

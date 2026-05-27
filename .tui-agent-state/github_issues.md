@@ -17,6 +17,8 @@ Last updated: Run #5, 2026-05-26
 | [#2112](https://github.com/sinelaw/fresh/issues/2112) | Search/Replace panel: "No matches found" for files opened outside project workspace | Run #2 | **Open** | Search backend only indexes files within the git root. External files (e.g. /tmp) silently fail with misleading UI. Reproduced twice. Do NOT re-file. |
 | [#2113](https://github.com/sinelaw/fresh/issues/2113) | Command palette: keystrokes typed in fuzzy file mode can leak into editor buffer | Run #2 | **Open** | Race condition during `>command` → file mode transition via BSpace. Timing-sensitive. Reproduced once. Do NOT re-file. |
 | [#2117](https://github.com/sinelaw/fresh/issues/2117) | Review Diff: "Discard hunk" fails with "patch does not apply" even when patch is valid | Run #5 | **Open** | Confirmed 3x. Fresh's internal `git apply --reverse` fails; manual shell command works fine. Do NOT re-file. |
+| [#2125](https://github.com/sinelaw/fresh/issues/2125) | Diagnostics panel keyboard shortcuts (q: close, a: toggle filter, RET: goto) do not work | Run #9 | **Open** | Comment added Run #13: `*Keyboard Shortcuts*` buffer also affected by same root cause. Do NOT re-file. |
+| [#2135](https://github.com/sinelaw/fresh/issues/2135) | Edit menu "Replace..." label maps to Ctrl+Alt+R (Query Replace), not basic Replace (Ctrl+R) | Run #13 | **Open** | Filed Run #13. Do NOT re-file. |
 
 ---
 
@@ -42,6 +44,8 @@ Even if the symptom looks fresh, these have already been fully investigated:
 | Search/Replace panel returns "No matches found" for /tmp file | Search backend scoped to git workspace root only | #2112 open |
 | Characters from command palette file search appear in editor buffer | Focus race condition during `>` → file mode transition | #2113 open |
 | Review Diff `d` discard shows "Patch failed: error: patch failed" | Fresh's internal patch application is broken; manual `git apply --reverse` works | #2117 open |
+| Pressing `q` in `*Keyboard Shortcuts*` buffer shows "Editing disabled" | Same root cause as #2125 — `[RO]` special buffers don't handle single-key shortcuts | #2125 open (comment added) |
+| Edit menu "Replace..." shortcut is Ctrl+Alt+R (Query Replace), not Ctrl+R | Label mismatch — filed as new issue | #2135 open |
 
 ---
 

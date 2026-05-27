@@ -2,6 +2,55 @@
 
 ---
 
+## Run #15 — 2026-05-27
+
+### Status: COMPLETED
+
+### What Was Done
+- Synced state from `tui-automated-testing-state`; built release binary from `claude/awesome-clarke-cN0ma` (v0.3.9, ~80s)
+- Created tmux session `fresh-test-run15` (220×50)
+- **Preflight:** GitHub MCP auth confirmed (listed issues). Playbook integrity verified.
+- **Bug recheck — *Keyboard Shortcuts* 'q':** STILL BROKEN ("Editing disabled in this buffer"). Same as Run #14.
+- **Bug recheck — #2117 (Review Diff discard hunk):** STILL BROKEN. Created review_diff_test.txt with +3 lines, triggered discard — "Patch failed: error: patch failed: review_diff_test.txt:2error: review_diff_test.txt: patch does not apply". Manual `git apply --reverse --check` succeeds (confirming it's Fresh's bug).
+- **Flash: Jump plugin:** PASS — opened via command palette, jump-hint overlay activated (letters replace visible chars), pressed 'n' hint to jump from Ln 7 Col 18 → Ln 7 Col 6.
+- **Package Manager (Package: Packages):** PASS — shows 13 available packages with categories [P/T/L], detail panel, filter tabs (All/Installed/Plugins/Themes/Languages/Bundles/Sync). Search by "/" filters: "theme" → 3 results. Registry synced (1/1 sources).
+- **Package Manager (Package: Install from URL):** PASS — prompts "Git URL or local path:" input dialog.
+- **Live Diff: vs HEAD:** PASS — green `│` gutter markers (ANSI 38;5;78) and green bg (48;5;22) on added lines. Status: "Live Diff: comparing against HEAD".
+- **Live Diff: vs Disk:** PASS — `+` marker on unsaved line. Status: "Live Diff: comparing against file on disk".
+- **Live Diff: vs Branch...:** PASS — "Branch or ref" prompt pre-filled "main". Status: "Live Diff: comparing against main".
+- **Live Grep: Cycle Provider:** PASS — Alt+P cycles: git-grep → rg → grep → git-grep. All 3 providers available. Search "Test" returned 1000+ matches.
+- **Block selection (Alt+Shift+Arrow):** PASS — M-S-Down and M-S-Right work! Block selected "Line " (cols 1-5) across rows 1-4. Typing '>' replaced selection on all 4 rows simultaneously. NOTE: Run #12 reported M-S-Down didn't work — it DOES work in this build.
+- **Dev Container features:** PASS — Create Config creates minimal .devcontainer/devcontainer.json; Show Info displays container config with action buttons; Show Features shows "No features configured"; Show Forwarded Ports shows "No configured or runtime ports to show."; all Dev Container panels close with 'q' (unlike *Keyboard Shortcuts* buffer).
+
+### Test Results Summary
+| Test | Result | Notes |
+|------|--------|-------|
+| *Keyboard Shortcuts* 'q' close | **STILL BROKEN** | "Editing disabled in this buffer" — same as Runs 12-14 |
+| #2117 Review Diff discard hunk | **STILL BROKEN** | Patch failed error persists; manual git apply --reverse works |
+| Flash: Jump plugin | **PASS** | Hint overlay activates, pressing hint char jumps cursor |
+| Package: Packages browser | **PASS** | 13 packages, search, filter tabs, detail panel, Install button |
+| Package: Install from URL | **PASS** | "Git URL or local path:" prompt appears |
+| Live Diff: vs HEAD | **PASS** | Green gutter markers on added lines; status confirmed |
+| Live Diff: vs Disk | **PASS** | `+` marker on unsaved content; status confirmed |
+| Live Diff: vs Branch... | **PASS** | Branch prompt, "comparing against main" confirmed |
+| Live Grep: Cycle Provider | **PASS** | git-grep → rg → grep cycling; search works with all providers |
+| Block selection (Alt+Shift+Arrow) | **PASS** | M-S-Down and M-S-Right work; rectangular edit confirmed |
+| Dev Container: Create Config | **PASS** | Creates .devcontainer/devcontainer.json with template |
+| Dev Container: Show Info | **PASS** | Shows config, action buttons, q closes correctly |
+| Dev Container: Show Features | **PASS** | "No features configured" |
+| Dev Container: Show Forwarded Ports | **PASS** | "No configured or runtime ports" panel with q close |
+
+### Issues Filed / Comments
+- No new issues filed (all tests passed or are known bugs with open issues)
+- Note: *Keyboard Shortcuts* 'q' bug persists — already tracked via #2125 comment
+
+### Cleanup
+- Fresh exited via Ctrl+Q (d = discard and quit)
+- tmux session `fresh-test-run15` killed
+- review_diff_test.txt commit reverted on dev branch; .devcontainer removed
+
+---
+
 ## Run #14 — 2026-05-27
 
 ### Status: COMPLETED

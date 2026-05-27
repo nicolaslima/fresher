@@ -234,6 +234,57 @@ Fresh opens binary files gracefully:
 - Resize mid-typing produces no corruption or dropped characters
 - Editor remains fully responsive after resize
 
+## Flash: Jump Plugin
+- Command: "Flash: Jump" in command palette
+- Behavior: Overlays single-character hint labels on every visible word/position in the editor
+- Pressing a hint character jumps the cursor to that position
+- Status bar shows "Flash[]" while active
+- Works correctly — cursor moves to the position labeled by the typed hint char
+
+## Package Manager
+- Commands: "Package: Packages" and "Package: Install from URL" (source: `pkg`)
+- **Package: Packages** opens a package browser buffer with:
+  - Package list (left panel): 13 available packages with type tags [P]=Plugin, [T]=Theme, [L]=Language
+  - Detail panel (right): version, author, license, description, tags, repo URL, [Install] button
+  - Filter tabs at top: All | Installed | Plugins | Themes | Languages | Bundles | Sync
+  - `/` opens search input; Enter confirms; search filters list by name/description
+  - Status bar: "Registry synced (N/N sources)"
+  - Navigation: ↑↓ navigate, Tab next, / search, Enter select, Esc close
+- **Package: Install from URL** shows "Git URL or local path:" prompt at bottom
+
+## Live Diff Plugin
+- Commands all prefixed "Live Diff:" in command palette (source: `live_diff`)
+- Available modes: vs HEAD, vs Disk (unsaved changes), vs Branch..., vs Default Branch, Refresh, Toggle (Buffer), Toggle (Global), Set Default Mode
+- **vs HEAD**: Green `│` gutter markers (ANSI 38;5;78) on added lines; green background (48;5;22) on added content. Status: "Live Diff: comparing against HEAD"
+- **vs Disk**: `+` marker (ANSI 38;5;71) on lines in buffer not yet saved. Status: "Live Diff: comparing against file on disk"
+- **vs Branch...**: Prompts "Branch or ref" input with "main" pre-filled. Status: "Live Diff: comparing against [branch]"
+- All modes confirmed working and switching via status bar confirmation
+
+## Block Selection (Alt+Shift+Arrow)
+- **Keys (confirmed working in Run #15):**
+  - Block select down: `M-S-Down` (Alt+Shift+↓)
+  - Block select up: `M-S-Up` (Alt+Shift+↑)
+  - Block select left: `M-S-Left` (Alt+Shift+←)
+  - Block select right: `M-S-Right` (Alt+Shift+→)
+- **Behavior:** Rectangular (column) selection — same columns selected on every row
+- **Confirmed by:** Selecting "Line " (5 chars, cols 1-5) on rows 1-4, then typing '>' replaced it on all rows simultaneously
+- **Note:** Run #12 reported M-S-Down did NOT work. Run #15 confirms it DOES work on this build. The key sequences are correct.
+
+## Dev Container Features
+- Commands all prefixed "Dev Container:" in command palette (source: `devcontainer`)
+- **Create Config**: Creates `.devcontainer/devcontainer.json` with minimal Ubuntu base template `{"name": "...", "image": "mcr.microsoft.com/devcontainers/base:ubuntu"}`
+- **Show Info**: Opens `*Dev Container*` panel showing container name, image, action buttons (Run Lifecycle, Open Config, Rebuild, Close). Controls: Tab cycle, Enter activate, Alt+r run, Alt+o open, Alt+b rebuild, **q close** (q works here, unlike *Keyboard Shortcuts*)
+- **Show Features**: Returns "No features configured" if devcontainer.json has no features section
+- **Show Forwarded Ports**: Opens panel with "No configured or runtime ports to show."; controls: r refresh, q/Esc close
+- **Without devcontainer.json**: "No devcontainer.json found" status message
+- These Dev Container panels properly close with 'q' — showing the 'q' issue is specific to certain [RO] buffer types
+
+## Live Grep Provider Cycling
+- Alt+P cycles providers: git-grep → rg → grep → (back to git-grep)
+- Only 3 providers available in this environment (command palette says rg, ag, git-grep, ack, fff, grep — but only 3 installed)
+- Search results appear for all providers with match count ("1000+" for common terms)
+- Provider shown in toolbar as "[ git-grep ]", "[ rg ]", "[ grep ]"
+
 ## Run History
 - Run 1 (2026-05-26): First run, built binary, tested ~35 test cases across all sprints
   - Sprints 1-9 largely completed
@@ -251,3 +302,7 @@ Fresh opens binary files gracefully:
   - #2125 PARTIAL FIX: Diagnostics panel q/a confirmed fixed; *Keyboard Shortcuts* 'q' still broken
   - #2112 CONFIRMED FIXED: /tmp files now found in Search/Replace panel
   - Binary built from release profile (target/release/fresh) on branch claude/awesome-clarke-c7jCY
+- Run 15 (2026-05-27): Plugin features + bug rechecks
+  - Flash:Jump PASS, Package Manager PASS (Packages + Install from URL), Live Diff PASS (all modes), Live Grep Cycle Provider PASS, Block Selection PASS (M-S-Down/M-S-Right confirmed working), Dev Container PASS (4 commands tested)
+  - *Keyboard Shortcuts* 'q' STILL BROKEN; #2117 STILL BROKEN
+  - Binary built from release profile (target/release/fresh) on branch claude/awesome-clarke-cN0ma

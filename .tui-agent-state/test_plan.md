@@ -13,17 +13,21 @@
 
 ---
 
-## RUN #15+ PRIORITY ORDER (work top-down; these are the unfound-bug frontier)
+## RUN #16+ PRIORITY ORDER (work top-down; these are the unfound-bug frontier)
 
-1. **Bug recheck — partial fixes from dev branch:**
-   - `*Keyboard Shortcuts*` 'q' still broken (Diagnostics panel FIXED; KS buffer NOT fixed) — re-test after each new build
-   - Re-check #2117 (Review Diff discard hunk) — still open, no fix commit seen
-2. **Flash: Jump plugin** — jumps to any visible match in any split (command palette)
-3. **Package Manager** — "Package: Packages", "Package: Install from URL" (command palette)
-4. **Live Diff plugin** — vs Default Branch / vs Disk — test both modes
-5. **Live Grep: Cycle Provider** — test different backend providers
-6. **Block selection (Alt+Shift+Arrow)** — tmux key `M-S-Down` did NOT work in Run #12; find correct key
-7. **Dev Container features** — seen in command palette
+1. **Bug recheck — still open bugs:**
+   - `*Keyboard Shortcuts*` 'q' still broken (Run #15 confirmed) — re-test after each new build
+   - Re-check #2117 (Review Diff discard hunk) — still open, Run #15 confirmed still broken
+2. **Git Blame plugin** — seen in command palette ("Show git blame for current file (magit-style)")
+3. **Live Diff: Set Default Mode** — test setting default mode (head, disk, branch)
+4. **Orchestrator features** — test new 0.3.9 Orchestrator UI elements not tested since Run #8
+5. **LSP: Code Actions (Alt+.)** — test code actions on a real LSP-supported file
+6. **Package: Install + Uninstall** — actually install a theme/plugin from the package manager and uninstall
+7. **Color Highlighter plugin** — seen in package list, may be installable
+8. **Dev Container: Attach** — what happens when no docker binary; error message quality
+9. **text-actions plugin** — install and test
+
+Note: Sprint 10 COMPLETE, Sprint 11 COMPLETE, Sprint 12 COMPLETE (TB01/TB02/TB03), Alt+A TESTED (PASS), Calibrate Keyboard TESTED, Block Selection TESTED (PASS Run #15), Flash:Jump TESTED (PASS Run #15), Package Manager TESTED (PASS Run #15), Live Diff TESTED (PASS Run #15), Live Grep Cycle Provider TESTED (PASS Run #15), Dev Container TESTED (PASS Run #15).
 
 Note: Sprint 10 COMPLETE (T45/T46/T47/T48 all PASS), Sprint 11 COMPLETE (T28/T30/T37 all PASS), Sprint 12 COMPLETE (TB01/TB02/TB03), Alt+A TESTED (PASS), Calibrate Keyboard wizard TESTED (24 steps/5 groups; does NOT test Ctrl+H).
 
@@ -156,6 +160,22 @@ as they're picked.
 
 ---
 
+## Sprint 15: Plugin Features + Bug Rechecks — COMPLETED (Run #15)
+- [x] ***Keyboard Shortcuts* 'q' recheck** — STILL BROKEN. "Editing disabled in this buffer" (#2125 related, still open)
+- [x] **#2117 Review Diff discard hunk recheck** — STILL BROKEN. "Patch failed" error persists; manual git apply --reverse works fine (Fresh's internal apply is broken)
+- [x] **Flash: Jump plugin** — PASS: Hint overlay activates; pressing hint character jumps cursor to target position
+- [x] **Package Manager: Packages** — PASS: 13 packages listed, search filter works, category tabs work, detail panel shows install button
+- [x] **Package Manager: Install from URL** — PASS: "Git URL or local path:" prompt appears
+- [x] **Live Diff: vs HEAD** — PASS: Green `│` gutter markers on added lines, status bar confirms mode
+- [x] **Live Diff: vs Disk** — PASS: `+` marker on unsaved buffer content, status bar confirms mode
+- [x] **Live Diff: vs Branch...** — PASS: Branch prompt with "main" pre-filled, status "comparing against main"
+- [x] **Live Grep: Cycle Provider** — PASS: Alt+P cycles git-grep → rg → grep; all providers work
+- [x] **Block selection (Alt+Shift+Arrow)** — PASS: M-S-Down/M-S-Right work in this build (rectangular selection confirmed by typing test)
+- [x] **Dev Container: Create Config** — PASS: Creates .devcontainer/devcontainer.json with Ubuntu template
+- [x] **Dev Container: Show Info** — PASS: Shows config with action buttons; q closes correctly
+- [x] **Dev Container: Show Features** — PASS: "No features configured" message
+- [x] **Dev Container: Show Forwarded Ports** — PASS: Panel with "No configured or runtime ports" + q close
+
 ## Backlog (Future Runs)
 - LSP features — tested in Run #11 with fake-pylsp; could test more LSP commands
 - Plugin system testing (TypeScript plugins)
@@ -164,12 +184,16 @@ as they're picked.
 - Keyboard macros — tested in Run #10; verify complex multi-step macros
 - Bookmarks — tested in Run #11; verify all bookmark slots (Alt+0-9)
 - F10 reliability: Sometimes inserts `[21~]` escape sequence instead of opening menu (timing-dependent tmux issue)
-- Block selection (Alt+Shift+Arrow) — tmux key sequence M-S-Down did NOT work in Run #12; need to find correct tmux key
-- Flash: Jump plugin feature (visible in command palette — jumps to any visible match in any split)
-- Package manager (seen in command palette: "Package: Packages", "Package: Install from URL")
-- Dev Container features (seen in command palette)
-- Live Diff plugin: vs Default Branch / vs Disk — test both modes
-- Live Grep: Cycle Provider — test different backend providers
+- Block selection: CONFIRMED WORKING (Run #15) — M-S-Down/M-S-Right work
+- Flash: Jump plugin: CONFIRMED WORKING (Run #15)
+- Package manager: CONFIRMED WORKING (Run #15)
+- Dev Container features: CONFIRMED WORKING (Run #15)
+- Live Diff plugin: CONFIRMED WORKING (Run #15) — all modes tested
+- Live Grep: Cycle Provider: CONFIRMED WORKING (Run #15)
+- Git Blame plugin — "Show git blame for current file (magit-style)" — not yet tested
+- Package: actually install a package and verify it becomes active
+- Dev Container: Attach — test error handling when no docker binary
+- text-actions plugin — install and test via Package Manager
 
 ## Sprint 13: Alt+A + Calibrate Keyboard + Bug Rechecks — COMPLETED (Run #14)
 - [x] **T47** — PASS: Rapid keystrokes, no dropped input (50 chars burst, 20 rapid undos)

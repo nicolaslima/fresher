@@ -4,7 +4,7 @@ This is the canonical reference for every GitHub issue this agent has filed.
 **Check this file BEFORE searching GitHub or filing any new issue.**
 If a topic appears here — open or closed — do not file a duplicate.
 
-Last updated: Run #5, 2026-05-26
+Last updated: Run #16, 2026-05-31
 
 ---
 
@@ -16,8 +16,8 @@ Last updated: Run #5, 2026-05-26
 | [#2111](https://github.com/sinelaw/fresh/issues/2111) | Search: F3 does not navigate to next match while search bar is open | Run #1 | **Open** | Confirmed usability bug: F3 silently ignored while search bar is open. Contradicts VS Code/Sublime/browser behavior. Issue updated with clear expected vs actual. Do NOT re-file. |
 | [#2112](https://github.com/sinelaw/fresh/issues/2112) | Search/Replace panel: "No matches found" for files opened outside project workspace | Run #2 | **FIXED** (Run #14) | Fixed by commit b7e7e64. Confirmed fixed in Run #14: /tmp files now appear in Search/Replace panel results. Comment added. |
 | [#2113](https://github.com/sinelaw/fresh/issues/2113) | Command palette: keystrokes typed in fuzzy file mode can leak into editor buffer | Run #2 | **Open** | Race condition during `>command` → file mode transition via BSpace. Timing-sensitive. Reproduced once. Do NOT re-file. |
-| [#2117](https://github.com/sinelaw/fresh/issues/2117) | Review Diff: "Discard hunk" fails with "patch does not apply" even when patch is valid | Run #5 | **Open** | Confirmed 3x in Run #5, re-confirmed Run #15 (review_diff_test.txt +3 lines → discard → "Patch failed: error: patch failed: review_diff_test.txt:2error: review_diff_test.txt: patch does not apply"). Manual `git apply --reverse --check` succeeds. Do NOT re-file. |
-| [#2125](https://github.com/sinelaw/fresh/issues/2125) | Diagnostics panel keyboard shortcuts (q: close, a: toggle filter, RET: goto) do not work | Run #9 | **Partially fixed** (Run #14) | Diagnostics panel q/a CONFIRMED FIXED (commit 89caf72). *Keyboard Shortcuts* buffer 'q' still broken. Comment added Run #14 with detailed findings. Do NOT re-file. |
+| [#2117](https://github.com/sinelaw/fresh/issues/2117) | Review Diff: "Discard hunk" fails with "patch does not apply" even when patch is valid | Run #5 | **FIXED** (Run #16) | Closed by maintainer. Confirmed fixed in 0.3.10 (Run #16): review_diff_test16.txt +4 lines → discard → "Review Diff: 0 hunks". File reverted to original. Do NOT re-file. |
+| [#2125](https://github.com/sinelaw/fresh/issues/2125) | Diagnostics panel keyboard shortcuts (q: close, a: toggle filter, RET: goto) do not work | Run #9 | **CLOSED** (Run #16) | Closed by maintainer. Diagnostics panel 'q' confirmed still fixed in 0.3.10. *Keyboard Shortcuts* 'q' still broken → filed new #2165. Do NOT re-file. |
 | [#2135](https://github.com/sinelaw/fresh/issues/2135) | Edit menu "Replace..." label maps to Ctrl+Alt+R (Query Replace), not basic Replace (Ctrl+R) | Run #13 | **Open** | Filed Run #13. Do NOT re-file. |
 
 ---
@@ -56,6 +56,14 @@ Even if the symptom looks fresh, these have already been fully investigated:
 3. Scan the open issues table — if your topic is there, add a comment to the existing issue rather than opening a new one.
 4. Search GitHub with at least 3 different query variations.
 5. Only then open a new issue and add a row to this file.
+
+## Issue #2165 — *Keyboard Shortcuts* buffer 'q' does not close (persists in 0.3.10)
+- **Filed:** Run #16, 2026-05-31
+- **URL:** https://github.com/sinelaw/fresh/issues/2165
+- **Label:** bug, tui-agent-auto-bug
+- **Status:** Open
+- **Summary:** The `*Keyboard Shortcuts*` buffer opened via `Shift+F1` documents "Press 'q' to close this buffer." on line 4, but pressing 'q' shows "Editing disabled in this buffer" in 0.3.10. All other special buffers (Diagnostics, Git Blame, Dev Container) correctly handle 'q'. The Diagnostics panel fix in commit 89caf72 used `panelKeys` for that plugin — this buffer uses a different mechanism that was not updated. Parent issue #2125 closed without fixing this.
+- **Search queries used:** `keyboard shortcuts q editing disabled`, `keyboard shortcuts buffer close`, `Shift+F1 q close`
 
 ## Issue #2122 — move_to_paragraph_down/up Has No Default Keybinding (0.3.9 oversight)
 - **Filed:** Run #7, 2026-05-26

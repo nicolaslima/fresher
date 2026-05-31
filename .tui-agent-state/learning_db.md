@@ -306,3 +306,68 @@ Fresh opens binary files gracefully:
   - Flash:Jump PASS, Package Manager PASS (Packages + Install from URL), Live Diff PASS (all modes), Live Grep Cycle Provider PASS, Block Selection PASS (M-S-Down/M-S-Right confirmed working), Dev Container PASS (4 commands tested)
   - *Keyboard Shortcuts* 'q' STILL BROKEN; #2117 STILL BROKEN
   - Binary built from release profile (target/release/fresh) on branch claude/awesome-clarke-cN0ma
+- Run 16 (2026-05-31): Bug rechecks + new features in v0.3.10
+  - #2117 CONFIRMED FIXED (v0.3.10): Review Diff discard hunk works correctly
+  - *Keyboard Shortcuts* 'q' STILL BROKEN → new #2165 filed (parent #2125 closed)
+  - Diagnostics 'q' STILL WORKING (confirmed)
+  - Git Blame PASS (blame buffer, commit info, 'b' go-back, 'q' close)
+  - Live Diff: Set Default Mode PASS (all modes accepted)
+  - Orchestrator features PASS (Alt+P, Alt+T, Details, filter search)
+  - Package install (via "Package: Install from URL") PASS; Color Highlighter plugin PASS (swatches)
+  - Uninstall via file deletion works (rm -rf plugin dir); package removed immediately
+  - Dev Container: Attach "CLI Not Found" dialog PASS (shows npm install command)
+  - Binary built from release profile (target/release/fresh) on branch claude/awesome-clarke-jWgGn
+
+## Git Blame Plugin
+- Command: "Git Blame" in command palette (source: `git_blame`)
+- Opens `*blame:<filename>*` [RO] buffer with per-line commit annotations
+- Format: `── <hash> (<author>, <time>) "<commit message>" ──` as block header
+- Status bar: "Git blame: N blocks | b: blame at parent | q: close"
+- **'b'** — go back to parent commit of current line's commit
+  - If file was added in that commit (initial), shows: "Cannot get blame at SHA^ (may be initial commit or file didn't exist)"
+- **'q'** — closes the blame panel correctly (unlike *Keyboard Shortcuts* buffer)
+- Tested on: single-commit files and README.md (monorepo context)
+
+## Package Manager: Install via URL
+- **Install command:** "Package: Install from URL" (command palette)
+- **Prompt:** "Git URL or local path:" at the bottom
+- **URL format for monorepo plugins:** `https://github.com/owner/repo#subfolder`
+  - Example: `https://github.com/sinelaw/fresh-plugins#color-highlighter`
+- **After install:** Status shows "Installed and activated <name> v<version>"
+- **Package location:** `/root/.config/fresh/plugins/packages/<name>/`
+- **Package files:** `<name>.ts`, `<name>.i18n.json`, `package.json`
+- **Uninstall:** No "Package: Uninstall" command exists. Must delete package directory manually: `rm -rf /root/.config/fresh/plugins/packages/<name>/`
+  - Fresh detects removal in real-time (no restart needed)
+  - Plugin deactivates immediately when directory deleted
+
+## Package Manager: UI Navigation Notes
+- Package browser Tab cycle (from list item): 
+  - Tab 1: "Enter Select" (list navigation)
+  - Tab 2: "Enter Activate" (shows `[ Install ]`/`[ Uninstall ]` brackets in right panel)  
+  - Tab 3-4: "Enter Search" (search field)
+  - Tab 5-9+: "Enter Filter" (filter tabs: All, Installed, Plugins, Themes, Languages, Bundles)
+  - Tab 10-11: "Enter Sync" (Sync tab)
+- ⚠️ Tab 2 "Enter Activate" MAY activate the search field rather than the Install button (inconsistent behavior observed — further testing needed)
+- For reliable install: use "Package: Install from URL" command in palette
+- For uninstall: manually delete the plugin directory
+
+## Color Highlighter Plugin
+- Install URL: `https://github.com/sinelaw/fresh-plugins#color-highlighter`
+- Commands: "Color Highlighter: Enable", "Color Highlighter: Disable", "Color Highlighter: Toggle"
+- **Enable behavior:** Shows filled block `█` character before each color code
+  - `#ff0000` → `[38;5;196m█` (red, ANSI 256-color approximation)
+  - `rgb(0, 128, 255)` → `[38;5;33m█` (blue)
+  - `hsl(120, 100%, 50%)` → `[38;5;46m█` (green)
+  - `#abc` → `[38;5;145m█` (light blue/lavender = #aabbcc)
+- Supports CSS files and any file with color expressions
+- Plugin activates immediately on install (no restart needed)
+- Plugin deactivates in real-time on file deletion (no restart needed)
+
+## Dev Container: Attach Error Handling
+- When devcontainer CLI is NOT installed:
+  - Dialog: "Dev Container CLI Not Found"
+  - Message: "The devcontainer CLI is needed for rebuild. Copy the install command below, or dismiss."
+  - Shows: "Copy: npm i -g @devcontainers/cli"
+  - Dismiss with ESC
+- When devcontainer.json is NOT found: status shows "No devcontainer.json found" (no dialog)
+- Docker daemon not running does NOT affect this error path (CLI check happens before docker check)

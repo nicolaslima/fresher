@@ -123,3 +123,17 @@ change would make it self-evident without requiring users to read docs.
 - **Suggested fix:** A `fresh --test-mode` or pipe-based command interface that accepts structured input (JSON events) and produces structured output (cursor position, buffer content, status) would make automated testing far more reliable.
 - **Effort:** High — new subsystem. But would significantly improve the quality of Fresh's own e2e test suite as well.
 - **Discovered:** Run #1, 2026-05-26
+
+---
+
+### IMP-012 — Package Manager: Install/Uninstall Buttons Not Reliably Keyboard-Accessible
+- **Observed (Run #16):** In the Package Manager panel, selecting a package and pressing Tab reaches an "Enter Activate" position that shows `[ Install ]` brackets in the detail pane. However, pressing Enter at that position opens the Search field rather than triggering the Install action. The Tab cycle order is: Search → filter tabs (All/Installed/Plugins/Themes/Languages/Bundles) → Sync → list items → back to Search.
+- **Correct behavior:** The package list and Install/Uninstall buttons should be fully keyboard-operable for accessibility. Currently, installing requires the "Package: Install from URL" command (palette workaround) and uninstalling requires manual `rm -rf` of the plugin directory.
+- **No "Package: Uninstall" command exists in the command palette** — users cannot uninstall via keyboard alone without knowing the filesystem path.
+- **Problem:** A fully mouse-free workflow (essential for a TUI editor's core audience) is blocked. Power users who rely entirely on keyboards cannot install or uninstall plugins.
+- **Suggested fixes:**
+  1. Fix the "Enter Activate" binding in the Package Manager so pressing Enter on an Install/Uninstall button actually triggers it.
+  2. Add a `Package: Uninstall` (or `Package: Remove`) command to the command palette that operates on the currently-selected/installed package.
+  3. Alternatively, expose Install/Uninstall as direct keybindings (e.g., `i` to install, `u` to uninstall) within the Package Manager panel, consistent with how other panels use single-key shortcuts.
+- **Effort:** Medium — requires fixing focus/event routing in the Package Manager widget and adding a palette command.
+- **Discovered:** Run #16, 2026-05-31

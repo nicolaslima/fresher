@@ -14,12 +14,12 @@ Each bug entry:
 
 ---
 
-## BUG-001: *Keyboard Shortcuts* Buffer 'q' Does Not Close (Partial fix in #2125)
+## BUG-001: *Keyboard Shortcuts* Buffer 'q' Does Not Close
 - **ID:** BUG-001
 - **Title:** `*Keyboard Shortcuts*` buffer 'q' does not close despite in-buffer documentation
 - **Severity:** Low (Documentation/UX)
-- **Status:** Open — **Diagnostics panel 'q' FIXED** (commit 89caf72), but `*Keyboard Shortcuts*` still broken
-- **GitHub Issue:** [#2125](https://github.com/sinelaw/fresh/issues/2125) — Run #14 comment: partial fix status
+- **Status:** Open — new dedicated issue #2165 filed (parent #2125 was closed by maintainer)
+- **GitHub Issue:** [#2165](https://github.com/sinelaw/fresh/issues/2165) — filed Run #16 (2026-05-31)
 - **Reproduction:**
   1. Launch Fresh with `--no-restore`
   2. Press `Shift+F1` — `*Keyboard Shortcuts*` buffer opens
@@ -30,7 +30,18 @@ Each bug entry:
 - **Actual:** Status bar shows "Editing disabled in this buffer"; buffer stays open
 - **Workaround:** Use `Alt+W` to close
 - **First Seen:** Run #12, 2026-05-27
-- **Confirmed:** Run #14, 2026-05-27 (after Diagnostics panel fix was applied — KS buffer NOT fixed)
+- **Confirmed:** Run #14 (0.3.9), Run #15 (0.3.9), Run #16 (0.3.10)
+
+## BUG-003 (FIXED): Review Diff "Discard hunk" Fails with "patch does not apply"
+- **ID:** BUG-003
+- **Title:** Review Diff "Discard hunk" fails with "Patch failed: error: patch does not apply"
+- **Severity:** High (feature broken)
+- **Status:** **FIXED** in 0.3.10 (Run #16, 2026-05-31)
+- **GitHub Issue:** [#2117](https://github.com/sinelaw/fresh/issues/2117) — closed by maintainer
+- **First Seen:** Run #5
+- **Confirmed Fixed:** Run #16 — review_diff_test16.txt +4 lines, discard → "Review Diff: 0 hunks", file reverted to original state
+
+---
 
 ## BUG-002: Edit Menu "Replace..." Label Maps to Query Replace (Ctrl+Alt+R), Not Basic Replace (Ctrl+R)
 - **ID:** BUG-002

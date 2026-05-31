@@ -2,6 +2,58 @@
 
 ---
 
+## Run #16 — 2026-05-31
+
+### Status: COMPLETED
+
+### What Was Done
+- Synced state from `tui-automated-testing-state`; built release binary from `claude/awesome-clarke-jWgGn` (**v0.3.10**, ~2.5 min)
+- Created tmux session `fresh-test-run16` (220×50)
+- **Preflight:** GitHub MCP auth confirmed. Playbook integrity verified. Discovered #2117 and #2125 both CLOSED by maintainer since Run #15.
+- **Bug recheck — *Keyboard Shortcuts* 'q':** STILL BROKEN in 0.3.10 ("Editing disabled in this buffer"). Filed new issue #2165 since #2125 is closed.
+- **Bug recheck — #2117 Review Diff discard hunk:** CONFIRMED FIXED in 0.3.10! Created review_diff_test16.txt (+4 lines), opened Review Diff, navigated to hunk, pressed 'd' → confirmed dialog → Enter → "Review Diff: 0 hunks". File reverted to original. Manual git apply --reverse no longer needed.
+- **Diagnostics panel 'q' recheck:** CONFIRMED STILL FIXED — "Diagnostics panel closed" on 'q' press. Consistent with #2125 closure.
+- **Git Blame plugin:** PASS — `*blame:README.md*` buffer opens with commit info (commit hash, author, time, message). Status bar shows "Git blame: N blocks | b: blame at parent | q: close". 'b' correctly returns "Cannot get blame at SHA^ (may be initial commit)" for file at initial commit. 'q' closes with "Git blame closed".
+- **Live Diff: Set Default Mode:** PASS — prompt "Default mode (head, disk, or branch:<ref>)head" appears. Accepted "disk", "branch:main", and "head" — all showed "Live Diff: default mode updated". Note: prompt always pre-fills "head" regardless of current setting.
+- **Orchestrator features (0.3.10):** PASS — Alt+P toggles project scope (All → user/fresh), Alt+T toggles show-all-worktrees checkbox, Tab focuses detail panel buttons (blue highlight), Details view shows "ACT Xs in-place" + working dir + file preview, "/" filter input works, Escape closes. All 0.3.9+ features confirmed working.
+- **Package: Install + Uninstall + Color Highlighter:**
+  - Install via "Package: Install from URL" → `https://github.com/sinelaw/fresh-plugins#color-highlighter` → "Installed and activated color-highlighter v1.0.0" ✅
+  - Package browser shows INSTALLED (1) with ✓ checkmark ✅
+  - Color Highlighter: Enable command adds `█` swatches before hex/rgb/hsl values in CSS (ANSI confirms actual colors: `[38;5;196m` red, `[38;5;33m` blue, `[38;5;46m` green) ✅
+  - Uninstall via `rm -rf /root/.config/fresh/plugins/packages/color-highlighter` → package browser shows AVAILABLE (13), swatches immediately removed ✅
+  - ⚠️ NOTE: Package UI Install/Uninstall button navigation is complex (Tab through 8+ elements to reach). "Enter Activate" at Tab position shows `[ Install ]`/`[ Uninstall ]` but pressing Enter activates search field. Documented in potential_improvements.md.
+- **Dev Container: Attach (no CLI):** PASS — dialog "Dev Container CLI Not Found: The devcontainer CLI is needed for rebuild. Copy the install command below, or dismiss. Copy: npm i -g @devcontainers/cli / Dismiss (ESC)". Clear, helpful error with actionable install command.
+
+### Test Results Summary
+| Test | Result | Notes |
+|------|--------|-------|
+| *Keyboard Shortcuts* 'q' close | **STILL BROKEN** | Filed new #2165 (parent #2125 was closed) |
+| #2117 Review Diff discard hunk | **CONFIRMED FIXED** | Works in 0.3.10 — 0 hunks after discard |
+| #2125 Diagnostics panel 'q' | **STILL FIXED** | "Diagnostics panel closed" confirmed |
+| Git Blame plugin | **PASS** | Blame buffer, 'b' go-back, 'q' close all work |
+| Live Diff: Set Default Mode | **PASS** | head/disk/branch:main all accepted |
+| Orchestrator features | **PASS** | Alt+P/T, Details, filter search all work |
+| Package: Install from URL | **PASS** | "Installed and activated color-highlighter v1.0.0" |
+| Color Highlighter plugin | **PASS** | Swatches for hex/rgb/hsl with correct colors |
+| Package: Uninstall (file delete) | **PASS** | Package removed, swatches gone in real-time |
+| Dev Container: Attach error handling | **PASS** | "CLI Not Found" dialog with npm install command |
+
+### Issues Filed / Comments
+- Filed new issue **#2165**: "*Keyboard Shortcuts* buffer: pressing 'q' shows 'Editing disabled' despite in-buffer documentation" (since #2125 closed)
+- Updated `github_issues.md` and `confirmed_bugs.md`
+
+### Version
+- Binary: v0.3.10 built from `claude/awesome-clarke-jWgGn` (new version vs Run #15's 0.3.9)
+
+### Cleanup
+- Fresh exited via Ctrl+Q (d = discard and quit)
+- tmux session `fresh-test-run16` killed
+- review_diff_test16.txt committed + removed from dev branch
+- /tmp/test_colors.css removed
+- .devcontainer/ directory removed
+
+---
+
 ## Run #15 — 2026-05-27
 
 ### Status: COMPLETED

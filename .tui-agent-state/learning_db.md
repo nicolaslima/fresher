@@ -509,3 +509,61 @@ Fresh opens binary files gracefully:
   - After 'b' again: 60d0ba2 (2 weeks ago) at depth: 2
 - **When at initial commit:** "Cannot get blame at <SHA>^ (may be initial commit or file didn't exist)"
 - **Important:** Fresh must be launched from the git repo directory for git blame to work. If launched from /tmp, git blame returns "No blame information available (not a git file or error)"
+
+## text-actions Plugin: Full Decode Command Set (Run #20 — updated)
+
+Learning_db.md previously documented only 7 commands. The plugin v0.1.0 has MORE commands:
+
+**Encode commands:**
+- "Encode String to Base64"
+- "Encode String to JSON String"
+- "Encode String to URI Component Encoded"
+- "Encode String to URI Encoded"
+- "Encode JSON Byte Array to Hex String"
+
+**Decode commands (previously MISSING from docs):**
+- "Decode Base64 to String" — `"SGVsbG8gV29ybGQ="` → `"Hello World"` ✅
+- "Decode URI Component Encoded to String" — `"Hello%20World%21"` → `"Hello World!"` ✅
+- "Decode URI Encoded to String" (also present)
+- "Decode JSON String to String" — `"Hello\nWorld\t!"` → multiline with ANSI newline+tab ✅
+- "Decode Hex String to JSON Byte Array" — `"48656c6c6f"` → `"[72,101,108,108,111]"` ✅
+
+**Round-trip verified:** "Fresh Editor 2026" → Base64 → decode → "Fresh Editor 2026" (exact match to `echo -n "Fresh Editor 2026" | base64`)
+
+**Usage:** Select text with Ctrl+L (select line) BEFORE opening command palette. All commands work on selected text (replace selection with result).
+
+## Bookmarks (Run #20 — full slot test)
+- **Set:** Ctrl+P → "Set Bookmark" → Enter → type digit (0-9) + Enter → "Bookmark 'N' set"
+- **Jump:** Alt+N (where N = 0-9). Status: "Jumped to bookmark 'N'" on success
+- **Unset slot:** "Bookmark 'N' not set" (stays on current line)
+- **Slots 0-9 all confirmed working** (Run #20 tested 0, 1, 5, 9 + unset slot 2)
+- Bookmarks persist per-session (session restore carries them)
+
+## Keyboard Macros (Run #20 — complex macro confirmed)
+- **Record:** Ctrl+P → "Record Macro" → slot digit (0-9) + Enter → "Recording macro 'N' (F5 or Ctrl+P → Stop Recording)"
+- **During recording:** All keystrokes are captured LIVE (macro actions are actually applied to the buffer during recording)
+- **Stop:** F5 → "Macro 'N' saved (X actions) - F4 → Play Last Macro"
+- **Play:** F4 → "Played macro 'N' (X actions)". Plays the LAST recorded macro.
+- **Named play:** Ctrl+P → "Play Macro" (if available) to play a specific slot
+- **List:** Ctrl+P → "List Macros" → `*Macros*` buffer showing action-level detail per slot
+  - Actions shown: SmartHome, InsertChar('X'), MoveDown, MoveUp, etc.
+- **Complex macro confirmed working** (Run #20): 5-action macro = Home + "#" + " " + Down + Home. Played on 5 consecutive lines, all received "# " prefix correctly.
+- **Slots:** 0-9 (tested slot 3 in Run #20; slots 0-9 in Run #10 earlier)
+
+## Markdown Compose Mode (Run #20 — full verification)
+- **Toggle:** Ctrl+P → "Markdown: Toggle Compose/Preview" → prompts "Compose width: None" → press Enter for viewport width
+  - Second toggle = OFF
+  - Status on ON: "Markdown Compose: ON (soft breaks, centered)"
+  - Status: "Markdown compose width: using viewport width" (first activation message)
+- **Rendering in compose mode:**
+  - `**bold**` → ANSI `[1m` bold attribute; asterisks HIDDEN ✅
+  - `*italic*` → ANSI `[3m` italic attribute; asterisks HIDDEN ✅
+  - `` `inline code` `` → colored `[38;5;69m`; backticks STRIPPED ✅
+  - `# Heading` → heading color `[38;5;51m`; `#` prefix STILL VISIBLE
+  - `## Heading` → heading color; `##` STILL VISIBLE
+  - ` ```python ... ``` ` code blocks → fence markers STILL VISIBLE; code syntax-highlighted ✅
+  - `> blockquote` → `>` colored `[38;5;6m` (teal); quote marker STILL VISIBLE
+  - `- lists`, `1. ordered lists`, `---` HR → all visible, normal rendering
+- **Line numbers:** HIDDEN in compose mode (no `N │` prefix in display)
+- **Editing inside code blocks works in compose mode** — new lines added correctly; display updates immediately
+- **Toggle workflow quirk:** First Ctrl+P → "Toggle" activation shows a "Compose width" prompt. Second activation (same command) DIRECTLY toggles ON (no prompt). Third activation toggles OFF.

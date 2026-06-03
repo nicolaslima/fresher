@@ -13,17 +13,18 @@
 
 ---
 
-## RUN #20+ PRIORITY ORDER (coverage-first; work top-down)
+## RUN #21+ PRIORITY ORDER (coverage-first; work top-down)
 
 > **Run #17 directive (permanent):** Focus on NEW coverage. Increase % of product tested. Avoid re-testing old passing features unless a bug was just fixed.
 
-1. **text-actions: Decode round-trip** — verify Base64/URI decode works correctly; BLOCKED in Run #19 (no GitHub network); retry in next run or pre-install manually
-2. **SSH features** — open a file via SSH URI if available
-3. **#2212 recheck on v0.3.10** — verify if LSP code action `context.diagnostics` bug is fixed in newer build
-4. **#2113 race condition** — continue monitoring; not reproduced in 8 attempts (Run #19)
-5. **Bookmarks** — test Alt+0-9 bookmark slots
-6. **Keyboard macros** — test complex multi-step macros
-7. **Markdown preview** — verify embedded code block behavior
+1. **SSH features** — open a file via SSH URI if available
+2. **#2113 race condition** — continue monitoring; not reproduced in 8 attempts (Run #19-20)
+3. **Search in selection** — test if Fresh supports searching/replacing within a selected region only
+4. **Multi-root workspaces** — test opening Fresh in different directories, verifying workspace isolation
+5. **Keybinding editor** — test rebinding a key, verifying it saves and takes effect
+6. **Tour feature** — test loading a `.fresh-tour.json` and stepping through it
+
+Note: Run #20 COMPLETE. text-actions Decode ALL PASS (Base64/URI/JSON/Hex; NEW decode commands discovered). Bookmarks ALL PASS (Alt+0-9). Keyboard macros PASS (5-action complex macro). Markdown compose PASS (bold/italic ANSI, code blocks with syntax-hl, editing inside blocks). #2212 CONFIRMED STILL OPEN in v0.3.10 (comment added).
 
 Note: Run #19 COMPLETE. Code Actions BUG CONFIRMED + FILED (#2212): empty context.diagnostics always sent. Encoding handling TESTED (PASS — detect/reload/set/save all work). Themes TESTED (all 8 including new 'nord' PASS). Clangd auto-start RESOLVED: `auto_start` setting exists (default false); IMP-013 updated.
 

@@ -4,7 +4,7 @@ This is the canonical reference for every GitHub issue this agent has filed.
 **Check this file BEFORE searching GitHub or filing any new issue.**
 If a topic appears here — open or closed — do not file a duplicate.
 
-Last updated: Run #19, 2026-06-03
+Last updated: Run #20, 2026-06-03
 
 ---
 
@@ -21,7 +21,7 @@ Last updated: Run #19, 2026-06-03
 | [#2135](https://github.com/sinelaw/fresh/issues/2135) | Edit menu "Replace..." label maps to Ctrl+Alt+R (Query Replace), not basic Replace (Ctrl+R) | Run #13 | **Open** | Filed Run #13. Do NOT re-file. |
 | [#2165](https://github.com/sinelaw/fresh/issues/2165) | *Keyboard Shortcuts* buffer: pressing 'q' shows 'Editing disabled' | Run #16 | **Open** | Re-filed since #2125 closed. Do NOT re-file. |
 | [#2197](https://github.com/sinelaw/fresh/issues/2197) | Pyright LSP: all request-based features (hover, definition, completions) timeout after 30s | Run #17 | **Open** | Real pyright on small Python project. Initialize succeeds, all requests timeout. Position encoding mismatch suspected. Do NOT re-file. |
-| [#2212](https://github.com/sinelaw/fresh/issues/2212) | Alt+. shows "No code actions available" for diagnostic-based fixes even when clangd reports "(fix available)" | Run #19 | **Open** | Fresh always sends `"context":{"diagnostics":[]}` in codeAction requests. clangd needs populated diagnostics to return fix-based actions. Partial fix left from #1915 (closed). Do NOT re-file. |
+| [#2212](https://github.com/sinelaw/fresh/issues/2212) | Alt+. shows "No code actions available" for diagnostic-based fixes even when clangd reports "(fix available)" | Run #19 | **Open** | Fresh always sends `"context":{"diagnostics":[]}` in codeAction requests. clangd needs populated diagnostics to return fix-based actions. CONFIRMED in v0.3.10 (Run #20) — comment added. Do NOT re-file. |
 
 ---
 

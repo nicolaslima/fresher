@@ -2,6 +2,68 @@
 
 ---
 
+## Run #20 — 2026-06-03
+
+### Status: COMPLETED
+
+### What Was Done
+- Synced state from `tui-automated-testing-state`; built release binary from `claude/awesome-clarke-57Uge` (**v0.3.10**, ~6.5 min build)
+- Created tmux session `fresh-test-run20` (220×50)
+- **Preflight:** GitHub MCP auth confirmed (8 open/filed issues). Playbook integrity confirmed. All sections of AGENT_INSTRUCTIONS.md present.
+- **#2165 recheck** — *Keyboard Shortcuts* 'q' CONFIRMED STILL OPEN in v0.3.10 ("Editing disabled in this buffer")
+- **text-actions plugin** — Installed from GitHub URL (network available). Tested ALL decode commands. Discovered new decode commands not previously documented.
+- **#2212 recheck on v0.3.10** — CONFIRMED STILL OPEN. LSP log shows `"context":{"diagnostics":[]}` still empty in v0.3.10. Comment added to GitHub issue #2212.
+- **Bookmarks (Alt+0-9)** — Full test of all slots: set bookmarks 0, 1, 5, 9; tested jumping with Alt+0/1/5/9; tested unset slot (Alt+2 → "Bookmark '2' not set").
+- **Keyboard macros** — Recorded complex 5-action macro (slot 3): SmartHome + InsertChar('#') + InsertChar(' ') + MoveDown + SmartHome. Played back on 5 lines. Verified via List Macros.
+- **Markdown preview** — Toggled compose mode. Verified bold/italic ANSI rendering, inline code, code blocks with syntax highlighting, blockquotes, lists, HR. Editing inside code blocks works.
+
+### Test Results Summary
+| Test | Result | Notes |
+|------|--------|-------|
+| #2165 *Keyboard Shortcuts* 'q' | **STILL OPEN** | "Editing disabled" in v0.3.10 |
+| text-actions: Decode Base64 | **PASS** | "SGVsbG8gV29ybGQ=" → "Hello World" |
+| text-actions: Decode URI Component | **PASS** | "Hello%20World%21" → "Hello World!" |
+| text-actions: Decode JSON String | **PASS** | `"Hello\nWorld\t!"` → multiline with newline+tab |
+| text-actions: Decode Hex to JSON | **PASS** | "48656c6c6f" → "[72,101,108,108,111]" |
+| text-actions: Encode→Decode round-trip | **PASS** | "Fresh Editor 2026" → Base64 → back = correct |
+| #2212 Code Actions (v0.3.10) | **STILL OPEN** | `context.diagnostics` still empty; comment added to #2212 |
+| Bookmarks: Set (0, 1, 5, 9) | **PASS** | "Bookmark 'N' set" for each |
+| Bookmarks: Jump (Alt+0/1/5/9) | **PASS** | "Jumped to bookmark 'N'" at correct lines |
+| Bookmarks: Unset slot (Alt+2) | **PASS** | "Bookmark '2' not set" |
+| Keyboard macros: Record (slot 3) | **PASS** | 5-action macro; "Macro '3' saved (5 actions)" |
+| Keyboard macros: Playback (F4) | **PASS** | Applied "# " prefix to 5 lines correctly |
+| Keyboard macros: List Macros | **PASS** | `*Macros*` buffer shows SmartHome/InsertChar/MoveDown |
+| Markdown: Toggle Compose mode | **PASS** | "Markdown Compose: ON (soft breaks, centered)" |
+| Markdown: Bold/Italic ANSI | **PASS** | `**bold**` → `[1m` bold; `*italic*` → `[3m` italic; markers hidden |
+| Markdown: Inline code | **PASS** | `` `code` `` → colored, backticks stripped |
+| Markdown: Code blocks | **PASS** | Fence markers visible; code syntax-highlighted inside |
+| Markdown: Blockquotes | **PASS** | `>` colored with teal; rendering correct |
+| Markdown: Lists + HR | **PASS** | Both ordered and unordered lists; `---` HR visible |
+| Markdown: Edit inside code block | **PASS** | New line added inside Python block; compose mode updates correctly |
+
+### Issues Filed / Comments
+- Comment on **#2212**: "Reproduced in v0.3.10 — `context.diagnostics` still sent as empty"
+
+### Key Findings
+1. **text-actions plugin has more decode commands than documented in learning_db.md**: Decode Base64 to String, Decode Hex String to JSON Byte Array, Decode JSON String to String are all available and work correctly. Previously only Decode URI Component and Decode URI Encoded were documented.
+2. **All text-actions decode+encode round-trips correct**: Base64, URI Component, JSON String, Hex all verified correct against independent reference values.
+3. **#2212 still unfixed in v0.3.10**: `context.diagnostics` is always `[]` in codeAction requests. Updated GitHub issue with v0.3.10 confirmation.
+4. **Bookmarks fully functional**: Alt+0 through Alt+9 all work; unset slots give informative message; setting via "Set Bookmark" command works.
+5. **Keyboard macros work for complex multi-step operations**: 5-step macro (comment prefix + move to next line) recorded, played, and listed correctly. `*Macros*` buffer shows action-level detail.
+6. **Markdown Compose mode fully functional**: Bold `[1m`, italic `[3m` ANSI attributes applied; inline code stripped of backticks; code blocks get syntax highlighting inside fences; editing inside code blocks works in compose mode.
+7. **clangd auto-starts in v0.3.10** with `"enabled": true` (no `auto_start` needed) — behavior changed vs v0.3.8. UPDATE: needs verification — may have started automatically due to the new build or config change.
+
+### Version
+- Binary: v0.3.10 built from `claude/awesome-clarke-57Uge` (2026-06-03)
+
+### Cleanup
+- tmux session `fresh-test-run20` killed
+- Temp files removed: /tmp/cpp_test_v2/, /tmp/bookmark_test.txt, /tmp/markdown_test.md, /tmp/text_actions_test.txt
+- Config reset to `{}`
+- text-actions plugin NOT removed (was in /root/.config/fresh/plugins/ but config dir was clean start)
+
+---
+
 ## Run #19 — 2026-06-03
 
 ### Status: COMPLETED

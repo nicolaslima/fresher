@@ -421,6 +421,27 @@ impl crate::app::Editor {
         // the funnel so the dive-target window also picks up the current
         // editor-global dock width (its `dock_cols` cache may be stale).
         self.relayout();
+
+        // Diving / switching into a session should land on a *live*
+        // terminal, not whatever stale state a previous visit or the
+        // lazy restore left behind. A materialized window's terminal is
+        // restored read-only (scrollback view), and a window we visited
+        // before keeps its last per-window `terminal_mode` / scroll
+        // position — so switching between restored terminal sessions
+        // intermittently shows a blank pane, stale scrollback, or a
+        // frozen screen instead of the live prompt. If the now-active
+        // window's active buffer is a terminal the user hasn't explicitly
+        // exited (restored terminals are seeded into `terminal_mode_resume`
+        // by the restore path), normalize it to a live terminal scrolled
+        // to the bottom. Mirrors the buffer-switch path in
+        // `Editor::set_active_buffer`; `enter_terminal_mode` is a no-op
+        // unless the active buffer really is a terminal.
+        let active = self.active_buffer();
+        if self.active_window().is_terminal_buffer(active)
+            && self.active_window().terminal_mode_resume.contains(&active)
+        {
+            self.enter_terminal_mode();
+        }
     }
 
     /// Switch the active window and play a directional wipe over the

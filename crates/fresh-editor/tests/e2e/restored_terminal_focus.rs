@@ -16,7 +16,6 @@ use fresh::config::Config;
 use fresh::config_io::DirectoryContext;
 use portable_pty::{native_pty_system, PtySize};
 use tempfile::TempDir;
-
 fn pty_available() -> bool {
     native_pty_system()
         .openpty(PtySize {
@@ -172,4 +171,81 @@ fn test_focusing_restored_terminal_activates_terminal_mode() {
             .wait_until(|h| h.screen_to_string().contains("SECOND_SESSION_LIVE"))
             .expect("restored terminal should be live and produce output");
     }
+}
+
+/// Regression test: switching *windows* (orchestrator "dive" / session
+/// switch) into a window whose active buffer is a resumable terminal must
+/// land on a live terminal, not whatever read-only / scrollback state the
+/// previous visit left behind.
+///
+/// Before the fix, `set_active_window` relaid out the PTY but never
+/// normalized the terminal's view state, so switching between restored
+/// terminal sessions intermittently showed a blank pane or a frozen
+/// scrollback view instead of the live prompt. The buffer-switch path
+/// (`Editor::set_active_buffer`) handled this within a window; this covers
+/// the window-switch path.
+#[test]
+#[cfg_attr(target_os = "windows", ignore)] // Uses a Unix shell / PTY
+fn test_switching_window_into_resumable_terminal_enters_terminal_mode() {
+    if !pty_available() {
+        eprintln!("Skipping window-switch terminal test: PTY not available");
+        return;
+    }
+
+    let mut harness = EditorTestHarness::with_temp_project(100, 30).unwrap();
+    let project_dir = harness.project_dir().unwrap();
+
+    // Base window stays active; create a second window ("beta") to dive into.
+    let base = harness.editor().active_session_id();
+    let beta = harness
+        .editor_mut()
+        .create_window_at(project_dir.join("wt-beta"), "beta".into());
+
+    // Dive into beta and open a terminal there (active, live terminal mode).
+    harness.editor_mut().set_active_window(beta);
+    harness.editor_mut().open_terminal();
+    harness.render().unwrap();
+    assert!(
+        harness.editor().is_terminal_mode(),
+        "freshly opened terminal in beta should be in terminal mode"
+    );
+
+    // Leave the terminal (switch to beta's other tab) and come back, which
+    // records the terminal in beta's `terminal_mode_resume` set — the same
+    // state a restore produces. The buffer-switch fix resumes terminal mode.
+    harness.editor_mut().prev_buffer();
+    harness.render().unwrap();
+    harness.editor_mut().next_buffer();
+    harness.render().unwrap();
+    assert!(
+        harness.editor().is_terminal_mode(),
+        "returning to beta's terminal tab should resume terminal mode"
+    );
+
+    // Drop into scrollback (read-only) — the terminal stays the active
+    // buffer and stays in the resume set, but terminal mode is now OFF.
+    // This is the exact state a window left behind by a previous visit (or
+    // a fresh restore) sits in.
+    harness
+        .send_key(KeyCode::PageUp, KeyModifiers::SHIFT)
+        .unwrap();
+    harness.render().unwrap();
+    assert!(
+        !harness.editor().is_terminal_mode(),
+        "Shift+PageUp should drop beta's terminal into read-only scrollback"
+    );
+
+    // Switch away to the base window, then dive back into beta.
+    harness.editor_mut().set_active_window(base);
+    harness.render().unwrap();
+    harness.editor_mut().set_active_window(beta);
+    harness.render().unwrap();
+
+    // The fix: diving back into beta normalizes its resumable terminal to a
+    // live terminal instead of leaving it read-only/blank.
+    assert!(
+        harness.editor().is_terminal_mode(),
+        "switching back into beta should re-activate its terminal (live), \
+         not leave it stuck in read-only scrollback"
+    );
 }

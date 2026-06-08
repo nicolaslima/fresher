@@ -205,3 +205,162 @@ fn set_session_authority_on_other_window_leaves_active_untouched() -> anyhow::Re
     );
     Ok(())
 }
+
+/// PTY availability guard — `create_window_with_terminal` spawns a real
+/// shell, which the CI sandbox occasionally can't allocate.
+fn pty_available() -> bool {
+    portable_pty::native_pty_system()
+        .openpty(portable_pty::PtySize {
+            rows: 1,
+            cols: 1,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .is_ok()
+}
+
+#[test]
+fn new_local_session_is_born_with_its_own_local_authority() -> anyhow::Result<()> {
+    // Repro for: open a devcontainer project + attach, then create a new
+    // session for *another* project via the Orchestrator dock — the new
+    // session kept acting through the devcontainer authority (its terminal
+    // ran `docker exec` into the container, the status bar showed
+    // `Container:…`) instead of its own local backend.
+    //
+    // Root cause: `create_window_with_terminal` built the new window from
+    // `window_resources()`, which clones the *active* window's authority.
+    // A new local session must be born under its own local authority.
+    if !pty_available() {
+        eprintln!("Skipping new-session authority test: PTY not available");
+        return Ok(());
+    }
+
+    let temp = tempfile::tempdir()?;
+    let mut harness = EditorTestHarness::create(
+        100,
+        30,
+        HarnessOptions::new().with_working_dir(temp.path().to_path_buf()),
+    )?;
+    harness.tick_and_render()?;
+
+    // Attach: the active (working-dir) session now runs under a container
+    // authority — exactly the state after `editor.setAuthority(...)` +
+    // restart, which `set_boot_authority` mirrors inline.
+    let owner = harness.editor_mut().active_window_id();
+    harness
+        .editor_mut()
+        .set_boot_authority(container_authority("Container:dc"));
+    assert_eq!(
+        harness.editor_mut().authority().display_label,
+        "Container:dc"
+    );
+
+    // Orchestrator "New Session (Local)" for a different project. The
+    // dispatcher passes `None`, so the window is born local.
+    let proj_b = temp.path().join("projB");
+    std::fs::create_dir_all(&proj_b)?;
+    let (new_win, _terminal, _buffer) = harness
+        .editor_mut()
+        .create_window_with_terminal(
+            proj_b.clone(),
+            "projB".into(),
+            Some(proj_b.clone()),
+            Some(vec!["sh".into(), "-c".into(), "sleep 60".into()]),
+            Some("agent".into()),
+            None,
+        )
+        .map_err(anyhow::Error::msg)?;
+
+    // The new session is active and runs under its OWN local authority,
+    // not the devcontainer's.
+    assert_eq!(harness.editor().active_window_id(), new_win);
+    assert_eq!(
+        harness.editor().authority().display_label,
+        "",
+        "a new local session must not inherit the devcontainer authority"
+    );
+    assert_eq!(
+        harness
+            .editor()
+            .session(new_win)
+            .unwrap()
+            .authority()
+            .display_label,
+        "",
+        "the new window's own authority must be local"
+    );
+
+    // The original devcontainer session still owns the container backend —
+    // the fix scopes the authority per-session, it doesn't drop it.
+    harness.editor_mut().set_active_window(owner);
+    assert_eq!(
+        harness.editor().authority().display_label,
+        "Container:dc",
+        "switching back to the devcontainer session restores its authority"
+    );
+    Ok(())
+}
+
+#[test]
+fn attach_does_not_leak_authority_onto_background_windows() -> anyhow::Result<()> {
+    // Repro for the pre-existing-session variant: with another project
+    // already open as a background session, attaching a devcontainer to the
+    // active project leaked the container authority onto *every* window, so
+    // switching to the background project via the dock kept acting through
+    // the devcontainer.
+    //
+    // `set_boot_authority` is the inline stand-in for the `install_authority`
+    // restart (the same call every devcontainer e2e test uses); it must give
+    // the active/owning window the new authority and leave background windows
+    // on their own local backend.
+    let temp = tempfile::tempdir()?;
+    let mut harness = EditorTestHarness::create(
+        100,
+        30,
+        HarnessOptions::new().with_working_dir(temp.path().to_path_buf()),
+    )?;
+
+    let owner = harness.editor_mut().active_window_id();
+    let bg_root = temp.path().join("projB");
+    std::fs::create_dir_all(&bg_root)?;
+    let background = harness
+        .editor_mut()
+        .create_window_at(bg_root, "projB".into());
+
+    // Attach a devcontainer to the active project.
+    harness
+        .editor_mut()
+        .set_boot_authority(container_authority("Container:dc"));
+
+    // The owner runs under the container; the background project does not.
+    assert_eq!(
+        harness
+            .editor()
+            .session(owner)
+            .unwrap()
+            .authority()
+            .display_label,
+        "Container:dc",
+        "the attaching session owns the container authority"
+    );
+    assert_eq!(
+        harness
+            .editor()
+            .session(background)
+            .unwrap()
+            .authority()
+            .display_label,
+        "",
+        "a background project must not inherit the devcontainer authority"
+    );
+
+    // Switching to the background project must use ITS authority (local),
+    // not keep routing through the devcontainer — the reported bug.
+    harness.editor_mut().set_active_window(background);
+    assert_eq!(
+        harness.editor().authority().display_label,
+        "",
+        "the switched-to project must use its own local authority"
+    );
+    Ok(())
+}

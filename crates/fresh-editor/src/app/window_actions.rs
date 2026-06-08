@@ -150,6 +150,26 @@ impl crate::app::Editor {
     ///
     /// `root` must be absolute; the plugin-command dispatcher
     /// validates this before reaching here.
+    ///
+    /// `authority` is the backend the new session is born under. `None`
+    /// gives it a **fresh local authority** (sharing the editor's trust +
+    /// env handles) — the right default for the Orchestrator's "New
+    /// Session (Local)" flow: a new session for a *different* project must
+    /// not inherit the active window's container/SSH/k8s backend just
+    /// because that window happened to be focused when "+ New" was
+    /// clicked. `Some(a)` births the window under `a` — the born-attached
+    /// remote-session path (`create_remote_session_window`) passes the
+    /// already-connected backend so the new window's filesystem, LSP
+    /// spawner, and terminal all act remotely from birth.
+    ///
+    /// Either way the editor-wide authority cache is re-pointed at the
+    /// new active window via [`Self::adopt_active_window_authority`] before
+    /// returning, so the status bar, quick-open, and the 100+ `self.authority`
+    /// call sites reflect the session the user just landed on rather than
+    /// the one they left.
+    ///
+    /// `resume` is the agent-resume argv to re-run instead of `command` if
+    /// this session is restored (Orchestrator agent-resume).
     #[allow(clippy::too_many_arguments)]
     pub fn create_window_with_terminal(
         &mut self,
@@ -158,12 +178,37 @@ impl crate::app::Editor {
         cwd: Option<PathBuf>,
         command: Option<Vec<String>>,
         title: Option<String>,
+        authority: Option<crate::services::authority::Authority>,
         resume: Option<Vec<String>>,
     ) -> Result<(WindowId, fresh_core::TerminalId, fresh_core::BufferId), String> {
         let id = WindowId(self.next_window_id);
         self.next_window_id += 1;
 
-        let resources = self.window_resources();
+        // The backend the editor was acting through before this new
+        // session — captured so `adopt_active_window_authority` can tell
+        // whether the active authority actually changed and skip the
+        // hook/snapshot churn when it didn't.
+        let previous_authority_label = self.authority.display_label.clone();
+
+        // A new local session is born under its *own* local authority, not
+        // a clone of whatever backend the active window carries. Container
+        // / SSH / k8s sessions pass an explicit authority instead.
+        let window_authority = authority.unwrap_or_else(|| {
+            crate::services::authority::Authority::local(
+                std::sync::Arc::clone(&self.authority.workspace_trust),
+                std::sync::Arc::clone(&self.authority.env_provider),
+            )
+        });
+
+        let mut resources = self.window_resources();
+        // Override the inherited (active-window) authority with the one
+        // this session is born under, and re-derive the window's
+        // `fs_manager` from *its* filesystem so the file explorer rides the
+        // new session's backend rather than the previous window's.
+        resources.fs_manager = std::sync::Arc::new(crate::services::fs::FsManager::new(
+            std::sync::Arc::clone(&window_authority.filesystem),
+        ));
+        resources.authority = window_authority;
         let mut session = Window::new(id, label, root.clone(), resources);
         session.terminal_width = self.terminal_width;
         session.terminal_height = self.terminal_height;
@@ -241,6 +286,18 @@ impl crate::app::Editor {
         // stranded and silently swallows all of that window's buffer input.
         // See #2237 / #2234 item 4.
         self.clear_panel_scoped_mode_on_switch_away(previous_id);
+
+        // Adopt the new active window's authority into the editor-wide
+        // caches (`self.authority`, quick-open, the `authority_changed`
+        // hook). This path writes `active_window` directly and bypasses
+        // `set_active_window`, so without this the status bar + the 100+
+        // `self.authority` call sites keep reporting the *previous*
+        // window's backend — e.g. a new local session created from a
+        // devcontainer window would still show `Container:…` and route
+        // file ops through the container. The window's own
+        // `resources.authority` was already set above (local by default,
+        // or the explicit remote backend for born-attached sessions).
+        self.adopt_active_window_authority(&previous_authority_label);
 
         // Register the leader pid with the new window's
         // process_groups so window-level signal operations reach
@@ -673,12 +730,13 @@ impl crate::app::Editor {
     /// Unlike the global `install_authority_with_keepalive` restart, existing
     /// windows are left untouched — the remote session coexists with them, and
     /// `set_active_window` (Gap A) retargets the active authority when the user
-    /// switches. The mechanism is simply that `create_window_with_terminal`
-    /// builds the window from `window_resources()`, which clones `self.authority`;
-    /// installing the remote authority first means the new window's filesystem,
-    /// LSP spawner, and terminal wrapper all act in the backend from birth (so
-    /// there are no stale local handles to invalidate — the caveat that gates
-    /// hot-swapping an *existing* window's authority doesn't apply here).
+    /// switches. The new window is born under `authority` because it is passed
+    /// straight to `create_window_with_terminal` as that window's backend, so
+    /// its filesystem, LSP spawner, and terminal wrapper all act in the backend
+    /// from birth (there are no stale local handles to invalidate — the caveat
+    /// that gates hot-swapping an *existing* window's authority doesn't apply
+    /// here). `create_window_with_terminal` adopts the new window's authority
+    /// into the editor-wide caches before returning.
     pub(crate) fn create_remote_session_window(
         &mut self,
         authority: crate::services::authority::Authority,
@@ -687,26 +745,27 @@ impl crate::app::Editor {
         label: String,
         command: Option<Vec<String>>,
     ) -> Result<WindowId, String> {
-        let prev_label = self.authority.display_label.clone();
-        // Install the remote authority so the new window is born under it.
-        // The previous (local / other-remote) window keeps its own
-        // `resources.authority`; Gap A restores it on switch-back.
-        let saved_authority = std::mem::replace(&mut self.authority, authority);
-        match self.create_window_with_terminal(root.clone(), label, Some(root), command, None, None)
-        {
+        match self.create_window_with_terminal(
+            root.clone(),
+            label,
+            Some(root),
+            command,
+            None,
+            Some(authority),
+            None,
+        ) {
             Ok((window_id, _terminal, _buffer)) => {
                 self.session_keepalives.insert(window_id, keepalive);
-                // `create_window_with_terminal` writes the active pointer
-                // directly (bypassing `set_active_window`), so re-point
-                // quick-open at the remote filesystem + fire `authority_changed`.
-                self.adopt_active_window_authority(&prev_label);
                 Ok(window_id)
             }
             Err(e) => {
                 // The connect succeeded but the window couldn't be seeded
-                // (e.g. the backend has no python3 / the pod died): restore the
-                // prior authority and drop the keepalive (tears down the carrier).
-                self.authority = saved_authority;
+                // (e.g. the backend has no python3 / the pod died):
+                // `create_window_with_terminal` already rolled the active
+                // pointer back to the previous window and left the
+                // editor-wide authority untouched (it never installed the
+                // remote one), so just drop the keepalive (tears down the
+                // carrier).
                 drop(keepalive);
                 Err(e)
             }

@@ -3187,7 +3187,13 @@ impl Editor {
             return;
         }
         let cwd_buf = cwd.map(std::path::PathBuf::from);
-        match self.create_window_with_terminal(root, label, cwd_buf, command, title, resume) {
+        // `None` authority: the Orchestrator's "New Session (Local)" flow
+        // births its own local backend rather than inheriting the active
+        // window's (which may be a container/SSH/k8s session). Remote
+        // sessions take the `attachRemoteAgent` → `create_remote_session_window`
+        // path, which passes an explicit authority. `resume` is the
+        // agent-resume argv carried through to the new session's terminal.
+        match self.create_window_with_terminal(root, label, cwd_buf, command, title, None, resume) {
             Ok((window_id, terminal_id, buffer_id)) => {
                 let api_result = fresh_core::api::SessionWithTerminalResult {
                     window_id: window_id.0,

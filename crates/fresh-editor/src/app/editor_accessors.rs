@@ -533,26 +533,37 @@ impl Editor {
     /// during construction.
     pub fn set_boot_authority(&mut self, authority: crate::services::authority::Authority) {
         self.authority = authority;
-        // Propagate the new authority to every window's resources so
-        // window-side filesystem/path-translation reads (`Window::authority()`)
-        // see the swap. `Authority` carries internal `Arc`s, so this just
-        // clones cheap handles.
-        let auth = self.authority.clone();
-        for w in self.windows.values_mut() {
-            w.resources.authority = auth.clone();
-        }
-        // Propagate the authority's long-running spawner into the LSP
-        // manager so `force_spawn` can route server processes through
-        // the right backend. The editor rebuilds on every authority
-        // transition (AUTHORITY_DESIGN.md principle 7), so this is the
-        // single wiring point — no need for a hot-swap API. Path
-        // translation rides along for the same reason — LSP URIs need
-        // to be host↔container-translated under the new authority.
-        let __active_id = self.active_window;
-        if let Some(lsp) = self.windows.get_mut(&__active_id).map(|w| &mut w.lsp) {
-            lsp.set_long_running_spawner(self.authority.long_running_spawner.clone());
-            lsp.set_path_translation(self.authority.path_translation.clone());
-            lsp.set_workspace_trust(self.authority.workspace_trust.clone());
+        // The installed authority belongs to the *active/owning* session
+        // only — it is the backend for the working-dir project the attach
+        // (or `fresh user@host` launch) re-rooted at. Background windows are
+        // distinct projects and must NOT inherit it: a container/SSH/k8s
+        // backend leaking onto every restored session is exactly the bug
+        // where switching to another project via the Orchestrator dock kept
+        // acting through the devcontainer. Each background window therefore
+        // gets its own local authority (sharing the editor's trust + env
+        // handles); the active window runs under the real one.
+        //
+        // Per-window LSP backends are re-pointed alongside `resources.authority`
+        // so a window's `force_spawn` routes through the same backend its
+        // filesystem reads do — the active one under `authority`, background
+        // ones locally.
+        let active_id = self.active_window;
+        let active_auth = self.authority.clone();
+        let background_auth = crate::services::authority::Authority::local(
+            std::sync::Arc::clone(&self.authority.workspace_trust),
+            std::sync::Arc::clone(&self.authority.env_provider),
+        );
+        for (id, w) in self.windows.iter_mut() {
+            let a = if *id == active_id {
+                &active_auth
+            } else {
+                &background_auth
+            };
+            w.lsp
+                .set_long_running_spawner(a.long_running_spawner.clone());
+            w.lsp.set_path_translation(a.path_translation.clone());
+            w.lsp.set_workspace_trust(a.workspace_trust.clone());
+            w.resources.authority = a.clone();
         }
         // Re-point quick-open's file provider at the new backend. The provider
         // captured the *previous* authority's filesystem + spawner; without

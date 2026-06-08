@@ -1132,6 +1132,23 @@ impl Editor {
         // Build the inert shells for every other persisted window.
         // Their `splits` stays `None`; first dive into them re-warms
         // exactly like a freshly created window.
+        // Background (restored, non-active) windows are distinct projects
+        // and do NOT inherit the active session's backend: when this
+        // construction is an `install_authority` restart (the editor is
+        // rebuilt with a container/SSH/k8s `authority` re-rooted at the
+        // active project), fanning that authority onto every restored shell
+        // is exactly the bug where switching to another project via the
+        // Orchestrator dock kept acting through the devcontainer. Each shell
+        // gets its own local authority (sharing trust + env) and a matching
+        // local `fs_manager` so its file explorer reads the host, not the
+        // active session's remote/container backend. The active window keeps
+        // `authority` (wired into `base_resources` above).
+        let background_authority = crate::services::authority::Authority::local(
+            Arc::clone(&authority.workspace_trust),
+            Arc::clone(&authority.env_provider),
+        );
+        let background_fs_manager =
+            Arc::new(FsManager::new(Arc::clone(&background_authority.filesystem)));
         let mut windows = HashMap::new();
         if let Some(ref env) = persisted_env {
             // The active window came from a real pick when `picked_active`
@@ -1175,10 +1192,10 @@ impl Editor {
                     theme_cache: Arc::clone(&theme_cache),
                     keybindings: Arc::clone(&keybindings),
                     command_registry: Arc::clone(&command_registry),
-                    fs_manager: Arc::clone(&fs_manager),
+                    fs_manager: Arc::clone(&background_fs_manager),
                     local_filesystem: Arc::clone(&local_filesystem),
                     buffer_id_alloc: buffer_id_alloc.clone(),
-                    authority: authority.clone(),
+                    authority: background_authority.clone(),
                     time_source: Arc::clone(&time_source),
                     dir_context: dir_context.clone(),
                     tokio_runtime: tokio_runtime.clone(),

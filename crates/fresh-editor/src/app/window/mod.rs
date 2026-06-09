@@ -82,6 +82,15 @@ pub struct Window {
     /// Stable identifier. The base window is always `WindowId(1)`.
     pub id: WindowId,
 
+    /// This session's backend — *where* it acts, *whether* it may
+    /// (`workspace_trust`), and *with what env*. **Owned outright by this
+    /// window**, never shared with another: it lives here (not in the
+    /// `Clone` `WindowResources`) so the type system prevents one session's
+    /// authority/trust/env from leaking into another (issue #2280). The
+    /// editor's active backend is just `active_window().authority` — there is
+    /// no separate clonable editor-wide copy.
+    pub(crate) authority: crate::services::authority::Authority,
+
     /// User-visible label. Defaults to the basename of `root` (or
     /// "main" when the root is the original process cwd). Not
     /// required to be unique.
@@ -874,6 +883,7 @@ pub(crate) fn configure_lsp_servers(
 pub(crate) fn build_window_lsp(
     id: WindowId,
     root: &std::path::Path,
+    authority: &crate::services::authority::Authority,
     resources: &crate::app::window_resources::WindowResources,
     bridge: &crate::services::async_bridge::AsyncBridge,
 ) -> LspManager {
@@ -892,9 +902,9 @@ pub(crate) fn build_window_lsp(
     // trust gates spawning. Doing this here (rather than via a later
     // `set_boot_authority`) means the manager is never left pointing at a
     // backend that doesn't match the authority the window was built with.
-    lsp.set_long_running_spawner(resources.authority.long_running_spawner.clone());
-    lsp.set_path_translation(resources.authority.path_translation.clone());
-    lsp.set_workspace_trust(resources.authority.workspace_trust.clone());
+    lsp.set_long_running_spawner(authority.long_running_spawner.clone());
+    lsp.set_path_translation(authority.path_translation.clone());
+    lsp.set_workspace_trust(authority.workspace_trust.clone());
 
     configure_lsp_servers(&mut lsp, root, &resources.config);
     lsp
@@ -1679,6 +1689,7 @@ impl Window {
         id: WindowId,
         label: impl Into<String>,
         root: PathBuf,
+        authority: crate::services::authority::Authority,
         resources: WindowResources,
     ) -> Self {
         let mut label = label.into();
@@ -1701,11 +1712,12 @@ impl Window {
         // construction (see `build_window_lsp`). `&root`/`&resources`
         // are borrowed here, then moved into the struct below.
         let bridge = crate::services::async_bridge::AsyncBridge::new();
-        let lsp = build_window_lsp(id, &root, &resources, &bridge);
+        let lsp = build_window_lsp(id, &root, &authority, &resources, &bridge);
         Self {
             id,
             label,
             root,
+            authority,
             file_explorer: None,
             file_mod_times: HashMap::new(),
             plugin_state: HashMap::new(),
@@ -1889,9 +1901,10 @@ impl Window {
         &self.resources.config
     }
 
-    /// Active filesystem authority (local / devcontainer / remote).
+    /// This window's backend (local / devcontainer / remote) — owned by the
+    /// window, never shared with another.
     pub fn authority(&self) -> &crate::services::authority::Authority {
-        &self.resources.authority
+        &self.authority
     }
 
     /// Allocate the next globally-unique `BufferId`.

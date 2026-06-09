@@ -464,22 +464,27 @@ impl Editor {
             // local placeholder until reconnect).
             win.authority_spec = workspace.authority_spec.clone();
         } else {
-            // Never-seeded shell: build the whole window from the
-            // workspace via the `Window::from_workspace` factory, carrying
-            // over the shell's identity fields.
-            let (label, root2, resources, tw, th, pstate) = {
-                let w = self.windows.get(&id).expect("window present for restore");
-                (
-                    w.label.clone(),
-                    w.root.clone(),
-                    w.resources.clone(),
-                    w.terminal_width,
-                    w.terminal_height,
-                    w.plugin_state.clone(),
-                )
-            };
-            let mut built =
-                crate::app::window::Window::from_workspace(id, label, root2, resources, &workspace);
+            // Never-seeded shell: rebuild the window from the workspace via
+            // the `Window::from_workspace` factory, carrying over the shell's
+            // identity fields and **moving** its owned authority across (the
+            // shell is replaced, so its single-owner backend handle moves into
+            // the rebuilt window — never cloned).
+            let old = self
+                .windows
+                .remove(&id)
+                .expect("window present for restore");
+            let (label, root2, authority, resources, tw, th, pstate) = (
+                old.label,
+                old.root,
+                old.authority,
+                old.resources,
+                old.terminal_width,
+                old.terminal_height,
+                old.plugin_state,
+            );
+            let mut built = crate::app::window::Window::from_workspace(
+                id, label, root2, authority, resources, &workspace,
+            );
             built.terminal_width = tw;
             built.terminal_height = th;
             built.plugin_state = pstate;
@@ -724,7 +729,7 @@ impl crate::app::window::Window {
 
         // Best-effort directory creation for terminal backing files
         #[allow(clippy::let_underscore_must_use)]
-        let _ = self.resources.authority.filesystem.create_dir_all(
+        let _ = self.authority.filesystem.create_dir_all(
             log_path
                 .parent()
                 .or_else(|| backing_path.parent())
@@ -760,7 +765,7 @@ impl crate::app::window::Window {
         // reconnect — `terminal_command` composes with whatever backend is
         // live, so the reconnect-on-activate step re-runs it in the real one.
         let wrapper_for_spawn = match spawn_argv {
-            Some(argv) => self.resources.authority.terminal_command(argv),
+            Some(argv) => self.authority.terminal_command(argv),
             None => self.resolved_terminal_wrapper(),
         };
         let terminal_id = match self.terminal_manager.spawn(
@@ -833,7 +838,7 @@ impl crate::app::window::Window {
             large_file_threshold,
             &self.resources.grammar_registry,
             &self.resources.config.languages,
-            std::sync::Arc::clone(&self.resources.authority.filesystem),
+            std::sync::Arc::clone(&self.authority.filesystem),
         ) {
             self.install_terminal_buffer_state(buffer_id, new_state);
         }
@@ -1617,7 +1622,6 @@ impl crate::app::window::Window {
                     // never viewed before quitting) so a restored session keeps
                     // the full scrollback.
                     if let Ok(mut file) = self
-                        .resources
                         .authority
                         .filesystem
                         .open_file_for_append(&backing_path)
@@ -1633,7 +1637,6 @@ impl crate::app::window::Window {
                     }
 
                     if let Ok(mut file) = self
-                        .resources
                         .authority
                         .filesystem
                         .open_file_for_append(&backing_path)
@@ -1666,7 +1669,7 @@ impl crate::app::window::Window {
             self.terminal_width,
             self.terminal_height,
             self.resources.config.editor.large_file_threshold_bytes as usize,
-            std::sync::Arc::clone(&self.resources.authority.filesystem),
+            std::sync::Arc::clone(&self.authority.filesystem),
         );
         state
             .margins
@@ -1707,7 +1710,7 @@ impl crate::app::window::Window {
             self.terminal_width,
             self.terminal_height,
             self.resources.config.editor.large_file_threshold_bytes as usize,
-            std::sync::Arc::clone(&self.resources.authority.filesystem),
+            std::sync::Arc::clone(&self.authority.filesystem),
         );
         state
             .margins
@@ -2035,10 +2038,11 @@ impl crate::app::window::Window {
         id: fresh_core::WindowId,
         label: impl Into<String>,
         root: PathBuf,
+        authority: crate::services::authority::Authority,
         resources: crate::app::window_resources::WindowResources,
         workspace: &Workspace,
     ) -> Self {
-        let mut window = Self::new(id, label, root, resources);
+        let mut window = Self::new(id, label, root, authority, resources);
         window.seed_initial_layout();
         window.apply_workspace_layout(workspace, None);
         window

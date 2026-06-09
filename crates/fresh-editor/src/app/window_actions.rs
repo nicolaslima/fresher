@@ -37,12 +37,15 @@ impl crate::app::Editor {
             // boot-time local one. A born-attached SSH/k8s window otherwise
             // showed the local machine in the explorer while its terminal ran
             // remote, because the cached fs_manager never tracked the authority.
+            // Default to a host fs_manager; callers that build a window with a
+            // non-local authority re-derive it from that authority's
+            // filesystem. The window's `authority` is set on the `Window`
+            // itself (not here in the `Clone`-fanned resources).
             fs_manager: std::sync::Arc::new(crate::services::fs::FsManager::new(
-                std::sync::Arc::clone(&self.authority.filesystem),
+                std::sync::Arc::new(crate::model::filesystem::StdFileSystem),
             )),
             local_filesystem: std::sync::Arc::clone(&self.local_filesystem),
             buffer_id_alloc: self.buffer_id_alloc.clone(),
-            authority: self.authority.clone(),
             time_source: std::sync::Arc::clone(&self.time_source),
             dir_context: self.dir_context.clone(),
             tokio_runtime: self.tokio_runtime.clone(),
@@ -103,8 +106,7 @@ impl crate::app::Editor {
         resources.fs_manager = std::sync::Arc::new(crate::services::fs::FsManager::new(
             std::sync::Arc::clone(&local_authority.filesystem),
         ));
-        resources.authority = local_authority;
-        let mut session = Window::new(id, label, root.clone(), resources);
+        let mut session = Window::new(id, label, root.clone(), local_authority, resources);
         session.terminal_width = self.terminal_width;
         session.terminal_height = self.terminal_height;
         let resolved_label = session.label.clone();
@@ -158,9 +160,9 @@ impl crate::app::Editor {
             use std::sync::Arc;
             let windows: Vec<&Window> = self.windows.values().collect();
             for (i, a) in windows.iter().enumerate() {
-                let aa = &a.resources.authority;
+                let aa = &a.authority;
                 for b in &windows[i + 1..] {
-                    let ba = &b.resources.authority;
+                    let ba = &b.authority;
                     debug_assert!(
                         !Arc::ptr_eq(&aa.workspace_trust, &ba.workspace_trust),
                         "per-session invariant violated: two windows share a WorkspaceTrust \
@@ -279,15 +281,13 @@ impl crate::app::Editor {
         let previous_authority_label = self.authority.display_label.clone();
 
         let mut resources = self.window_resources();
-        // Override the inherited (active-window) authority with the one
-        // this session is born under, and re-derive the window's
-        // `fs_manager` from *its* filesystem so the file explorer rides the
-        // new session's backend rather than the previous window's.
+        // Re-derive the window's `fs_manager` from *its* backend's filesystem
+        // so the file explorer rides this session's backend, then build the
+        // window owning `window_authority` outright.
         resources.fs_manager = std::sync::Arc::new(crate::services::fs::FsManager::new(
             std::sync::Arc::clone(&window_authority.filesystem),
         ));
-        resources.authority = window_authority;
-        let mut session = Window::new(id, label, root.clone(), resources);
+        let mut session = Window::new(id, label, root.clone(), window_authority, resources);
         session.terminal_width = self.terminal_width;
         session.terminal_height = self.terminal_height;
         let resolved_label = session.label.clone();

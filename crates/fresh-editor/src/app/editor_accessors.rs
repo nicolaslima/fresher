@@ -583,7 +583,7 @@ impl Editor {
                 .set_long_running_spawner(a.long_running_spawner.clone());
             w.lsp.set_path_translation(a.path_translation.clone());
             w.lsp.set_workspace_trust(a.workspace_trust.clone());
-            w.resources.authority = a.clone();
+            w.authority = a.clone();
         }
         // Re-point quick-open's file provider at the new backend. The provider
         // captured the *previous* authority's filesystem + spawner; without
@@ -663,7 +663,7 @@ impl Editor {
     ) {
         let is_active = self.active_window == window_id;
         if let Some(w) = self.windows.get_mut(&window_id) {
-            w.resources.authority = authority.clone();
+            w.authority = authority.clone();
             // Each window owns its `LspManager` by construction (no longer an
             // `Option`); re-point its backend handles, matching the active-
             // window re-pointing `set_boot_authority` does for every window.

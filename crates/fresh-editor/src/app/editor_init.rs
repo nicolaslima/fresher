@@ -1066,7 +1066,6 @@ impl Editor {
             fs_manager: Arc::clone(&fs_manager),
             local_filesystem: Arc::clone(&local_filesystem),
             buffer_id_alloc: buffer_id_alloc.clone(),
-            authority: authority.clone(),
             time_source: Arc::clone(&time_source),
             dir_context: dir_context.clone(),
             tokio_runtime: tokio_runtime.clone(),
@@ -1105,10 +1104,15 @@ impl Editor {
                 )
             });
 
+        // The active window owns the editor's boot authority outright. (A
+        // clone of `authority` is still parked in `self.authority` as the
+        // editor-wide active-backend mirror; that shares the *active*
+        // session's handles, never a background window's.)
         let mut active_win = crate::app::window::Window::new(
             active_window_id,
             active_label,
             active_root,
+            authority.clone(),
             base_resources,
         );
         // Seed the window's terminal dimensions from the editor's
@@ -1219,7 +1223,6 @@ impl Editor {
                     fs_manager: Arc::clone(&background_fs_manager),
                     local_filesystem: Arc::clone(&local_filesystem),
                     buffer_id_alloc: buffer_id_alloc.clone(),
-                    authority: shell_authority,
                     time_source: Arc::clone(&time_source),
                     dir_context: dir_context.clone(),
                     tokio_runtime: tokio_runtime.clone(),
@@ -1233,6 +1236,7 @@ impl Editor {
                     id,
                     ps.label.clone(),
                     ps.root.clone(),
+                    shell_authority,
                     resources,
                 );
                 shell.terminal_width = width;

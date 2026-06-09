@@ -1581,20 +1581,14 @@ impl crate::app::window::Window {
     /// `self.resources`. For remote mode, fall back to the remote home
     /// dir only when `root` doesn't exist on the remote filesystem.
     pub(crate) fn init_file_explorer(&mut self) {
-        let is_remote = self
-            .resources
-            .authority
-            .filesystem
-            .remote_connection_info()
-            .is_some();
+        let is_remote = self.authority.filesystem.remote_connection_info().is_some();
         let root_exists = self
-            .resources
             .authority
             .filesystem
             .is_dir(&self.root)
             .unwrap_or(false);
         let root_path = if is_remote && !root_exists {
-            match self.resources.authority.filesystem.home_dir() {
+            match self.authority.filesystem.home_dir() {
                 Ok(home) => home,
                 Err(e) => {
                     tracing::error!("Failed to get remote home directory: {}", e);
@@ -1650,7 +1644,7 @@ impl crate::app::window::Window {
         let root_id = view.tree().root_id();
         if let Some(root_path) = view.tree().get_node(root_id).map(|n| n.entry.path.clone()) {
             crate::app::file_operations::load_gitignore_via_fs(
-                self.resources.authority.filesystem.as_ref(),
+                self.authority.filesystem.as_ref(),
                 &mut view,
                 &root_path,
             );

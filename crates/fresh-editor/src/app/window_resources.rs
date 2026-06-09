@@ -99,7 +99,7 @@ impl BufferIdAllocator {
 ///
 /// A `Window` handler that needs any of these reads it directly:
 /// `self.resources.config.editor.line_wrap`,
-/// `self.resources.authority.path_translation`, etc. The
+/// `self.authority.path_translation`, etc. The
 /// [`Window::config()`] / `Window::authority()` accessors are the
 /// canonical reading API; the field itself stays `pub(crate)` so call
 /// sites can split-borrow disjoint sub-fields when the borrow checker
@@ -143,13 +143,10 @@ pub struct WindowResources {
     /// Globally-unique `BufferId` allocator (see [`BufferIdAllocator`]).
     pub buffer_id_alloc: BufferIdAllocator,
 
-    /// Active filesystem authority (local / devcontainer / remote).
-    /// `Authority` is `Clone` because it internally holds `Arc`s for
-    /// the filesystem and path-translation handles; cloning here gives
-    /// each window an independent handle that points at the same
-    /// underlying authority.
-    pub authority: Authority,
-
+    // NOTE: a window's `Authority` is **not** here — it lives directly on
+    // `Window` (owned, non-shared). Keeping it out of these `Clone`-fanned
+    // resources is what stops one session's backend/trust/env from leaking
+    // into another (issue #2280). See `Window::authority`.
     /// Editor-wide time source (real clock in production, controllable
     /// in tests). Already `Arc`-internal.
     pub time_source: SharedTimeSource,

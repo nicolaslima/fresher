@@ -1390,7 +1390,6 @@ impl crate::app::window::Window {
 
         // Check file size
         let file_size = self
-            .resources
             .authority
             .filesystem
             .metadata(path)
@@ -1558,7 +1557,7 @@ impl crate::app::window::Window {
     /// Record a file's modification time (called when opening files).
     /// Window-local: records into this window's own `file_mod_times`.
     pub(crate) fn watch_file(&mut self, path: &Path) {
-        if let Ok(metadata) = self.resources.authority.filesystem.metadata(path) {
+        if let Ok(metadata) = self.authority.filesystem.metadata(path) {
             if let Some(mtime) = metadata.modified {
                 self.file_mod_times.insert(path.to_path_buf(), mtime);
             }

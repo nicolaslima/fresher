@@ -843,8 +843,7 @@ impl crate::app::window::Window {
     /// `/var` → `/private/var`) doesn't defeat the prefix checks.
     fn is_internal_data_artifact(&self, path: &Path) -> bool {
         let canonicalize = |p: &Path| {
-            self.resources
-                .authority
+            self.authority
                 .filesystem
                 .canonicalize(p)
                 .unwrap_or_else(|_| p.to_path_buf())
@@ -861,11 +860,10 @@ impl crate::app::window::Window {
     ) -> anyhow::Result<BufferId> {
         // Fail fast if the remote connection is down — don't attempt I/O that
         // would either timeout or return confusing errors.
-        if !self.resources.authority.filesystem.is_remote_connected() {
+        if !self.authority.filesystem.is_remote_connected() {
             anyhow::bail!(
                 "Cannot open file: remote connection lost ({})",
-                self.resources
-                    .authority
+                self.authority
                     .filesystem
                     .remote_connection_info()
                     .unwrap_or("unknown host")
@@ -875,15 +873,8 @@ impl crate::app::window::Window {
         // Resolve relative paths against appropriate base directory.
         // For remote mode, use the remote home directory; for local, use
         // this window's root.
-        let base_dir = if self
-            .resources
-            .authority
-            .filesystem
-            .remote_connection_info()
-            .is_some()
-        {
-            self.resources
-                .authority
+        let base_dir = if self.authority.filesystem.remote_connection_info().is_some() {
+            self.authority
                 .filesystem
                 .home_dir()
                 .unwrap_or_else(|_| self.root.clone())
@@ -899,7 +890,7 @@ impl crate::app::window::Window {
 
         // Determine if we're opening a non-existent file (for creating new files)
         // Use filesystem trait method to support remote files
-        let file_exists = self.resources.authority.filesystem.exists(&resolved_path);
+        let file_exists = self.authority.filesystem.exists(&resolved_path);
 
         // Save the user-visible (non-canonicalized) path for language detection.
         // Glob patterns in language config should match the path as the user sees it,
@@ -910,8 +901,7 @@ impl crate::app::window::Window {
         // This ensures consistent path representation throughout the editor
         // For non-existent files, we need to canonicalize the parent directory and append the filename
         let canonical_path = if file_exists {
-            self.resources
-                .authority
+            self.authority
                 .filesystem
                 .canonicalize(&resolved_path)
                 .unwrap_or_else(|_| resolved_path.clone())
@@ -922,8 +912,7 @@ impl crate::app::window::Window {
                     // No parent means just a filename, use base dir
                     base_dir.clone()
                 } else {
-                    self.resources
-                        .authority
+                    self.authority
                         .filesystem
                         .canonicalize(parent)
                         .unwrap_or_else(|_| parent.to_path_buf())
@@ -942,13 +931,7 @@ impl crate::app::window::Window {
         // Check if the path is a directory (after following symlinks via canonicalize)
         // Directories cannot be opened as files in the editor
         // Use filesystem trait method to support remote files
-        if self
-            .resources
-            .authority
-            .filesystem
-            .is_dir(path)
-            .unwrap_or(false)
-        {
+        if self.authority.filesystem.is_dir(path).unwrap_or(false) {
             anyhow::bail!(t!("buffer.cannot_open_directory"));
         }
 
@@ -996,7 +979,7 @@ impl crate::app::window::Window {
             let buffer = crate::model::buffer::Buffer::load_from_file(
                 &canonical_path,
                 self.resources.config.editor.large_file_threshold_bytes as usize,
-                Arc::clone(&self.resources.authority.filesystem),
+                Arc::clone(&self.authority.filesystem),
             )?;
             let first_line = buffer.first_line_lossy();
             let detected =
@@ -1012,7 +995,7 @@ impl crate::app::window::Window {
             // File doesn't exist - create empty buffer with the file path set
             EditorState::new_with_path(
                 self.resources.config.editor.large_file_threshold_bytes as usize,
-                Arc::clone(&self.resources.authority.filesystem),
+                Arc::clone(&self.authority.filesystem),
                 path.to_path_buf(),
             )
         };
@@ -1086,7 +1069,7 @@ impl crate::app::window::Window {
             path.to_path_buf(),
             &display_path,
             &self.root,
-            self.resources.authority.path_translation.as_ref(),
+            self.authority.path_translation.as_ref(),
         );
 
         // Mark binary files in metadata and disable LSP
@@ -1097,10 +1080,7 @@ impl crate::app::window::Window {
         }
 
         // Check if the file is read-only on disk (filesystem permissions)
-        if file_exists
-            && !metadata.read_only
-            && !self.resources.authority.filesystem.is_writable(path)
-        {
+        if file_exists && !metadata.read_only && !self.authority.filesystem.is_writable(path) {
             metadata.read_only = true;
         }
 

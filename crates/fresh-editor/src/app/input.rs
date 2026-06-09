@@ -1060,6 +1060,9 @@ impl Editor {
             Action::ToggleAutoRevert => {
                 self.toggle_auto_revert();
             }
+            Action::ToggleOverwriteMode => {
+                self.toggle_overwrite_mode();
+            }
             Action::FormatBuffer => {
                 if let Err(e) = self.format_buffer() {
                     self.set_status_message(

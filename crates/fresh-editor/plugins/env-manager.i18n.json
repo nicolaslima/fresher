@@ -34,7 +34,8 @@
     "popup.trust_elevate_action_cancel": "Cancel",
     "statusbar.trust_label": "Trust",
     "statusbar.trust_restricted": "restricted",
-    "statusbar.trust_blocked": "blocked"
+    "statusbar.trust_blocked": "blocked",
+    "statusbar.trust_trusted": "trusted"
   },
   "cs": {
     "cmd.activate": "Prostředí: Aktivovat zjištěné prostředí (venv / direnv / mise)",
@@ -71,7 +72,8 @@
     "popup.trust_elevate_action_cancel": "Zrušit",
     "statusbar.trust_label": "Důvěra",
     "statusbar.trust_restricted": "omezeno",
-    "statusbar.trust_blocked": "blokováno"
+    "statusbar.trust_blocked": "blokováno",
+    "statusbar.trust_trusted": "důvěryhodné"
   },
   "de": {
     "cmd.activate": "Umgebung: Erkannte Umgebung aktivieren (venv / direnv / mise)",
@@ -108,7 +110,8 @@
     "popup.trust_elevate_action_cancel": "Abbrechen",
     "statusbar.trust_label": "Vertrauen",
     "statusbar.trust_restricted": "eingeschränkt",
-    "statusbar.trust_blocked": "blockiert"
+    "statusbar.trust_blocked": "blockiert",
+    "statusbar.trust_trusted": "vertraut"
   },
   "es": {
     "cmd.activate": "Entorno: Activar entorno detectado (venv / direnv / mise)",
@@ -145,7 +148,8 @@
     "popup.trust_elevate_action_cancel": "Cancelar",
     "statusbar.trust_label": "Confianza",
     "statusbar.trust_restricted": "restringido",
-    "statusbar.trust_blocked": "bloqueado"
+    "statusbar.trust_blocked": "bloqueado",
+    "statusbar.trust_trusted": "de confianza"
   },
   "fr": {
     "cmd.activate": "Env : Activer l'environnement détecté (venv / direnv / mise)",
@@ -182,7 +186,8 @@
     "popup.trust_elevate_action_cancel": "Annuler",
     "statusbar.trust_label": "Confiance",
     "statusbar.trust_restricted": "restreint",
-    "statusbar.trust_blocked": "bloqué"
+    "statusbar.trust_blocked": "bloqué",
+    "statusbar.trust_trusted": "approuvé"
   },
   "it": {
     "cmd.activate": "Ambiente: Attiva ambiente rilevato (venv / direnv / mise)",
@@ -219,7 +224,8 @@
     "popup.trust_elevate_action_cancel": "Annulla",
     "statusbar.trust_label": "Fiducia",
     "statusbar.trust_restricted": "limitato",
-    "statusbar.trust_blocked": "bloccato"
+    "statusbar.trust_blocked": "bloccato",
+    "statusbar.trust_trusted": "attendibile"
   },
   "ja": {
     "cmd.activate": "環境: 検出した環境を有効化 (venv / direnv / mise)",
@@ -256,7 +262,8 @@
     "popup.trust_elevate_action_cancel": "キャンセル",
     "statusbar.trust_label": "信頼",
     "statusbar.trust_restricted": "制限",
-    "statusbar.trust_blocked": "ブロック"
+    "statusbar.trust_blocked": "ブロック",
+    "statusbar.trust_trusted": "信頼済み"
   },
   "ko": {
     "cmd.activate": "환경: 감지된 환경 활성화 (venv / direnv / mise)",
@@ -293,7 +300,8 @@
     "popup.trust_elevate_action_cancel": "취소",
     "statusbar.trust_label": "신뢰",
     "statusbar.trust_restricted": "제한됨",
-    "statusbar.trust_blocked": "차단됨"
+    "statusbar.trust_blocked": "차단됨",
+    "statusbar.trust_trusted": "신뢰됨"
   },
   "pt-BR": {
     "cmd.activate": "Ambiente: Ativar ambiente detectado (venv / direnv / mise)",
@@ -330,7 +338,8 @@
     "popup.trust_elevate_action_cancel": "Cancelar",
     "statusbar.trust_label": "Confiança",
     "statusbar.trust_restricted": "restrito",
-    "statusbar.trust_blocked": "bloqueado"
+    "statusbar.trust_blocked": "bloqueado",
+    "statusbar.trust_trusted": "confiável"
   },
   "ru": {
     "cmd.activate": "Окружение: Активировать обнаруженное окружение (venv / direnv / mise)",
@@ -367,7 +376,8 @@
     "popup.trust_elevate_action_cancel": "Отмена",
     "statusbar.trust_label": "Доверие",
     "statusbar.trust_restricted": "ограничено",
-    "statusbar.trust_blocked": "заблокировано"
+    "statusbar.trust_blocked": "заблокировано",
+    "statusbar.trust_trusted": "доверено"
   },
   "th": {
     "cmd.activate": "สภาพแวดล้อม: เปิดใช้สภาพแวดล้อมที่ตรวจพบ (venv / direnv / mise)",
@@ -404,7 +414,8 @@
     "popup.trust_elevate_action_cancel": "ยกเลิก",
     "statusbar.trust_label": "ความเชื่อถือ",
     "statusbar.trust_restricted": "จำกัด",
-    "statusbar.trust_blocked": "ปิดกั้น"
+    "statusbar.trust_blocked": "ปิดกั้น",
+    "statusbar.trust_trusted": "เชื่อถือ"
   },
   "uk": {
     "cmd.activate": "Середовище: Активувати виявлене середовище (venv / direnv / mise)",
@@ -441,7 +452,8 @@
     "popup.trust_elevate_action_cancel": "Скасувати",
     "statusbar.trust_label": "Довіра",
     "statusbar.trust_restricted": "обмежено",
-    "statusbar.trust_blocked": "заблоковано"
+    "statusbar.trust_blocked": "заблоковано",
+    "statusbar.trust_trusted": "довірено"
   },
   "vi": {
     "cmd.activate": "Môi trường: Kích hoạt môi trường đã phát hiện (venv / direnv / mise)",
@@ -478,7 +490,8 @@
     "popup.trust_elevate_action_cancel": "Huỷ",
     "statusbar.trust_label": "Tin cậy",
     "statusbar.trust_restricted": "giới hạn",
-    "statusbar.trust_blocked": "chặn"
+    "statusbar.trust_blocked": "chặn",
+    "statusbar.trust_trusted": "tin cậy"
   },
   "zh-CN": {
     "cmd.activate": "环境：激活检测到的环境（venv / direnv / mise）",
@@ -515,6 +528,7 @@
     "popup.trust_elevate_action_cancel": "取消",
     "statusbar.trust_label": "信任",
     "statusbar.trust_restricted": "受限",
-    "statusbar.trust_blocked": "已阻止"
+    "statusbar.trust_blocked": "已阻止",
+    "statusbar.trust_trusted": "已信任"
   }
 }

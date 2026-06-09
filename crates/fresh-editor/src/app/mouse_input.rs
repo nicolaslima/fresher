@@ -2378,7 +2378,12 @@ impl Editor {
         }
         if let Some((r, s, e)) = self.active_chrome().status_bar_remote_area {
             if row == r && col >= s && col < e {
-                self.dismiss_menu_popups_for_prompt();
+                // Intentionally NOT calling `dismiss_menu_popups_for_prompt`
+                // here — `show_remote_indicator_popup` owns the toggle (a
+                // second click closes it). Dismissing first would close the
+                // popup, then the action would find nothing open and re-open
+                // it, so it could never be toggled shut. It clears any *other*
+                // menu popup itself, after its toggle check.
                 return Some(self.handle_action(Action::ShowRemoteIndicatorMenu));
             }
         }

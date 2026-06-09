@@ -688,6 +688,12 @@ impl Editor {
             self.hide_popup();
             return;
         }
+        // Not a toggle-close: clear any *other* menu popup (a different
+        // status-bar picker left open) before building this one, so the
+        // remote menu never renders over a stale popup (#1941). Done here,
+        // after the toggle check, rather than in the click handler — doing it
+        // there would close our own popup and defeat the toggle.
+        self.dismiss_menu_popups_for_prompt();
 
         let connection = self.connection_display_string();
         let is_disconnected = connection

@@ -484,12 +484,14 @@ editor.on("plugins_loaded", "env_maybe_auto_activate");
 //
 // Two pills:
 // - "env" — what environment is active (always relevant once env-manager runs)
-// - "trust" — visible only when the workspace is *not* Trusted. This is the
-//   "restricted mode is always visible" rule: silent gating without a visible
-//   chip is the failure mode that gives VS Code its UX reputation. When the
-//   chip is present, the user knows code execution is gated and can run
-//   "Workspace Trust: Trust This Folder" (or click through the env pill
-//   prompt) to elevate.
+// - "trust" — the workspace trust state. Adding the chip is opt-in (it's not in
+//   the default layout), so once a user puts it on their status bar it always
+//   reflects the current level — "restricted"/"blocked" when gated,
+//   "trusted" when not — rather than vanishing when trusted. This keeps the
+//   "restricted mode is always visible" guarantee (silent gating is the
+//   failure mode that gives VS Code its UX reputation) while still showing the
+//   chip the user explicitly asked to see. Clicking it routes to the trust
+//   decision; "Workspace Trust: Trust This Folder" elevates.
 
 const TRUST_TOKEN = "trust";
 
@@ -511,15 +513,16 @@ function refreshStatus(): void {
   }
   editor.setStatusBarValue(bufferId, STATUS_TOKEN, value);
 
-  // Trust chip — show only when not Trusted. Trusted is the "everything works"
-  // state and adding a chip there would just be noise.
+  // Trust chip — always reflects the current level for a user who opted the
+  // chip into their layout (restricted / blocked when gated, trusted
+  // otherwise), so it never silently renders blank.
   const level = editor.workspaceTrustLevel();
   const trustValue =
     level === "restricted"
       ? editor.t("statusbar.trust_restricted")
       : level === "blocked"
         ? editor.t("statusbar.trust_blocked")
-        : "";
+        : editor.t("statusbar.trust_trusted");
   editor.setStatusBarValue(bufferId, TRUST_TOKEN, trustValue);
 }
 
@@ -527,7 +530,10 @@ editor.registerStatusBarElement(STATUS_TOKEN, editor.t("statusbar.label"));
 editor.registerStatusBarElement(TRUST_TOKEN, editor.t("statusbar.trust_label"));
 
 registerHandler("env_refresh_status", refreshStatus);
-for (const event of ["buffer_activated", "after_file_open", "focus_gained"]) {
+// `ready` populates the pills at boot (after workspace restore opened the
+// initial buffer) so an opted-in trust chip shows immediately, not only after
+// the first buffer switch / file open.
+for (const event of ["ready", "buffer_activated", "after_file_open", "focus_gained"]) {
   editor.on(event, "env_refresh_status");
 }
 

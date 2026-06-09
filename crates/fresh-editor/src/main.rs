@@ -1625,6 +1625,16 @@ fn initialize_app(args: &Args) -> AnyhowResult<SetupState> {
             &dir_context.project_state_dir(&effective_working_dir),
         ),
     ));
+    // Attach the project's env recipe store and, when trusted, re-enter the
+    // env the user previously activated — so the editor boots already in it
+    // and the env-manager plugin's auto-activation finds nothing to do
+    // (no setEnv → restart flicker on a re-open, issue #2280).
+    env_provider.set_store(
+        Some(fresh::services::env_provider::EnvStore::for_project_dir(
+            &dir_context.project_state_dir(&effective_working_dir),
+        )),
+        workspace_trust.level() == fresh::services::workspace_trust::TrustLevel::Trusted,
+    );
 
     let mut config = if let Some(config_path) = &args.config {
         // Explicit config file overrides layered system
@@ -2737,6 +2747,15 @@ fn run_server_command(args: &Args) -> AnyhowResult<()> {
             &dir_context.project_state_dir(&working_dir),
         ),
     ));
+    // Attach the project's env recipe store and, when trusted, re-enter the
+    // previously-activated env so the editor boots already in it (no
+    // auto-activation restart flicker on a re-open, issue #2280).
+    env_provider.set_store(
+        Some(fresh::services::env_provider::EnvStore::for_project_dir(
+            &dir_context.project_state_dir(&working_dir),
+        )),
+        workspace_trust.level() == fresh::services::workspace_trust::TrustLevel::Trusted,
+    );
 
     // Load editor config
     eprintln!("[server] Loading editor config...");

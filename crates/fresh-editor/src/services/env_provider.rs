@@ -21,6 +21,7 @@
 use std::collections::hash_map::DefaultHasher;
 use std::future::Future;
 use std::hash::{Hash, Hasher};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 
@@ -53,10 +54,15 @@ struct Cached {
 /// Shared, live environment recipe.
 pub struct EnvProvider {
     state: RwLock<State>,
+    /// Per-project recipe store. When set, [`Self::set`] / [`Self::clear`]
+    /// write the recipe through to disk so the next launch can boot already
+    /// in this env (no post-boot `setEnv` → restart flicker, issue #2280).
+    /// `None` for placeholder / non-persistent providers (remote stubs, tests).
+    store: RwLock<Option<EnvStore>>,
 }
 
 impl EnvProvider {
-    /// An inactive provider — no snippet, applies no env.
+    /// An inactive provider — no snippet, applies no env, no persistence.
     pub fn inactive() -> Self {
         Self {
             state: RwLock::new(State {
@@ -64,23 +70,74 @@ impl EnvProvider {
                 dir: None,
                 cache: None,
             }),
+            store: RwLock::new(None),
         }
     }
 
-    /// Set the active recipe (activation). Invalidates the cache.
+    /// A per-session provider backed by this project's recipe store. When
+    /// `trusted`, any recipe the user previously activated for the project is
+    /// restored immediately, so the session boots already in its env and
+    /// tooling spawns under it from frame zero — there is no auto-activation
+    /// restart. An untrusted session restores nothing (the env gate mirrors
+    /// the spawn gate); a later trust + activate persists through the store
+    /// and is picked up on the next launch.
+    pub fn for_session(project_state_dir: &Path, trusted: bool) -> Self {
+        let p = Self::inactive();
+        p.set_store(Some(EnvStore::for_project_dir(project_state_dir)), trusted);
+        p
+    }
+
+    /// Attach (or replace) the recipe store. When `trusted` and the store has
+    /// a recorded recipe, it is adopted as the live recipe — this is how a
+    /// boot session re-enters its env once the working dir + trust level are
+    /// known (mirrors `WorkspaceTrust::set_store` adopting the persisted level).
+    pub fn set_store(&self, store: Option<EnvStore>, trusted: bool) {
+        if trusted {
+            if let Some(store) = store.as_ref() {
+                if let Some((snippet, dir)) = store.recipe() {
+                    if let Ok(mut s) = self.state.write() {
+                        s.snippet = snippet;
+                        s.dir = dir;
+                        s.cache = None;
+                    }
+                }
+            }
+        }
+        if let Ok(mut slot) = self.store.write() {
+            *slot = store;
+        }
+    }
+
+    /// Set the active recipe (activation). Invalidates the cache and, when a
+    /// store is attached, persists the recipe for the next launch.
     pub fn set(&self, snippet: String, dir: Option<PathBuf>) {
         if let Ok(mut s) = self.state.write() {
-            s.snippet = snippet;
-            s.dir = dir;
+            s.snippet = snippet.clone();
+            s.dir = dir.clone();
             s.cache = None;
+        }
+        if let Ok(store) = self.store.read() {
+            if let Some(store) = store.as_ref() {
+                if snippet.trim().is_empty() {
+                    store.remove();
+                } else if let Err(e) = store.record(&snippet, dir.as_deref()) {
+                    tracing::warn!("env: failed to persist recipe: {e}");
+                }
+            }
         }
     }
 
-    /// Deactivate — drop the snippet so no env is applied.
+    /// Deactivate — drop the snippet so no env is applied, and forget the
+    /// persisted recipe so the next launch boots clean.
     pub fn clear(&self) {
         if let Ok(mut s) = self.state.write() {
             s.snippet.clear();
             s.cache = None;
+        }
+        if let Ok(store) = self.store.read() {
+            if let Some(store) = store.as_ref() {
+                store.remove();
+            }
         }
     }
 
@@ -222,6 +279,70 @@ fn inputs_hash(dir: Option<&Path>) -> u64 {
     hasher.finish()
 }
 
+/// On-disk record of a project's activated env recipe.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct StoredEnv {
+    snippet: String,
+    #[serde(default)]
+    dir: Option<PathBuf>,
+}
+
+/// Per-project persistence of the *activated env recipe* — the recipe the user
+/// last activated for a project, so the next launch can boot directly into it.
+///
+/// One file per project (`env.json`), alongside `trust.json` in the project's
+/// state dir (see `DirectoryContext::project_state_dir`), never inside the
+/// repository. Presence of a recipe *is* the "this project's env is activated"
+/// decision; restoring it is gated on trust exactly like a spawn.
+#[derive(Debug, Clone)]
+pub struct EnvStore {
+    path: PathBuf,
+}
+
+impl EnvStore {
+    /// Recipe file for the project whose state lives in `project_state_dir`.
+    pub fn for_project_dir(project_state_dir: &Path) -> Self {
+        Self {
+            path: project_state_dir.join("env.json"),
+        }
+    }
+
+    /// The recorded recipe (`snippet`, `dir`), or `None` when absent, empty, or
+    /// corrupt (a corrupt file reads as "no recipe"; the next write rewrites it).
+    fn recipe(&self) -> Option<(String, Option<PathBuf>)> {
+        let text = std::fs::read_to_string(&self.path).ok()?;
+        let stored: StoredEnv = serde_json::from_str(&text).ok()?;
+        if stored.snippet.trim().is_empty() {
+            return None;
+        }
+        Some((stored.snippet, stored.dir))
+    }
+
+    /// Record the activated recipe, written atomically (pid-tagged temp then
+    /// rename) so a half-written file is never observed.
+    fn record(&self, snippet: &str, dir: Option<&Path>) -> io::Result<()> {
+        if let Some(parent) = self.path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let json = serde_json::to_string_pretty(&StoredEnv {
+            snippet: snippet.to_string(),
+            dir: dir.map(Path::to_path_buf),
+        })
+        .map_err(io::Error::other)?;
+        let tmp = self
+            .path
+            .with_extension(format!("json.{}.tmp", std::process::id()));
+        std::fs::write(&tmp, json.as_bytes())?;
+        std::fs::rename(&tmp, &self.path)?;
+        Ok(())
+    }
+
+    /// Forget the recipe (deactivation). Absent file is success.
+    fn remove(&self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -344,5 +465,53 @@ mod tests {
         p.set("true".into(), None);
         let vars = p.current(|_s| async { None }).await;
         assert!(vars.is_empty());
+    }
+
+    #[test]
+    fn for_session_restores_a_persisted_recipe_when_trusted() {
+        let tmp = tempfile::tempdir().unwrap();
+        // First session: trusted, user activates → recipe persists.
+        let first = EnvProvider::for_session(tmp.path(), true);
+        first.set(
+            "eval \"$(direnv export bash)\"".into(),
+            Some(PathBuf::from("/proj")),
+        );
+        assert!(first.is_active());
+
+        // Next launch: a fresh trusted session boots already in the env, with
+        // no plugin re-activation needed — this is what removes the flicker.
+        let next = EnvProvider::for_session(tmp.path(), true);
+        assert!(next.is_active());
+        assert_eq!(next.snippet(), "eval \"$(direnv export bash)\"");
+    }
+
+    #[test]
+    fn for_session_does_not_restore_when_untrusted() {
+        let tmp = tempfile::tempdir().unwrap();
+        EnvProvider::for_session(tmp.path(), true).set("true".into(), None);
+        // An untrusted session must not silently re-enter a persisted env —
+        // the env gate mirrors the spawn gate.
+        let untrusted = EnvProvider::for_session(tmp.path(), false);
+        assert!(!untrusted.is_active());
+    }
+
+    #[test]
+    fn clear_forgets_the_persisted_recipe() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = EnvProvider::for_session(tmp.path(), true);
+        p.set("true".into(), None);
+        p.clear();
+        // After deactivation the next launch boots clean.
+        let next = EnvProvider::for_session(tmp.path(), true);
+        assert!(!next.is_active());
+    }
+
+    #[test]
+    fn inactive_provider_never_persists() {
+        let tmp = tempfile::tempdir().unwrap();
+        // A storeless provider applies env in-memory but writes nothing.
+        let p = EnvProvider::inactive();
+        p.set("true".into(), None);
+        assert!(EnvStore::for_project_dir(tmp.path()).recipe().is_none());
     }
 }

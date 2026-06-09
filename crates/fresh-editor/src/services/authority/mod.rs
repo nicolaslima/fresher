@@ -340,12 +340,19 @@ pub struct SessionScope {
 impl SessionScope {
     /// Mint a fresh scope for a session rooted at `root`: a per-root trust
     /// (backed by that project's store, adopting its recorded level) and a
-    /// fresh **inactive** env (the env-manager plugin activates it per
-    /// session). Each call yields handles owned by exactly one session.
+    /// per-session env backed by that project's recipe store. When the session
+    /// is trusted, a previously-activated recipe is restored so the session
+    /// boots already in its env (no auto-activation restart); otherwise it
+    /// starts inactive. Each call yields handles owned by exactly one session.
     pub fn for_root(root: &Path, project_state_dir: &Path) -> Self {
+        let trust = WorkspaceTrust::for_session(root, project_state_dir);
+        let trusted = trust.level() == crate::services::workspace_trust::TrustLevel::Trusted;
         Self {
-            trust: WorkspaceTrust::for_session(root, project_state_dir),
-            env: Arc::new(crate::services::env_provider::EnvProvider::inactive()),
+            trust,
+            env: Arc::new(crate::services::env_provider::EnvProvider::for_session(
+                project_state_dir,
+                trusted,
+            )),
         }
     }
 }

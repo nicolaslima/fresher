@@ -788,3 +788,29 @@ The dock is a persistent, non-modal LEFT-column session switcher (CHANGELOG head
 - After "Send Selection to Terminal", **keyboard focus is on the TERMINAL**. Any subsequent editor keystrokes (Ctrl+Home, Shift+arrows, etc.) leak into the terminal. ALWAYS re-focus the editor with **Alt+J** ("Toggle Utility Dock" focus) before the next editor operation.
 - Verify editor focus BEFORE selecting: check the status-bar filetype (e.g. `Bourne Again Shell (bash)` for a .sh file) and confirm the selection highlight `48;5;17m` (blue bg) appears after Shift+End.
 - **Alt+`** = "Open Terminal in Utility Dock" (bottom dock — editor + terminal both visible, ideal for this test). **Alt+J** toggles focus editor ↔ dock. **Ctrl+Space** toggles terminal input ↔ scrollback (but does NOT move focus to the editor — use Alt+J for that). "Focus Terminal" (palette) jumps into terminal input mode.
+
+## Occurrence Highlight + Current-Line + Clear Search (Run #32, v0.4.0)
+Three brand-new 0.4.0 features by @masmu. Read the PRs first to nail expected behavior — saved me from two false positives.
+
+### Occurrence highlighting (#2154)
+- Palette **"Toggle Occurrence Highlight"** (`cmd.toggle_occurrence_highlight`, builtin, NO default key). Config `editor.highlight_occurrences` (**enabled by default**). Status msg `view.occurrence_highlight_state` = "Occurrence highlight enabled/disabled".
+- Highlights ALL occurrences of the **whole word** under the cursor (cursor on `items` does NOT match `item`).
+- **BUG #2312:** highlight bg is a FIXED color **16** (near-black), NOT theme-derived. To prove visibility issues, use an ON/OFF differential ANSI capture (`capture-pane -e`, save to file, `diff`). In high-contrast (bg 16) the diff shows NOTHING changes on non-current lines → invisible. In light it's an inverted black box. Dark themes (bg 234/235) → subtle box, fine.
+
+### Hide current-line highlight on selection (#2153)
+- Config **`editor.hide_current_line_on_selection`** (Display section), **DEFAULT FALSE**. The CHANGELOG line "current-line highlight now hides while text is selected" is OPT-IN, not automatic — default behavior (highlight stays during selection) is CORRECT.
+- When enabled: current-line bg (dark theme `235`) drops to non-current bg (`234`) the instant any cursor has a non-empty selection; returns to `235` when selection cleared. Also the gutter line-number fg reverts from the current-line color (`65`) to normal (`242`).
+- Sibling: `editor.highlight_current_line` (the on/off for the highlight itself), `Toggle Current Line Highlight`, `Toggle Current Column Highlight` / `highlight_current_column`.
+
+### Clear Search (#2152)
+- Palette **"Clear Search Highlights"** (`cmd.clear_search`, NO default key). Clears active search highlights. Also exposes `has_active_search()` to plugins.
+- **Find-close behavior map (important):** `Escape` closes the find bar AND clears highlights ("Search cancelled."). `Enter` closes the find bar but PERSISTS the match highlights and shows "Found N matches for '...'". `clear_search` removes those persistent highlights.
+- The PR's "without closing the find widget" benefit is only reachable via a custom keybinding or a plugin: opening the palette closes the find bar first, and while the find INPUT is focused it swallows the keybinding (F8 ignored). → IMP-019.
+
+### Keybinding config + Keybinding Editor save flow (learned this run)
+- Config schema: `"keybindings":[{"key":"F8","action":"clear_search"}]` (top-level `keybindings` array).
+- Editor flow: palette "Open Keybinding Editor" → `/` + action name → Enter (commit search) → Down to the row → Enter (Edit dialog) → Enter (capture) → press the key (shows `Key: F8`) → it stages (header `[modified]`, row Source `custom`) → **Ctrl+S** to persist ("Keybinding changes saved"). The Edit-dialog Save button alone does NOT write the config file. Footer help: `Enter:Edit a:Add d:Delete /:Search r:Record Key c:Context s:Source ?:Help Ctrl+S:Save Esc:Close`.
+
+### Theme + Settings UI gotchas
+- **Select Theme** list opens with the CURRENT theme pre-selected (NOT the top) — navigate relative to current. Order: dark, dracula, high-contrast, light, nord, nostalgia, solarized-dark, terminal.
+- **Settings UI** (`Open Settings`): press `/` to search; each result shows its JSON path, e.g. `Editor > /editor/hide_current_line_on_selection`. Fastest way to find the TRUE config key/nesting for a setting (a flat top-level key that should be under `editor` is silently ignored).

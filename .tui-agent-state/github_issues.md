@@ -4,7 +4,7 @@ This is the canonical reference for every GitHub issue this agent has filed.
 **Check this file BEFORE searching GitHub or filing any new issue.**
 If a topic appears here — open or closed — do not file a duplicate.
 
-Last updated: Run #31, 2026-06-10 (no new issue — Send Selection to Terminal tested PASS, no bug; v0.4.0)
+Last updated: Run #32, 2026-06-10 (filed #2312 — occurrence-highlight theme color collision; v0.4.0)
 
 ---
 
@@ -26,6 +26,7 @@ Last updated: Run #31, 2026-06-10 (no new issue — Send Selection to Terminal t
 | [#2291](https://github.com/sinelaw/fresh/issues/2291) | Workspace Trust: "Trust folder & Allow Tooling" restarts the editor and silently discards opened file + unsaved edits (with --no-restore) | Run #22 | **FIXED** (Run #23) | CONFIRMED FIXED in master @ f4ee3630 (v0.3.12): restart path now restores unsaved buffers from hot-exit recovery (`preserved N unnamed buffer(s)` / `Restored unsaved changes ... from hot exit recovery`). Verified via UI — file survives both Trust and Block-All restarts. Prior Run #23 (08:25Z) already commented; do NOT re-comment. Awaiting maintainer close. Do NOT re-file. |
 | [#2307](https://github.com/sinelaw/fresh/issues/2307) | Keybinding Editor: switching keybinding map and back hides all plugin bindings (count drops 866 → 547) until restart | Run #28 | **Open** | Resolves the Run #22 "866 vs 548" anomaly (priority #8). Single round-trip `default→emacs→default` drops Source[Plugin] from 391/866 to 0/547; Keymap 260 unchanged. Bindings still FUNCTION (Alt+O works) — editor listing/reporting defect only. Restart restores 866. Per-map first-load totals correct (emacs 519, macos 600). Do NOT re-file. |
 | [#2309](https://github.com/sinelaw/fresh/issues/2309) | Read-only buffers show no `[RO]` status-bar indicator (documented but never rendered) | Run #29 | **Open** | Found while testing the new `editor.auto_read_only` option (Run #29). Docs (editing.md:42 + 0.2.18 blog) promise `[RO]` in status bar; actual binary renders NO persistent RO indicator — only transient `Editing disabled`/`Read-only mode enabled` messages + `[BIN]` tab tag. RO *behavior* is correct; only the indicator is missing. Do NOT re-file. |
+| [#2312](https://github.com/sinelaw/fresh/issues/2312) | Occurrence highlight uses a fixed near-black background that ignores the theme (invisible in high-contrast, inverted black box in light) | Run #32 | **Open** | Occurrence highlighting (#2154) is ON by default but its highlight bg is a fixed color 16 that doesn't adapt to the theme. Proven via ON/OFF differential ANSI diff in high-contrast (color 16 == editor bg 16 → invisible on all non-current lines; current-line word drawn recessed). Light theme → inverted black boxes. Works only on dark themes. Do NOT re-file. |
 | [#2301](https://github.com/sinelaw/fresh/issues/2301) | Go to LSP Symbol: status bar line number stays stale after jump (only column updates) until next keypress | Run #25 | **Open** | Low-sev display bug in 0.3.12. **Run #27: confirmed NOT LSP-specific** — same staleness affects "Open file from a diff" (OLD-pane Enter → HEAD version: status shows `Ln 1,Col 1` while cursor is on the real line, self-corrects on keypress, 2/2). Comment added to #2301 broadening scope to a shared status-bar-refresh path. Cursor jumps correctly in all cases; only the status readout lags one keypress. Do NOT re-file. |
 
 ---
@@ -64,6 +65,14 @@ Even if the symptom looks fresh, these have already been fully investigated:
 3. Scan the open issues table — if your topic is there, add a comment to the existing issue rather than opening a new one.
 4. Search GitHub with at least 3 different query variations.
 5. Only then open a new issue and add a row to this file.
+
+## Issue #2312 — Occurrence highlight uses a fixed near-black background that ignores the theme
+- **Filed:** Run #32, 2026-06-10
+- **URL:** https://github.com/sinelaw/fresh/issues/2312
+- **Label:** bug, tui-agent-auto-bug
+- **Status:** Open
+- **Summary:** Occurrence highlighting (PR #2154, ON by default) draws its highlight using a fixed 256-color index **16** (near-black) that does NOT derive from the active theme. **high-contrast theme:** editor bg is also color 16, so the highlight is invisible — proven by an ON/OFF differential ANSI capture where toggling Occurrence Highlight changes nothing on any non-current line; the only visible effect is the current-line word drawn bg 16 (DARKER than the current-line bg 233 → recessed, not highlighted). **light theme:** occurrences render as inverted solid black boxes (bg 16 on a ~231/254 background). **dark/dracula/nostalgia:** bg 16 on ~234/235 is a subtle box and looks fine (why it went unnoticed). Reference: VS Code uses theme-defined `editor.wordHighlightBackground`/`wordHighlightStrongBackground` so the cue is always visible and theme-appropriate. The *whole-word* matching and toggle behavior are correct — only the color is hard-wired. Reproduces with default config (just switch theme via palette); occurrence highlighting needs no config.
+- **Search queries used (no dup):** `occurrence highlight theme color`, `occurrence highlight high-contrast invisible`, `word highlight background color not theme aware`, `highlight_occurrences`
 
 ## Issue #2309 — Read-only buffers show no `[RO]` status-bar indicator
 - **Filed:** Run #29, 2026-06-10

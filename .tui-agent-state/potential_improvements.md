@@ -187,3 +187,9 @@ change would make it self-evident without requiring users to read docs.
 - **Suggested fix:** Either keep focus in the editor by default (matching VS Code), or add a config flag (e.g. `terminal.focus_on_send`, default to taste) so power users can disable the auto-focus for line-by-line workflows.
 - **Severity:** Low (UX/workflow friction; feature itself works correctly). Buffer is never modified.
 - **Discovered:** Run #31, 2026-06-10
+
+### IMP-019 — "Clear Search Highlights" (#2152) benefit unreachable from keyboard/palette without a custom binding
+- **Observed (Run #32, v0.4.0):** The new `clear_search` action / "Clear Search Highlights" palette command (#2152) is designed to clear active search highlights *without closing the find widget*. In practice that benefit is unreachable through stock UI: (1) the command has NO default keybinding; (2) invoking it via the command palette closes the find bar first ("Search cancelled."); (3) while the find INPUT is focused, a keybinding bound to it is swallowed by the input (verified: F8→clear_search bound, ignored while find bar focused). The action itself works (it clears persistent highlights left after Enter-closing the find bar) — only the "keep the find widget open" use case is impractical.
+- **Suggested fix:** Give `clear_search` a sensible default keybinding (VS Code uses Escape-from-editor / a dedicated binding) and/or route it through find-bar key handling so it can clear highlights while the bar stays open.
+- **Severity:** Low (the action functions; this is discoverability/ergonomics for one secondary use case). Mostly relevant to plugins (the PR's main consumer of `has_active_search()`).
+- **Discovered:** Run #32, 2026-06-10

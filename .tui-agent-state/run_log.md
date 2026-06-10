@@ -2,6 +2,43 @@
 
 ---
 
+## Run #32 — 2026-06-10
+
+### Status: COMPLETED
+
+### What Was Done
+- Synced state (`tui-automated-testing-state`, pull --rebase clean). **Preflight:** playbook integrity OK (all four AGENT_INSTRUCTIONS sections present); GitHub MCP auth LIVE (listed open agent issues); lessons continuity OK.
+- **Build directive:** origin/master still at `1b5d7f8c8` = v0.4.0 (unchanged since Run #31). Built release binary in a fresh `/tmp/fresh-master` worktree @ `1b5d7f8c8` (`fresh 0.4.0`). Per R1, binary version unchanged → skipped open-issue rechecks (no fix landed; Run #31 already covered the 0.4.0 fix confirmations).
+- Per R2 advanced THREE brand-new 0.4.0 features (all keyboard-driven + ANSI-verified), reading PRs #2152/#2153/#2154 first to nail expected behavior and avoid false positives.
+
+### NEW COVERAGE 1 — Occurrence highlighting (#2154) — PASS on function, but FILED #2312
+tmux `qa-occ-r32` (200×50), `/tmp/qa-r32/sample.py` (repeated `items`/`total`). Command palette **"Toggle Occurrence Highlight"** (builtin, no default key). i18n: `cmd.toggle_occurrence_highlight`, status `view.occurrence_highlight_state` ("Occurrence highlight enabled/disabled"). Verified: **ON by default** (#2154 says enabled by default); highlights are **whole-word** (`item` NOT matched when cursor on `items`); toggle on/off + status messages correct.
+- **BUG FOUND → #2312:** the occurrence-highlight background is a **fixed color 16 (near-black) that ignores the theme.** Proven by an ON/OFF differential ANSI capture in **high-contrast** theme: toggling changes NOTHING on any non-current line (highlight color 16 == editor bg 16 → invisible); only the current-line word changes, drawn bg 16 = DARKER than the current-line bg 233 → looks recessed, not highlighted. In **light** theme, occurrences become inverted **black boxes** (bg 16 on white). Works fine only on dark themes (dark/dracula/nostalgia: bg 16 on ~234/235 = subtle box). Filed #2312 (bug, tui-agent-auto-bug), 4 dup-search variations, no dup.
+
+### NEW COVERAGE 2 — Hide current-line highlight on selection (#2153) — PASS (config default false)
+PR #2153 is a config **`editor.hide_current_line_on_selection`** (Display section), **default `false`** — the CHANGELOG line "current-line highlight now hides while text is selected" is opt-in, not automatic. Default behavior (highlight STAYS during selection) is therefore CORRECT, not a bug. Set the config (`{"editor":{"hide_current_line_on_selection":true}}`) + relaunch → verified: current line bg `235` (highlight) → drops to `234` (non-current) the instant a selection is non-empty, and returns to `235` when the selection is cleared. **GOTCHA:** the key is nested under `editor`, NOT top-level — a flat `hide_current_line_on_selection` is silently ignored (found the true path `/editor/hide_current_line_on_selection` via Settings UI search — avoided a false "doesn't work" report).
+
+### NEW COVERAGE 3 — Clear Search action (#2152) — PASS
+Palette **"Clear Search Highlights"** (`cmd.clear_search`, no default key). PR #2152: clears active search highlights without closing the find widget; also exposes `has_active_search()` to plugins. Verified the action works via a custom keybinding (F8 → `clear_search`): a search left highlighted (bg 228 match bg) is cleared by F8 (match returns to normal fg, no bg). Behavior map discovered: **Escape** closes the find bar AND clears highlights; **Enter** closes the find bar but PERSISTS the match highlights ("Found N matches for ..."); `clear_search` removes those persistent highlights. The "without closing the find widget" benefit is only reachable via a custom keybinding/plugin — invoking via the palette closes the find bar first, and the focused find INPUT swallows the keybinding (F8 ignored while find bar focused). Logged as IMP-019 (not a bug; action functions correctly).
+
+### Issues filed
+- **#2312** — Occurrence highlight uses a fixed near-black background that ignores the theme (invisible in high-contrast, inverted black box in light). bug + tui-agent-auto-bug.
+
+### tmux / harness notes (→ learning_db)
+- Keybinding config schema learned: `"keybindings":[{"key":"F8","action":"clear_search"}]`. Keybinding Editor flow: open via palette "Open Keybinding Editor" → `/` search action name → Enter (commit search) → Down to row → Enter (Edit dialog) → Enter (capture) → press key → it stages (`[modified]`, Source `custom`) → **Ctrl+S** to persist to config ("Keybinding changes saved"). The Edit-dialog Save button alone does NOT write config.
+- Select Theme list opens with the CURRENT theme pre-selected (not the top). Navigate relative to current. Theme order: dark, dracula, high-contrast, light, nord, nostalgia, solarized-dark, terminal.
+- Settings UI: `/` searches; results show the JSON path (e.g. `Editor > /editor/hide_current_line_on_selection`) — the fastest way to find the true config key for a setting.
+
+### NEXT (Run #33+) new-coverage candidates (0.4.0, top-down)
+- (a) **Review Diff reworked** (the flagship 0.4.0 feature): file sidebar w/ per-file status+change counts+comment badges grouped by dir; in-panel side-by-side; multi-line comments panel; watch mode `W` (reload on save); review a git stash; split/stack/auto layout; `/` file filter; Tab focus model, cross-file `n`/`p`. Needs a real git repo with multiple changed files.
+- (b) **`lsp_enabled` master switch** (#1770) — set `editor.lsp_enabled:false` (likely under editor), verify NO LSP server starts (pyright on PATH; server-start observable even though #2197 times out requests).
+- (c) **Configurable indentation rules** per language `[languages.<id>.indent]` incl. VS Code-style regex rules.
+- (d) **'+' new-tab button** popup (New Terminal / New File) + **terminal Ctrl+Click opens file paths** + **OSC 7 cwd tracking** — mouse-dependent, likely tmux wall (Ctrl+Click), but OSC 7 cwd is observable via terminal tab name / cd behavior.
+- (e) **color-transition animation on theme switch** (visual, ANSI frames).
+Then #2197 only if a fix lands.
+
+---
+
 ## Run #31 — 2026-06-10
 
 ### Status: COMPLETED

@@ -4,7 +4,7 @@ This is the canonical reference for every GitHub issue this agent has filed.
 **Check this file BEFORE searching GitHub or filing any new issue.**
 If a topic appears here — open or closed — do not file a duplicate.
 
-Last updated: Run #28, 2026-06-10
+Last updated: Run #29, 2026-06-10
 
 ---
 
@@ -25,6 +25,7 @@ Last updated: Run #28, 2026-06-10
 | [#2221](https://github.com/sinelaw/fresh/issues/2221) | SSH URL-style URI (`ssh://host/path`) treated as local file path instead of triggering SSH connection | Run #21 | **Open** | STILL BROKEN in v0.3.12 even with working sshd (Run #22 comment). scp-style works end-to-end. Do NOT re-file. |
 | [#2291](https://github.com/sinelaw/fresh/issues/2291) | Workspace Trust: "Trust folder & Allow Tooling" restarts the editor and silently discards opened file + unsaved edits (with --no-restore) | Run #22 | **FIXED** (Run #23) | CONFIRMED FIXED in master @ f4ee3630 (v0.3.12): restart path now restores unsaved buffers from hot-exit recovery (`preserved N unnamed buffer(s)` / `Restored unsaved changes ... from hot exit recovery`). Verified via UI — file survives both Trust and Block-All restarts. Prior Run #23 (08:25Z) already commented; do NOT re-comment. Awaiting maintainer close. Do NOT re-file. |
 | [#2307](https://github.com/sinelaw/fresh/issues/2307) | Keybinding Editor: switching keybinding map and back hides all plugin bindings (count drops 866 → 547) until restart | Run #28 | **Open** | Resolves the Run #22 "866 vs 548" anomaly (priority #8). Single round-trip `default→emacs→default` drops Source[Plugin] from 391/866 to 0/547; Keymap 260 unchanged. Bindings still FUNCTION (Alt+O works) — editor listing/reporting defect only. Restart restores 866. Per-map first-load totals correct (emacs 519, macos 600). Do NOT re-file. |
+| [#2309](https://github.com/sinelaw/fresh/issues/2309) | Read-only buffers show no `[RO]` status-bar indicator (documented but never rendered) | Run #29 | **Open** | Found while testing the new `editor.auto_read_only` option (Run #29). Docs (editing.md:42 + 0.2.18 blog) promise `[RO]` in status bar; actual binary renders NO persistent RO indicator — only transient `Editing disabled`/`Read-only mode enabled` messages + `[BIN]` tab tag. RO *behavior* is correct; only the indicator is missing. Do NOT re-file. |
 | [#2301](https://github.com/sinelaw/fresh/issues/2301) | Go to LSP Symbol: status bar line number stays stale after jump (only column updates) until next keypress | Run #25 | **Open** | Low-sev display bug in 0.3.12. **Run #27: confirmed NOT LSP-specific** — same staleness affects "Open file from a diff" (OLD-pane Enter → HEAD version: status shows `Ln 1,Col 1` while cursor is on the real line, self-corrects on keypress, 2/2). Comment added to #2301 broadening scope to a shared status-bar-refresh path. Cursor jumps correctly in all cases; only the status readout lags one keypress. Do NOT re-file. |
 
 ---
@@ -63,6 +64,14 @@ Even if the symptom looks fresh, these have already been fully investigated:
 3. Scan the open issues table — if your topic is there, add a comment to the existing issue rather than opening a new one.
 4. Search GitHub with at least 3 different query variations.
 5. Only then open a new issue and add a row to this file.
+
+## Issue #2309 — Read-only buffers show no `[RO]` status-bar indicator
+- **Filed:** Run #29, 2026-06-10
+- **URL:** https://github.com/sinelaw/fresh/issues/2309
+- **Label:** bug, tui-agent-auto-bug
+- **Status:** Open
+- **Summary:** Discovered while testing the brand-new `editor.auto_read_only` config option (commit 9738ac661). Fresh's docs (`docs/features/editing.md:42` and `docs/blog/fresh-0.2.18`) both state read-only buffers show `[RO]` in the status bar. In v0.3.12 (built from origin/master @ 2dee83697) NO persistent `[RO]` indicator is rendered for ANY read-only buffer — library-path auto-RO (`/usr/include/stdio.h`), binary files, or manual Toggle Read-Only Mode. `grep RO` over the full captured screen = 0 matches while a buffer is read-only. The only feedback is transient one-shot status messages (`Editing disabled in this buffer`, `Read-only mode enabled/disabled`) and the `[BIN]` tab tag (which means "binary", not "read-only"). The read-only *behavior* itself is correct (auto-RO triggers, `auto_read_only:false` disables it, binaries stay RO regardless, Toggle works) — only the documented indicator is absent. Usability gap: a user has no standing cue a buffer is read-only until an edit silently fails.
+- **Search queries used:** `read-only indicator status bar RO`, `[RO] read only buffer indicator`, `read-only mode no visual indication editing disabled` (all 0 results)
 
 ## Issue #2307 — Keybinding Editor hides all plugin bindings after keymap round-trip
 - **Filed:** Run #28, 2026-06-10

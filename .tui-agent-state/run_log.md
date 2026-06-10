@@ -1081,3 +1081,29 @@ The Settings UI uses a complex navigation model:
 - Menu highlight verification requires `-e` ANSI capture
 - Hot exit causes file restoration on re-launch — not a bug
 - "Revert" vs "Reload with Encoding" distinction
+
+---
+
+## Run #29 — 2026-06-10
+
+### Status: COMPLETED
+
+### Objective
+New-coverage testing of the brand-new `editor.auto_read_only` config option (commit 9738ac661, not yet in CHANGELOG). #2197 pyright recheck skipped — no fix landed (issue last updated 2026-06-07).
+
+### Build
+- Built v0.3.12 from **origin/master @ 2dee83697** in a dedicated worktree (`/home/user/fresh-build`), 6m37s. Master force-updated past Run #28's 67d0c6e6c; new commits: live-diff word-level highlight (2dee83697), auto_read_only (9738ac661), on-save view-keep (f099dd5c5), trust-level reset fix (86d58380b), lsp_enabled master switch (f4ee3630f).
+
+### What Was Done
+- Tested `auto_read_only` behavior matrix on a library-path file (`/usr/include/stdio.h`) and a binary (`/bin/true` copy) — all behavior PASSES (see learning_db "auto_read_only / read-only `[RO]` indicator (Run #29)").
+- Discovered the documented `[RO]` status-bar indicator is never rendered for any read-only buffer.
+- Verified the missing-indicator finding across 5 read-only buffer types (auto library, binary, manual toggle, side-by-side diff, HEAD version) to rule out false positives — `grep [RO]` = 0 on each (content-only false positives excluded).
+- Searched GitHub (3 query variations, 0 results), confirmed not in github_issues.md / confirmed_bugs.md.
+- **Filed #2309** (bug, tui-agent-auto-bug): "Read-only buffers show no `[RO]` status-bar indicator (documented but never rendered)".
+
+### Result
+- 1 NEW backlog item advanced (auto_read_only → DONE). 1 new confirmed bug (BUG-010 / #2309).
+- No false positives filed; the broad "anywhere" claim in the issue was verified across all buffer types before finalizing.
+
+### State updates
+- github_issues.md (+#2309 row + detail), confirmed_bugs.md (+BUG-010), test_plan.md (priority 4b DONE + Run #29 note), learning_db.md (+Run #29 section), run_log.md (this entry).

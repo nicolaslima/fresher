@@ -14,6 +14,21 @@ Each bug entry:
 
 ---
 
+## BUG-010: Read-only buffers show no `[RO]` status-bar indicator (documented but never rendered)
+- **ID:** BUG-010
+- **Title:** Read-only buffers (auto library-path, binary, or manual toggle) display no persistent `[RO]` indicator anywhere, contradicting Fresh's own docs.
+- **Severity:** Low–Medium (read-only behavior is correct; the documented visual cue is missing, so users only learn a buffer is read-only by failing an edit)
+- **Status:** Open — GitHub #2309 filed (Run #29). Found while testing the new `editor.auto_read_only` option.
+- **GitHub Issue:** [#2309](https://github.com/sinelaw/fresh/issues/2309)
+- **Reproduction:**
+  1. `fresh /usr/include/stdio.h` (library path → auto read-only).
+  2. Move cursor (`Down Down Right`) to clear the transient message; resting status bar = ` Trusted  Local  Ln 3, Col 2 … LF ASCII C LSP (off) Palette: Ctrl+P` — no `[RO]`.
+  3. Type any key → flashes `Editing disabled in this buffer` (only RO feedback).
+  4. Also: binary file → `[BIN]` tab tag + editing blocked but no `[RO]`; manual palette "Toggle Read-Only Mode" ON → `Read-only mode enabled` flash, then resting bar still has no `[RO]`.
+- **Expected:** Persistent `[RO]` status-bar segment per `docs/features/editing.md:42` ("The status bar shows `[RO]`") and 0.2.18 blog; matches VS Code/Sublime read-only affordance.
+- **Actual:** No persistent RO indicator on screen (`grep RO` full screen = 0 while RO). Only transient messages + `[BIN]` tag.
+- **First Seen:** Run #29, 2026-06-10 (v0.3.12, origin/master @ 2dee83697).
+
 ## BUG-009: Keybinding Editor — switching keymap and back hides ALL plugin bindings (count 866 → 547)
 - **ID:** BUG-009
 - **Title:** After "Select Keybinding Map" round-trips back to the same map, the Keybinding Editor drops every plugin-contributed binding (count falls from 866 to 547); persists until app restart.

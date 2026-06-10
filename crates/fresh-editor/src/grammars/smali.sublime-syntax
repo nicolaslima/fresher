@@ -1,0 +1,89 @@
+%YAML 1.2
+---
+# Smali — the human-readable assembly format for Dalvik (Android) bytecode,
+# as produced by baksmali / used by smali. Files use the .smali extension.
+name: Smali
+file_extensions: [smali]
+scope: source.smali
+contexts:
+  main:
+    - include: comments
+    - include: directives
+    - include: access-modifiers
+    - include: labels
+    - include: opcodes
+    - include: types
+    - include: member-references
+    - include: registers
+    - include: strings
+    - include: numbers
+
+  comments:
+    - match: '#.*$'
+      scope: comment.line.number-sign.smali
+
+  strings:
+    - match: '"'
+      push:
+        - meta_scope: string.quoted.double.smali
+        - match: '\\(x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|.)'
+          scope: constant.character.escape.smali
+        - match: '"'
+          pop: true
+        - match: '$'
+          pop: true
+    - match: "'"
+      push:
+        - meta_scope: string.quoted.single.smali
+        - match: '\\(x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|.)'
+          scope: constant.character.escape.smali
+        - match: "'"
+          pop: true
+        - match: '$'
+          pop: true
+
+  directives:
+    # Statement-level directives, e.g. .class, .method, .end method, .line
+    - match: '\.(end\s+)?(class|super|implements|source|field|method|registers|locals|param|parameter|prologue|epilogue|line|local|restart\s+local|end\s+local|catch|catchall|annotation|subannotation|sparse-switch|packed-switch|array-data|enum)\b'
+      scope: keyword.control.directive.smali
+
+  access-modifiers:
+    - match: '\b(public|private|protected|static|final|synchronized|volatile|bridge|transient|varargs|native|interface|abstract|strict|synthetic|annotation|enum|constructor|declared-synchronized)\b'
+      scope: storage.modifier.smali
+
+  registers:
+    # Local registers (vN) and parameter registers (pN).
+    - match: '\b[vp]\d+\b'
+      scope: variable.parameter.register.smali
+
+  labels:
+    # Label definitions and references: :goto_0, :cond_1, :try_start_0, ...
+    - match: ':[A-Za-z_$][\w$]*'
+      scope: entity.name.label.smali
+
+  numbers:
+    - match: '[+-]?0[xX][0-9a-fA-F]+[lLsSt]?'
+      scope: constant.numeric.hex.smali
+    - match: '[+-]?\d+\.\d+([eE][+-]?\d+)?[fFdD]?'
+      scope: constant.numeric.float.smali
+    - match: '[+-]?\d+(\.\d+)?[lLsStfFdD]?\b'
+      scope: constant.numeric.integer.smali
+
+  types:
+    # Object type descriptors: Lpackage/Name; (with optional array prefix).
+    - match: '\[*L[\w$/]+;'
+      scope: storage.type.object.smali
+    # Primitive type descriptors and void, optionally array-prefixed.
+    - match: '\[*[VZBSCIJFD](?![\w$])'
+      scope: storage.type.primitive.smali
+
+  member-references:
+    # The -> separator used in field/method references.
+    - match: '->'
+      scope: keyword.operator.member.smali
+
+  opcodes:
+    # Dalvik instruction mnemonics. Match a base mnemonic plus any
+    # -suffix / /variant tail (e.g. invoke-virtual/range, iget-object).
+    - match: '\b(nop|move|return|const|monitor|check-cast|instance-of|array-length|new-instance|new-array|filled-new-array|fill-array-data|throw|goto|packed-switch|sparse-switch|cmpl|cmpg|cmp|if|aget|aput|iget|iput|sget|sput|invoke|neg|not|add|sub|mul|div|rem|and|or|xor|shl|shr|ushr|rsub|int-to|long-to|float-to|double-to|execute-inline|throw-verification-error|iget-quick|iput-quick|invoke-virtual-quick|invoke-super-quick)(-[a-z0-9]+)*(/[a-z0-9-]+)*\b'
+      scope: keyword.other.opcode.smali

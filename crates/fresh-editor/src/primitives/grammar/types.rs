@@ -247,6 +247,9 @@ pub const VHDL_GRAMMAR: &str = include_str!("../../grammars/vhdl.sublime-syntax"
 
 pub const C3_GRAMMAR: &str = include_str!("../../grammars/c3.sublime-syntax");
 
+/// Embedded Smali grammar (Dalvik bytecode assembly; syntect doesn't include one)
+pub const SMALI_GRAMMAR: &str = include_str!("../../grammars/smali.sublime-syntax");
+
 /// Registry of all available TextMate grammars.
 ///
 /// This struct holds the compiled syntax set and provides lookup methods.
@@ -682,6 +685,7 @@ impl GrammarRegistry {
             (SYSTEMVERILOG_GRAMMAR, "SystemVerilog"),
             (VHDL_GRAMMAR, "VHDL"),
             (C3_GRAMMAR, "C3"),
+            (SMALI_GRAMMAR, "Smali"),
         ];
 
         for (grammar_str, name) in additional_grammars {
@@ -1622,6 +1626,21 @@ mod tests {
             );
             let entry = registry.find_by_path(Path::new(filename), None).unwrap();
             assert_eq!(entry.display_name, "Racket", "for {}", filename);
+        }
+    }
+
+    #[test]
+    fn test_smali_grammar_loaded() {
+        let registry = GrammarRegistry::default();
+        for filename in ["MainActivity.smali", "R$id.smali"] {
+            let result = registry.find_syntax_for_file(Path::new(filename));
+            assert!(
+                result.is_some(),
+                "Smali grammar should be available for {}",
+                filename
+            );
+            let entry = registry.find_by_path(Path::new(filename), None).unwrap();
+            assert_eq!(entry.display_name, "Smali", "for {}", filename);
         }
     }
 

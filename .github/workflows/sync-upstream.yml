@@ -2,7 +2,7 @@ name: Sync Upstream
 
 on:
   schedule:
-    - cron: '0 0 1,15 * *'  # Days 1 and 15 of each month
+    - cron: '0 0 1,15 * *'
   workflow_dispatch:
 
 permissions:
@@ -23,12 +23,12 @@ jobs:
       - name: Fetch upstream
         run: git fetch upstream
 
-      - name: Merge upstream/main
+      - name: Merge upstream/master
         run: |
           git config user.email "fresher-bot@localhost"
           git config user.name "Fresher Bot"
-          git checkout main
-          git merge upstream/main --no-edit || true
+          git checkout master
+          git merge upstream/master --no-edit || true
 
       - name: Reapply patch (syntax_keyword → editor_fg)
         run: |
@@ -61,4 +61,4 @@ jobs:
         run: |
           git add crates/fresh-editor/src/view/ui/file_explorer.rs
           git diff --cached --quiet || git commit -m "chore: sync upstream and reapply folder color patch"
-          git push origin main
+          git push origin master

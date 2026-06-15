@@ -5,7 +5,7 @@
 set -euo pipefail
 
 REPO="nicolaslima/fresher"
-INSTALL_DIR="/opt/homebrew/bin"
+INSTALL_DIR="$HOME/.local/bin"
 BIN_NAME="fresh"
 
 # Determine platform

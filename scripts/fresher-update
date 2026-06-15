@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# fresher-update — Download and install the latest fresher binary
+# Repository: https://github.com/nicolaslima/fresher
+
+set -euo pipefail
+
+REPO="nicolaslima/fresher"
+INSTALL_DIR="/opt/homebrew/bin"
+BIN_NAME="fresh"
+
+# Determine platform
+OS="$(uname -s)"
+ARCH="$(uname -m)"
+case "$OS" in
+  Darwin)  PLATFORM="macos-latest" ;;
+  Linux)   PLATFORM="ubuntu-latest" ;;
+  *)
+    echo "❌ Unsupported OS: $OS"
+    exit 1
+    ;;
+esac
+
+echo "🔍 Checking latest release of $REPO..."
+
+LATEST=$(gh release view --repo "$REPO" --json tagName --jq '.tagName' 2>/dev/null || true)
+
+if [ -z "$LATEST" ]; then
+  echo "⚠️  No release found."
+  echo "   Trying latest CI artifact..."
+  RUN_ID=$(gh run list --repo "$REPO" --branch main --workflow "Build Fresher" --limit 1 --json databaseId --jq '.[0].databaseId' 2>/dev/null || true)
+  if [ -z "$RUN_ID" ]; then
+    echo "❌ No CI run found either."
+    echo "   Run 'gh workflow run \"Build Fresher\" --repo $REPO' first."
+    exit 1
+  fi
+  echo "📦 Downloading artifact from run #$RUN_ID..."
+  gh run download "$RUN_ID" --repo "$REPO" --name "fresher-$PLATFORM" --dir /tmp/fresher-update
+else
+  echo "📥 Downloading $LATEST..."
+  gh release download "$LATEST" --repo "$REPO" --dir /tmp/fresher-update
+fi
+
+# Find the binary (might be named differently in artifact vs release)
+BIN_PATH=$(find /tmp/fresher-update -type f -exec file {} \; | grep -i "Mach-O\|ELF" | head -1 | cut -d: -f1)
+if [ -z "$BIN_PATH" ]; then
+  # Fallback: just grab whatever file there is
+  BIN_PATH=$(find /tmp/fresher-update -type f | head -1)
+fi
+
+if [ -z "$BIN_PATH" ]; then
+  echo "❌ No binary found in download."
+  rm -rf /tmp/fresher-update
+  exit 1
+fi
+
+echo "📦 Installing to $INSTALL_DIR/$BIN_NAME..."
+
+# Backup current binary if it exists and isn't already a backup
+if [ -f "$INSTALL_DIR/$BIN_NAME" ] && [ ! -f "$INSTALL_DIR/$BIN_NAME.bak" ]; then
+  cp "$INSTALL_DIR/$BIN_NAME" "$INSTALL_DIR/$BIN_NAME.bak"
+  echo "💾 Backup saved as $INSTALL_DIR/$BIN_NAME.bak"
+fi
+
+cp "$BIN_PATH" "$INSTALL_DIR/$BIN_NAME"
+chmod +x "$INSTALL_DIR/$BIN_NAME"
+
+echo "🧹 Cleaning up..."
+rm -rf /tmp/fresher-update
+
+echo "✅ fresher installed successfully!"
+echo "   Version: $("$INSTALL_DIR/$BIN_NAME" --version 2>/dev/null || echo 'N/A')"
+echo ""
+echo "   Run 'fresh' to start the editor."

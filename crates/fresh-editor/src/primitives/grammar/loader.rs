@@ -103,8 +103,8 @@ impl GrammarRegistry {
     /// This loads:
     /// 1. Built-in syntect grammars
     /// 2. Embedded grammars (TOML, Odin, etc.)
-    /// 3. User-installed grammars from ~/.config/fresh/grammars/
-    /// 4. Language pack grammars from ~/.config/fresh/languages/packages/
+    /// 3. User-installed grammars from ~/.config/fresher/grammars/
+    /// 4. Language pack grammars from ~/.config/fresher/languages/packages/
     pub fn load(loader: &dyn GrammarLoader) -> Self {
         Self::load_with_additional(loader, &[])
     }

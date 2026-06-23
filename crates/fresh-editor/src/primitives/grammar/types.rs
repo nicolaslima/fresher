@@ -35,13 +35,13 @@ pub enum GrammarSource {
     /// Built-in to Fresh (pre-compiled syntect defaults + embedded grammars)
     #[serde(rename = "built-in")]
     BuiltIn,
-    /// Installed from a user grammar directory (~/.config/fresh/grammars/)
+    /// Installed from a user grammar directory (~/.config/fresher/grammars/)
     #[serde(rename = "user")]
     User { path: PathBuf },
-    /// From a language pack (~/.config/fresh/languages/packages/)
+    /// From a language pack (~/.config/fresher/languages/packages/)
     #[serde(rename = "language-pack")]
     LanguagePack { name: String, path: PathBuf },
-    /// From a bundle package (~/.config/fresh/bundles/packages/)
+    /// From a bundle package (~/.config/fresher/bundles/packages/)
     #[serde(rename = "bundle")]
     Bundle { name: String, path: PathBuf },
     /// Registered by a plugin at runtime

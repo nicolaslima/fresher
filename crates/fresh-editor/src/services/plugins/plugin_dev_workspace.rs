@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 /// Manages a temporary workspace for plugin development LSP support.
 pub struct PluginDevWorkspace {
-    /// Root directory of the workspace (e.g., `~/.cache/fresh/plugin-dev/{buffer_id}/`)
+    /// Root directory of the workspace (e.g., `~/.cache/fresher/plugin-dev/{buffer_id}/`)
     dir: PathBuf,
     /// Path to the plugin source file within the workspace
     pub plugin_file: PathBuf,

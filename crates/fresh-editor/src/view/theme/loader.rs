@@ -23,7 +23,7 @@ pub fn normalize_theme_name(name: &str) -> String {
 /// Minimal shell-like expansion (no crate dependency). Unknown variables are
 /// left literal so a typo surfaces as a resolution failure rather than
 /// silently collapsing to an empty path. Used for theme config values so a
-/// shared dotfiles repo can write `file://${HOME}/.config/fresh/themes/x.json`
+/// shared dotfiles repo can write `file://${HOME}/.config/fresher/themes/x.json`
 /// and have it resolve correctly on any machine.
 pub(crate) fn expand_env_vars(input: &str) -> String {
     let input = if let Some(rest) = input.strip_prefix('~') {
@@ -126,7 +126,7 @@ impl ThemeRegistry {
     /// | Form | Example | Resolves to |
     /// |------|---------|-------------|
     /// | `builtin://NAME` | `builtin://dark` | built-in theme by name |
-    /// | `file://PATH` (env-expanded) | `file://${HOME}/.config/fresh/themes/x.json` | exact user-theme key |
+    /// | `file://PATH` (env-expanded) | `file://${HOME}/.config/fresher/themes/x.json` | exact user-theme key |
     /// | `http(s)://...` | `https://github.com/...#dark` | URL-packaged theme |
     /// | relative `.json` path | `s-dark.json`, `packages/nord/dark.json` | user theme under themes dir |
     /// | bare name (legacy) | `dark` | exact key, else normalized-name match |
@@ -344,12 +344,12 @@ impl ThemeLoader {
             }
         }
 
-        // Load user themes from ~/.config/fresh/themes/ (recursively)
+        // Load user themes from ~/.config/fresher/themes/ (recursively)
         if let Some(ref user_dir) = self.user_themes_dir {
             self.scan_directory(user_dir, "user", None, &mut themes, &mut theme_list);
         }
 
-        // Load theme packages from ~/.config/fresh/themes/packages/*/
+        // Load theme packages from ~/.config/fresher/themes/packages/*/
         if let Some(ref user_dir) = self.user_themes_dir {
             let packages_dir = user_dir.join("packages");
             if packages_dir.exists() {
@@ -635,7 +635,7 @@ mod tests {
     }
 
     /// Test that custom themes in user themes directory are loaded and available.
-    /// This is a regression test for the macOS bug where themes in ~/.config/fresh/themes/
+    /// This is a regression test for the macOS bug where themes in ~/.config/fresher/themes/
     /// were not appearing in the "Select Theme" command because ThemeLoader was using
     /// the wrong directory path on macOS.
     #[test]

@@ -11,7 +11,7 @@
 //! use std::path::PathBuf;
 //!
 //! // Load all themes once at startup (requires themes directory path)
-//! let themes_dir = PathBuf::from("/home/user/.config/fresh/themes");
+//! let themes_dir = PathBuf::from("/home/user/.config/fresher/themes");
 //! let loader = ThemeLoader::new(themes_dir);
 //! let registry = loader.load_all();
 //!

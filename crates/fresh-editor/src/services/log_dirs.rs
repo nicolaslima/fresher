@@ -284,10 +284,10 @@ pub fn print_all_paths(dir_context: &crate::config_io::DirectoryContext) {
     let stdout = std::io::stdout();
     let mut handle = stdout.lock();
 
-    // Config directory (~/.config/fresh)
+    // Config directory (~/.config/fresher)
     let config_dir = &dir_context.config_dir;
 
-    // Data directory (~/.local/share/fresh)
+    // Data directory (~/.local/share/fresher)
     let data_dir = &dir_context.data_dir;
 
     // State/logs directory

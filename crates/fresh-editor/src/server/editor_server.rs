@@ -44,7 +44,7 @@ pub struct EditorServerConfig {
     pub dir_context: DirectoryContext,
     /// Whether plugins are enabled
     pub plugins_enabled: bool,
-    /// Whether to auto-load ~/.config/fresh/init.ts (requires `plugins_enabled`).
+    /// Whether to auto-load ~/.config/fresher/init.ts (requires `plugins_enabled`).
     pub init_enabled: bool,
     /// Authority to install at boot.  `None` means `Authority::local()`,
     /// which is the standard session-mode default (principle 6 of

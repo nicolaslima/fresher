@@ -764,8 +764,8 @@ impl Editor {
         // 1. Next to the executable (for cargo-dist installations)
         // 1. Embedded plugins (compiled into the binary via the
         //    embed-plugins feature, default on for every shipped build).
-        // 2. User plugins directory (~/.config/fresh/plugins).
-        // 3. Package manager installed plugins (~/.config/fresh/plugins/packages/*).
+        // 2. User plugins directory (~/.config/fresher/plugins).
+        // 3. Package manager installed plugins (~/.config/fresher/plugins/packages/*).
         // No working-directory or exe-dir lookup: a user project with a folder
         // named `plugins/` (a Vite/Rollup project, a Hugo site) is not a Fresh
         // plugin source, and packagers no longer ship plugins/ alongside the
@@ -790,14 +790,14 @@ impl Editor {
                 }
             }
 
-            // Always check user config plugins directory (~/.config/fresh/plugins)
+            // Always check user config plugins directory (~/.config/fresher/plugins)
             let user_plugins_dir = dir_context.config_dir.join("plugins");
             if user_plugins_dir.exists() && !plugin_dirs.contains(&user_plugins_dir) {
                 tracing::info!("Found user plugins directory: {:?}", user_plugins_dir);
                 plugin_dirs.push(user_plugins_dir.clone());
             }
 
-            // Check for package manager installed plugins (~/.config/fresh/plugins/packages/*)
+            // Check for package manager installed plugins (~/.config/fresher/plugins/packages/*)
             let packages_dir = dir_context.config_dir.join("plugins").join("packages");
             if packages_dir.exists() {
                 if let Ok(entries) = std::fs::read_dir(&packages_dir) {
@@ -1423,7 +1423,7 @@ impl Editor {
     // init.ts / runtime-overlay surface (design docs §3–§6)
     // =========================================================================
 
-    /// Auto-load `~/.config/fresh/init.ts` if present, through the existing
+    /// Auto-load `~/.config/fresher/init.ts` if present, through the existing
     /// plugin pipeline under the stable name `crate::init_script::INIT_PLUGIN_NAME`.
     pub fn load_init_script(&mut self, enabled: bool) {
         use crate::init_script::{

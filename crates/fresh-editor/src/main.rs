@@ -67,7 +67,7 @@ struct Cli {
     #[arg(long)]
     no_plugins: bool,
 
-    /// Skip `~/.config/fresh/init.ts` for this launch
+    /// Skip `~/.config/fresher/init.ts` for this launch
     #[arg(long)]
     no_init: bool,
 
@@ -1838,7 +1838,7 @@ fn check_plugin_bundle(plugin_path: &std::path::Path) -> AnyhowResult<()> {
     Ok(())
 }
 
-/// `fresh --cmd init check` — syntax-check ~/.config/fresh/init.ts via oxc.
+/// `fresh --cmd init check` — syntax-check ~/.config/fresher/init.ts via oxc.
 /// Exits 0 if the file is absent or parses cleanly, 1 on any parse error.
 fn init_check_command() -> AnyhowResult<()> {
     let dir_context = fresh::config_io::DirectoryContext::from_system()
@@ -2001,7 +2001,7 @@ fn init_package_command(package_type: Option<String>) -> AnyhowResult<()> {
         "language" => {
             println!("  2. Edit grammars/syntax.sublime-syntax (YAML format)");
             println!("  3. Update package.json with file extensions and LSP command");
-            println!("  4. Test by copying to ~/.config/fresh/grammars/");
+            println!("  4. Test by copying to ~/.config/fresher/grammars/");
             println!("  5. Validate manifest: ./validate.sh");
         }
         _ => unreachable!(),
@@ -2429,7 +2429,7 @@ Update `package.json` to match your language's requirements.
 
 1. Edit `grammars/syntax.sublime-syntax` for syntax highlighting
 2. Update `package.json` with correct file extensions and LSP command
-3. Test by copying to `~/.config/fresh/grammars/` and restarting Fresh
+3. Test by copying to `~/.config/fresher/grammars/` and restarting Fresh
 
 **Tip:** Search GitHub for existing `<language> sublime-syntax` files you can adapt.
 If using an existing grammar, check its license and include a copy in `grammars/LICENSE`.
@@ -3879,7 +3879,7 @@ fn real_main() -> AnyhowResult<()> {
         // the panic at `effective_active_pair` when workspace
         // restore tried to open files immediately afterwards).
 
-        // User init.ts: auto-load from ~/.config/fresh/init.ts through the
+        // User init.ts: auto-load from ~/.config/fresher/init.ts through the
         // same pipeline as "Load Plugin from Buffer". Respects `--no-init`
         // and `--safe`, and is short-circuited by the crash fuse after
         // repeated failures. Async to avoid blocking the boot sequence;

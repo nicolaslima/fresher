@@ -18,7 +18,7 @@
 //! // Load registry with user grammars (runtime only)
 //! #[cfg(feature = "runtime")]
 //! {
-//!     let config_dir = std::path::PathBuf::from("/home/user/.config/fresh");
+//!     let config_dir = std::path::PathBuf::from("/home/user/.config/fresher");
 //!     let registry = GrammarRegistry::for_editor(config_dir.clone());
 //!     // Or manually:
 //!     let loader = LocalGrammarLoader::new(config_dir);

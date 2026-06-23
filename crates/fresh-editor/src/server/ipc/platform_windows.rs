@@ -14,7 +14,7 @@ use windows_sys::Win32::System::Pipes::PeekNamedPipe;
 pub fn get_socket_dir() -> io::Result<PathBuf> {
     let local_app_data = std::env::var("LOCALAPPDATA")
         .unwrap_or_else(|_| std::env::temp_dir().display().to_string());
-    let socket_dir = PathBuf::from(local_app_data).join("fresh").join("sockets");
+    let socket_dir = PathBuf::from(local_app_data).join("fresher").join("sockets");
     std::fs::create_dir_all(&socket_dir)?;
     Ok(socket_dir)
 }

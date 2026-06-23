@@ -299,7 +299,7 @@ pub(super) fn create_recovery_temp_file(
     fs: &Arc<dyn FileSystem + Send + Sync>,
     dest_path: &Path,
 ) -> io::Result<(PathBuf, Box<dyn FileWriter>)> {
-    // Get recovery directory: $XDG_DATA_HOME/fresh/recovery or ~/.local/share/fresh/recovery
+    // Get recovery directory: $XDG_DATA_HOME/fresher/recovery or ~/.local/share/fresher/recovery
     let recovery_dir = crate::input::input_history::get_data_dir()
         .map(|d| d.join("recovery"))
         .unwrap_or_else(|_| std::env::temp_dir());

@@ -278,7 +278,7 @@ fn migrate_v1_to_v2(mut value: Value) -> Result<Value, ConfigError> {
 pub enum ConfigLayer {
     /// Hardcoded defaults embedded in binary (lowest precedence)
     System,
-    /// User-global settings (~/.config/fresh/config.json)
+    /// User-global settings (~/.config/fresher/config.json)
     User,
     /// Project-local settings ($PROJECT_ROOT/.fresh/config.json)
     Project,
@@ -709,7 +709,7 @@ fn diff_partial_config(current: &PartialConfig, parent: &PartialConfig) -> Parti
 impl Config {
     /// Get the system config file paths (without local/working directory).
     ///
-    /// On macOS, prioritizes `~/.config/fresh/config.json` if it exists.
+    /// On macOS, prioritizes `~/.config/fresher/config.json` if it exists.
     /// Then checks the standard system config directory.
     fn system_config_paths() -> Vec<PathBuf> {
         let mut paths = Vec::with_capacity(2);
@@ -866,11 +866,11 @@ fn is_empty_diff(value: &serde_json::Value) -> bool {
 #[derive(Debug, Clone)]
 pub struct DirectoryContext {
     /// Data directory for persistent state (recovery, workspaces, history)
-    /// e.g., ~/.local/share/fresh on Linux, ~/Library/Application Support/fresh on macOS
+    /// e.g., ~/.local/share/fresher on Linux, ~/Library/Application Support/fresher on macOS
     pub data_dir: std::path::PathBuf,
 
     /// Config directory for user configuration
-    /// e.g., ~/.config/fresh on Linux, ~/Library/Application Support/fresh on macOS
+    /// e.g., ~/.config/fresher on Linux, ~/Library/Application Support/fresher on macOS
     pub config_dir: std::path::PathBuf,
 
     /// User's home directory (for file open dialog shortcuts)

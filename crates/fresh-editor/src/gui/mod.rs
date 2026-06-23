@@ -118,7 +118,7 @@ pub fn run_gui(
         )
         .context("Failed to create editor instance")?;
 
-        // Auto-load ~/.config/fresh/init.ts via the plugin pipeline.
+        // Auto-load ~/.config/fresher/init.ts via the plugin pipeline.
         editor.load_init_script(!no_init);
         editor.fire_plugins_loaded_hook();
 

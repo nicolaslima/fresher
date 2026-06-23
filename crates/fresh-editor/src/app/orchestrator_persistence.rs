@@ -33,7 +33,7 @@
 //! workspace files and retires the file to `windows.json.retired.bak`.
 //! After that the workspace cache is the sole registry.
 //!
-//! State lives under the platform data dir (`$XDG_DATA_HOME/fresh/`),
+//! State lives under the platform data dir (`$XDG_DATA_HOME/fresher/`),
 //! never the working tree (issue #1991).
 //!
 //! ## Startup

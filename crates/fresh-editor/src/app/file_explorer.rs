@@ -644,7 +644,7 @@ impl Editor {
 
     /// Perform the actual file explorer delete operation (called after prompt confirmation)
     /// For local files: moves to system trash/recycle bin
-    /// For remote files: moves to ~/.local/share/fresh/trash/ on remote
+    /// For remote files: moves to ~/.local/share/fresher/trash/ on remote
     pub fn perform_file_explorer_delete(&mut self, path: std::path::PathBuf, _is_dir: bool) {
         let name = path
             .file_name()
@@ -748,11 +748,11 @@ impl Editor {
         }
     }
 
-    /// Move a file/directory to the remote trash directory (~/.local/share/fresh/trash/)
+    /// Move a file/directory to the remote trash directory (~/.local/share/fresher/trash/)
     fn move_to_remote_trash(&self, path: &std::path::Path) -> std::io::Result<()> {
         // Get remote home directory
         let home = self.authority().filesystem.home_dir()?;
-        let trash_dir = home.join(".local/share/fresh/trash");
+        let trash_dir = home.join(".local/share/fresher/trash");
 
         // Create trash directory if it doesn't exist
         if !self.authority().filesystem.exists(&trash_dir) {

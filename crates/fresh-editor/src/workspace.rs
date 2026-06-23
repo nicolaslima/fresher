@@ -9,7 +9,7 @@
 //!
 //! ## Storage
 //!
-//! Workspaces are stored in `$XDG_DATA_HOME/fresh/workspaces/{encoded_path}.json`
+//! Workspaces are stored in `$XDG_DATA_HOME/fresher/workspaces/{encoded_path}.json`
 //! where `{encoded_path}` is the working directory path with:
 //! - Path separators (`/`) replaced with underscores (`_`)
 //! - Special characters percent-encoded as `%XX`
@@ -469,7 +469,7 @@ pub struct AgentResume {
 /// Individual file state stored in its own file
 ///
 /// Each source file's scroll/cursor state is stored in a separate JSON file
-/// at `$XDG_DATA_HOME/fresh/file_states/{encoded_path}.json`.
+/// at `$XDG_DATA_HOME/fresher/file_states/{encoded_path}.json`.
 /// This allows concurrent editors to safely update different files without
 /// conflicts.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -505,7 +505,7 @@ impl PersistedFileState {
 /// will restore the same scroll/cursor position.
 ///
 /// Each file's state is stored in a separate JSON file at
-/// `$XDG_DATA_HOME/fresh/file_states/{encoded_path}.json` to avoid conflicts
+/// `$XDG_DATA_HOME/fresher/file_states/{encoded_path}.json` to avoid conflicts
 /// between concurrent editors. States are loaded lazily when opening files
 /// and saved immediately when closing files or saving the workspace.
 pub struct PersistedFileWorkspace;

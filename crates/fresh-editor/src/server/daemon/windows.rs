@@ -53,7 +53,7 @@ pub fn spawn_server_detached(session_name: Option<&str>, ssh_url: Option<&str>) 
     let log_dir = std::env::var("LOCALAPPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(|_| std::env::temp_dir())
-        .join("fresh")
+        .join("fresher")
         .join("logs");
     std::fs::create_dir_all(&log_dir)?;
 

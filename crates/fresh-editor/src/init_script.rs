@@ -45,7 +45,7 @@ const editor = getEditor();
 //   - Would differ across machines or launches
 //   - Can't live in a shared config.json without lying to teammates
 //
-// API reference: ~/.config/fresher/types/fresher.d.ts (same as plugins)
+// API reference: ~/.config/fresher/types/fresh.d.ts (same as plugins)
 // Commands:  Ctrl+P -> "init: Reload", "init: Check"
 // CLI:       fresh --cmd init check | fresh --safe | fresh --no-init
 
@@ -250,7 +250,7 @@ fn embedded_fresher_dts_path() -> Option<PathBuf> {
     None
 }
 
-/// Refresh `~/.config/fresher/types/fresher.d.ts` from the embedded copy and
+/// Refresh `~/.config/fresher/types/fresh.d.ts` from the embedded copy and
 /// write `tsconfig.json` if it isn't already present.
 ///
 /// `fresher.d.ts` is **always overwritten** — it's an auto-generated API
@@ -506,7 +506,7 @@ pub fn describe(outcome: &InitOutcome) -> String {
         InitOutcome::NotFound => String::from("init.ts: not present"),
         InitOutcome::Disabled => String::from("init.ts: skipped (--no-init / --safe)"),
         InitOutcome::CrashFused { failures } => format!(
-            "init.ts: skipped after {failures} consecutive failures — fix ~/.config/fresh/init.ts or remove it"
+            "init.ts: skipped after {failures} consecutive failures — fix ~/.config/fresher/init.ts or remove it"
         ),
         InitOutcome::Loaded => String::from("init.ts: loaded"),
         InitOutcome::Failed { message } => format!("init.ts: {message}"),
@@ -562,7 +562,7 @@ pub enum CheckSeverity {
     Warning,
 }
 
-/// Parse `~/.config/fresh/init.ts` via oxc and report syntax errors.
+/// Parse `~/.config/fresher/init.ts` via oxc and report syntax errors.
 ///
 /// This is the "parse mode" from the design (§5.1): always-on, low-latency,
 /// catches the mistakes that would otherwise blow up at startup. The

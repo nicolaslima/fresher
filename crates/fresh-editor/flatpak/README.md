@@ -1,6 +1,6 @@
-# Flatpak Packaging for Fresh
+# Flatpak Packaging for Fresher
 
-This directory contains the Flatpak manifest and related files for building Fresh as a Flatpak package.
+This directory contains the Flatpak manifest and related files for building Fresher as a Flatpak package.
 
 ## Prerequisites
 
@@ -35,18 +35,18 @@ cargo build --release
 2. Build and install the Flatpak:
 
 ```bash
-flatpak-builder --force-clean --user --install build flatpak/io.github.sinelaw.fresh.yml
+flatpak-builder --force-clean --user --install build flatpak/io.github.nicolaslima.fresher.yml
 ```
 
 3. Run the installed Flatpak:
 
 ```bash
-flatpak run io.github.sinelaw.fresh
+flatpak run io.github.nicolaslima.fresher
 ```
 
 ## Files
 
-- `io.github.sinelaw.fresh.yml` - Flatpak manifest
-- `io.github.sinelaw.fresh.desktop` - Desktop entry file
-- `io.github.sinelaw.fresh.metainfo.xml` - AppStream metadata
-- `io.github.sinelaw.fresh.svg` - Application icon
+- `io.github.nicolaslima.fresher.yml` - Flatpak manifest
+- `io.github.nicolaslima.fresher.desktop` - Desktop entry file
+- `io.github.nicolaslima.fresher.metainfo.xml` - AppStream metadata
+- `io.github.nicolaslima.fresher.svg` - Application icon

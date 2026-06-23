@@ -98,7 +98,7 @@
           cargoArtifacts = craneLib.buildDepsOnly commonArgs;
 
           # Build the actual package
-          fresh = craneLib.buildPackage (
+          fresher = craneLib.buildPackage (
             commonArgs
             // {
               inherit cargoArtifacts;
@@ -107,22 +107,22 @@
               # Plugins (embed-plugins feature) and themes (build.rs BUILTIN_THEMES)
               # are compiled in, so they don't need a disk copy.
               postInstall = ''
-                mkdir -p $out/share/fresh-editor
-                cp -r crates/fresh-editor/queries $out/share/fresh-editor/
-                cp -r crates/fresh-editor/keymaps $out/share/fresh-editor/
+                mkdir -p $out/share/fresher-editor
+                cp -r crates/fresh-editor/queries $out/share/fresher-editor/
+                cp -r crates/fresh-editor/keymaps $out/share/fresher-editor/
               '';
 
-              meta.mainProgram = "fresh";
+              meta.mainProgram = "fresher";
             }
           );
         in
         {
           checks = {
             # Build the package as a check
-            inherit fresh;
+            inherit fresher;
 
             # Run clippy
-            fresh-clippy = craneLib.cargoClippy (
+            fresher-clippy = craneLib.cargoClippy (
               commonArgs
               // {
                 inherit cargoArtifacts;
@@ -131,7 +131,7 @@
             );
 
             # Run tests
-            fresh-test = craneLib.cargoTest (
+            fresher-test = craneLib.cargoTest (
               commonArgs
               // {
                 inherit cargoArtifacts;
@@ -139,14 +139,14 @@
             );
 
             # Check formatting
-            fresh-fmt = craneLib.cargoFmt {
+            fresher-fmt = craneLib.cargoFmt {
               inherit src;
             };
           };
 
           packages = {
-            inherit fresh;
-            default = self'.packages.fresh;
+            inherit fresher;
+            default = self'.packages.fresher;
           };
 
           overlayAttrs = builtins.removeAttrs self'.packages [ "default" ];

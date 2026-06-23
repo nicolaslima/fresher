@@ -1,13 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
-  <id>io.github.sinelaw.fresh</id>
+  <id>io.github.nicolaslima.fresher</id>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-2.0-only</project_license>
-  <name>Fresh</name>
+  <name>Fresher</name>
   <summary>A lightweight, fast terminal-based text editor with LSP support</summary>
   <description>
     <p>
-      Fresh is a modern terminal-based text editor designed for discovery and ease of use.
+      Fresher is a modern terminal-based text editor designed for discovery and ease of use.
       It features native UIs, a full menu system, and a powerful Command Palette with full mouse support.
     </p>
     <p>Features include:</p>
@@ -22,15 +22,15 @@
       <li>Customizable themes and keymaps</li>
     </ul>
   </description>
-  <url type="homepage">https://sinelaw.github.io/fresh/</url>
-  <url type="bugtracker">https://github.com/sinelaw/fresh/issues</url>
-  <url type="vcs-browser">https://github.com/sinelaw/fresh</url>
+  <url type="homepage">https://nicolaslima.github.io/fresher/</url>
+  <url type="bugtracker">https://github.com/nicolaslima/fresher/issues</url>
+  <url type="vcs-browser">https://github.com/nicolaslima/fresher</url>
   <developer id="io.github.sinelaw">
     <name>Noam Lewis</name>
   </developer>
-  <launchable type="desktop-id">io.github.sinelaw.fresh.desktop</launchable>
+  <launchable type="desktop-id">io.github.nicolaslima.fresher.desktop</launchable>
   <provides>
-    <binary>fresh</binary>
+    <binary>fresher</binary>
   </provides>
   <categories>
     <category>Utility</category>
@@ -47,13 +47,13 @@
   <content_rating type="oars-1.1" />
   <screenshots>
     <screenshot type="default">
-      <image>https://raw.githubusercontent.com/sinelaw/fresh/master/docs/public/images/screenshot1.png</image>
-      <caption>Fresh editor</caption>
+      <image>https://raw.githubusercontent.com/nicolaslima/fresher/main/docs/public/images/screenshot1.png</image>
+      <caption>Fresher editor</caption>
     </screenshot>
   </screenshots>
   <releases>
     <release version="0.2.14" date="2025-03-13">
-      <url type="details">https://github.com/sinelaw/fresh/releases</url>
+      <url type="details">https://github.com/nicolaslima/fresher/releases</url>
       <description>
         <p>Latest release with bug fixes and improvements.</p>
       </description>

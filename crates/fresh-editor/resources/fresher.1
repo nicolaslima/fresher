@@ -1,12 +1,12 @@
 .TH FRESHER 1 "2026-05-31" "fresher 0.3.10" "Fresher Editor"
 .SH NAME
-fresher \\- terminal text editor with LSP and TypeScript plugins
+fresher \- terminal text editor with LSP and TypeScript plugins
 .SH SYNOPSIS
-.B fresh
+.B fresher
 [\fIOPTIONS\fR]
 [\fIFILES\fR...]
 .SH DESCRIPTION
-.B fresh
+.B fresher
 is a lightweight terminal-based text editor with LSP support, syntax
 highlighting, multi-cursor editing, and a TypeScript plugin runtime.
 .PP
@@ -51,7 +51,7 @@ Disable plugin loading for this launch.
 .TP
 .B \-\-no\-init
 Skip
-.I ~/.config/fresh/init.ts
+.I ~/.config/fresher/init.ts
 for this launch.
 .TP
 .B \-\-safe
@@ -83,31 +83,31 @@ Print help text.
 Print version information.
 .SH FILES
 .TP
-.I ~/.config/fresh/config.json
+.I ~/.config/fresher/config.json
 Per-user editor configuration.
 .TP
-.I ~/.config/fresh/init.ts
+.I ~/.config/fresher/init.ts
 Per-user initialization script, run at startup unless
 .B \-\-no\-init
 or
 .B \-\-safe
 is given.
 .TP
-.I ~/.config/fresh/plugins/
+.I ~/.config/fresher/plugins/
 User-installed plugins.
 .TP
-.I ~/.config/fresh/themes/
+.I ~/.config/fresher/themes/
 User-installed themes.
 .TP
-.I ~/.cache/fresh/embedded\-plugins/
+.I ~/.cache/fresher/embedded\-plugins/
 Cache directory for the plugin bundle compiled into the binary.
 .SH SEE ALSO
 Project documentation:
-.UR https://sinelaw.github.io/fresh/
+.UR https://nicolaslima.github.io/fresher/
 .UE
 .SH BUGS
 Report issues at
-.UR https://github.com/sinelaw/fresh/issues
+.UR https://github.com/nicolaslima/fresher/issues
 .UE .
 .SH AUTHOR
 Noam Lewis.

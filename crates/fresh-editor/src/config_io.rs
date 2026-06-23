@@ -714,10 +714,10 @@ impl Config {
     fn system_config_paths() -> Vec<PathBuf> {
         let mut paths = Vec::with_capacity(2);
 
-        // macOS: Prioritize ~/.config/fresh/config.json
+        // macOS: Prioritize ~/.config/fresher/config.json
         #[cfg(target_os = "macos")]
         if let Some(home) = dirs::home_dir() {
-            let path = home.join(".config").join("fresh").join(Config::FILENAME);
+            let path = home.join(".config").join("fresher").join(Config::FILENAME);
             if path.exists() {
                 paths.push(path);
             }
@@ -725,7 +725,7 @@ impl Config {
 
         // Standard system paths (XDG on Linux, AppSupport on macOS, Roaming on Windows)
         if let Some(config_dir) = dirs::config_dir() {
-            let path = config_dir.join("fresh").join(Config::FILENAME);
+            let path = config_dir.join("fresher").join(Config::FILENAME);
             if !paths.contains(&path) && path.exists() {
                 paths.push(path);
             }
@@ -894,7 +894,7 @@ impl DirectoryContext {
                     "Could not determine data directory",
                 )
             })?
-            .join("fresh");
+            .join("fresher");
 
         let config_dir = Self::default_config_dir().ok_or_else(|| {
             std::io::Error::new(
@@ -1026,17 +1026,17 @@ impl DirectoryContext {
     ///
     /// This is used internally by `from_system()` to determine the config directory.
     ///
-    /// On macOS, this prioritizes `~/.config/fresh` over `~/Library/Application Support/fresh`
+    /// On macOS, this prioritizes `~/.config/fresher` over `~/Library/Application Support/fresher`
     /// to match the documented configuration location.
     fn default_config_dir() -> Option<std::path::PathBuf> {
         #[cfg(target_os = "macos")]
         {
-            dirs::home_dir().map(|p| p.join(".config").join("fresh"))
+            dirs::home_dir().map(|p| p.join(".config").join("fresher"))
         }
 
         #[cfg(not(target_os = "macos"))]
         {
-            dirs::config_dir().map(|p| p.join("fresh"))
+            dirs::config_dir().map(|p| p.join("fresher"))
         }
     }
 }

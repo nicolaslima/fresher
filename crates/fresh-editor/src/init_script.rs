@@ -1,12 +1,12 @@
 //! User init.ts support.
 //!
-//! At startup Fresh reads `~/.config/fresh/init.ts` (if present) and feeds it
+//! At startup Fresher reads `~/.config/fresher/init.ts` (if present) and feeds it
 //! through the existing plugin pipeline as a plugin named `init.ts`. This is
 //! the same code path as "Load Plugin from Buffer", so reload, unload, and
 //! per-plugin registration tagging are free.
 //!
 //! Recovery: a lightweight crash fuse at
-//! `~/.config/fresh/logs/init.crashes` counts consecutive init.ts failures
+//! `~/.config/fresher/logs/init.crashes` counts consecutive init.ts failures
 //! within a rolling window. After N failures the next launch auto-skips
 //! init.ts until the user fixes or removes it. A successful evaluation
 //! clears the counter.
@@ -27,7 +27,7 @@ pub const INIT_PLUGIN_NAME: &str = "init.ts";
 /// The comments establish what init.ts is *not* for (static preferences,
 /// keybindings, themes, reusable features) so users don't reach for this
 /// file when another surface is the right tool.
-pub const STARTER_TEMPLATE: &str = r#"/// <reference path="./types/fresh.d.ts" />
+pub const STARTER_TEMPLATE: &str = r#"/// <reference path="./types/fresher.d.ts" />
 /// <reference path="./types/plugins.d.ts" />
 const editor = getEditor();
 
@@ -45,7 +45,7 @@ const editor = getEditor();
 //   - Would differ across machines or launches
 //   - Can't live in a shared config.json without lying to teammates
 //
-// API reference: ~/.config/fresh/types/fresh.d.ts (same as plugins)
+// API reference: ~/.config/fresher/types/fresh.d.ts (same as plugins)
 // Commands:  Ctrl+P -> "init: Reload", "init: Check"
 // CLI:       fresh --cmd init check | fresh --safe | fresh --no-init
 
@@ -230,32 +230,32 @@ const INIT_TSCONFIG: &str = r#"{
     "lib": ["ES2020"],
     "types": []
   },
-  "files": ["init.ts", "types/fresh.d.ts", "types/plugins.d.ts"]
+  "files": ["init.ts", "types/fresher.d.ts", "types/plugins.d.ts"]
 }
 "#;
 
-/// Resolve the path to `fresh.d.ts` inside the embedded-plugins cache.
+/// Resolve the path to `fresher.d.ts` inside the embedded-plugins cache.
 /// Only embedded content is used — never an on-disk copy that isn't
 /// guaranteed to match this binary — so the types always track the
 /// running build.
 #[cfg(feature = "embed-plugins")]
-fn embedded_fresh_dts_path() -> Option<PathBuf> {
+fn embedded_fresher_dts_path() -> Option<PathBuf> {
     let embedded = crate::services::plugins::embedded::get_embedded_plugins_dir()?;
-    let p = embedded.join("lib").join("fresh.d.ts");
+    let p = embedded.join("lib").join("fresher.d.ts");
     p.exists().then_some(p)
 }
 
 #[cfg(not(feature = "embed-plugins"))]
-fn embedded_fresh_dts_path() -> Option<PathBuf> {
+fn embedded_fresher_dts_path() -> Option<PathBuf> {
     None
 }
 
-/// Refresh `~/.config/fresh/types/fresh.d.ts` from the embedded copy and
+/// Refresh `~/.config/fresher/types/fresh.d.ts` from the embedded copy and
 /// write `tsconfig.json` if it isn't already present.
 ///
 /// `fresh.d.ts` is **always overwritten** — it's an auto-generated API
 /// mirror that must track the running binary. Keeping a stale copy in
-/// `~/.config/fresh/types/` would silently hide drift between the API
+/// `~/.config/fresher/types/` would silently hide drift between the API
 /// the user's `init.ts` was written against and the one the running
 /// binary actually exposes. `tsconfig.json` is treated as user-editable
 /// and only written on first run.
@@ -263,9 +263,9 @@ fn embedded_fresh_dts_path() -> Option<PathBuf> {
 /// Errors are logged but not returned: type scaffolding is best-effort
 /// and must not block opening or loading init.ts.
 pub fn refresh_types_scaffolding(config_dir: &Path) {
-    let Some(source) = embedded_fresh_dts_path() else {
+    let Some(source) = embedded_fresher_dts_path() else {
         tracing::warn!(
-            "init.ts: embedded fresh.d.ts unavailable; \
+            "init.ts: embedded fresher.d.ts unavailable; \
              LSP completions in init.ts will be unavailable"
         );
         return;
@@ -276,10 +276,10 @@ pub fn refresh_types_scaffolding(config_dir: &Path) {
         tracing::warn!("init.ts: failed to create {}: {e}", types_dir.display());
         return;
     }
-    let dest_dts = types_dir.join("fresh.d.ts");
+    let dest_dts = types_dir.join("fresher.d.ts");
     if let Err(e) = std::fs::copy(&source, &dest_dts) {
         tracing::warn!(
-            "init.ts: failed to copy fresh.d.ts from {} to {}: {e}",
+            "init.ts: failed to copy fresher.d.ts from {} to {}: {e}",
             source.display(),
             dest_dts.display()
         );
@@ -344,8 +344,8 @@ pub fn write_plugin_declarations(config_dir: &Path, declarations: &[(String, Str
     }
 }
 
-/// Ensure `~/.config/fresh/init.ts` exists. If absent, writes the starter
-/// template. Also refreshes `types/fresh.d.ts` + `tsconfig.json` so the
+/// Ensure `~/.config/fresher/init.ts` exists. If absent, writes the starter
+/// template. Also refreshes `types/fresher.d.ts` + `tsconfig.json` so the
 /// template's `/// <reference path=...` directive resolves and
 /// `getEditor()` type-checks in any TS-aware editor.
 /// Returns the (possibly newly-created) `init.ts` path.
@@ -376,7 +376,7 @@ pub enum InitOutcome {
     Failed { message: String },
 }
 
-/// Resolve `~/.config/fresh/init.ts`.
+/// Resolve `~/.config/fresher/init.ts`.
 pub fn init_ts_path(config_dir: &Path) -> PathBuf {
     config_dir.join("init.ts")
 }
@@ -787,8 +787,8 @@ mod tests {
     #[test]
     fn starter_template_references_both_dts_files() {
         assert!(
-            STARTER_TEMPLATE.contains(r#"/// <reference path="./types/fresh.d.ts" />"#),
-            "starter template must reference fresh.d.ts"
+            STARTER_TEMPLATE.contains(r#"/// <reference path="./types/fresher.d.ts" />"#),
+            "starter template must reference fresher.d.ts"
         );
         assert!(
             STARTER_TEMPLATE.contains(r#"/// <reference path="./types/plugins.d.ts" />"#),

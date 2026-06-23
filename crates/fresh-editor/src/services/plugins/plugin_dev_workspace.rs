@@ -3,7 +3,7 @@
 //! When a user loads a plugin from a buffer, this module creates a temporary
 //! workspace directory containing:
 //! - The buffer content as a `.ts` file
-//! - A copy of `fresh.d.ts` for type definitions
+//! - A copy of `fresher.d.ts` for type definitions
 //! - A `tsconfig.json` configured for the plugin environment
 //!
 //! This allows `typescript-language-server` to provide autocomplete, type checking,
@@ -22,7 +22,7 @@ pub struct PluginDevWorkspace {
 /// The tsconfig.json content for plugin development.
 /// - No DOM lib (plugins run in QuickJS, not a browser)
 /// - `types: []` prevents picking up @types/node or other ambient types
-/// - `skipLibCheck: true` avoids checking fresh.d.ts itself
+/// - `skipLibCheck: true` avoids checking fresher.d.ts itself
 const TSCONFIG_CONTENT: &str = r#"{
   "compilerOptions": {
     "target": "ES2020",
@@ -34,7 +34,7 @@ const TSCONFIG_CONTENT: &str = r#"{
     "lib": ["ES2020"],
     "types": []
   },
-  "files": ["fresh.d.ts", "plugin.ts"]
+  "files": ["fresher.d.ts", "plugin.ts"]
 }
 "#;
 

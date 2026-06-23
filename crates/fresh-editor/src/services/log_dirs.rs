@@ -130,7 +130,7 @@ fn cleanup_legacy_tmp_logs() {
         "fresh-warnings-",
         "fresh-lsp-",
         "rust-analyzer-",
-        "fresh-stdin-",
+        "fresher-stdin-",
         "fresh.log", // Old single fresh.log in /tmp
     ];
 

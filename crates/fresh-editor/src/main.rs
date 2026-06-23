@@ -539,7 +539,7 @@ fn start_stdin_streaming() -> AnyhowResult<StdinStreamState> {
 
     // Create empty temp file
     let temp_dir = std::env::temp_dir();
-    let temp_path = temp_dir.join(format!("fresh-stdin-{}.tmp", std::process::id()));
+    let temp_path = temp_dir.join(format!("fresher-stdin-{}.tmp", std::process::id()));
     File::create(&temp_path)?;
 
     // Reopen stdin from /dev/tty so crossterm can use it for keyboard input
@@ -634,7 +634,7 @@ fn start_stdin_streaming() -> AnyhowResult<StdinStreamState> {
 
     // Create a temp file to store the piped content
     let temp_dir = std::env::temp_dir();
-    let temp_path = temp_dir.join(format!("fresh-stdin-{}.txt", std::process::id()));
+    let temp_path = temp_dir.join(format!("fresher-stdin-{}.txt", std::process::id()));
 
     let temp_path_clone = temp_path.clone();
 

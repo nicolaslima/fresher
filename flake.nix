@@ -33,7 +33,7 @@
           ...
         }:
         let
-          pname = "fresh";
+          pname = "fresher";
 
           rust-manifest = pkgs.fetchurl {
             url = "https://static.rust-lang.org/dist/channel-rust-1.95.0.toml";

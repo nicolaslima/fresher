@@ -781,9 +781,9 @@ pub enum Action {
     LoadPluginFromBuffer, // Load current buffer as a plugin
 
     // User init.ts (design M4, M5, M6)
-    InitReload, // Reload ~/.config/fresh/init.ts via the existing plugin pipeline
-    InitEdit,   // Open ~/.config/fresh/init.ts (creates from template if missing)
-    InitCheck,  // Syntax-check ~/.config/fresh/init.ts via oxc
+    InitReload, // Reload ~/.config/fresher/init.ts via the existing plugin pipeline
+    InitEdit,   // Open ~/.config/fresher/init.ts (creates from template if missing)
+    InitCheck,  // Syntax-check ~/.config/fresher/init.ts via oxc
 
     // Composite buffer (side-by-side diff) hunk navigation
     CompositeNextHunk, // Navigate to the next hunk in a composite diff view

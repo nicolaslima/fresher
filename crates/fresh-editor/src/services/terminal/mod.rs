@@ -32,7 +32,7 @@
 //!
 //! ## Backing File Structure
 //!
-//! Located at `~/.local/share/fresh/terminals/{workdir}/fresh-terminal-{id}.txt`:
+//! Located at `~/.local/share/fresher/terminals/{workdir}/fresh-terminal-{id}.txt`:
 //!
 //! - **Scrollback history** (top): Append-only, grows as lines scroll off screen
 //! - **Visible screen** (bottom): Rewritable tail (~50 lines), present only in scrollback mode

@@ -2,7 +2,7 @@
 //!
 //! This module provides functions to get log file paths following the
 //! XDG Base Directory Specification. Logs are stored in:
-//! - `$XDG_STATE_HOME/fresh/logs/` (typically `~/.local/state/fresh/logs/`)
+//! - `$XDG_STATE_HOME/fresher/logs/` (typically `~/.local/state/fresher/logs/`)
 //!
 //! Each Fresh instance uses PID-based log files to support concurrent runs.
 //! On startup, stale log files from dead processes are cleaned up automatically.
@@ -20,8 +20,8 @@ static LOG_DIR: OnceLock<PathBuf> = OnceLock::new();
 
 /// Get the base log directory for Fresh, creating it if necessary.
 ///
-/// Returns `$XDG_STATE_HOME/fresh/logs/` (typically `~/.local/state/fresh/logs/`).
-/// Falls back to `~/.local/state/fresh/logs/` if XDG_STATE_HOME is not set.
+/// Returns `$XDG_STATE_HOME/fresher/logs/` (typically `~/.local/state/fresher/logs/`).
+/// Falls back to `~/.local/state/fresher/logs/` if XDG_STATE_HOME is not set.
 /// As a last resort, falls back to the system temp directory.
 pub fn log_dir() -> &'static PathBuf {
     LOG_DIR.get_or_init(|| {
@@ -44,13 +44,13 @@ fn get_xdg_log_dir() -> Option<PathBuf> {
     if let Ok(state_home) = std::env::var("XDG_STATE_HOME") {
         let path = PathBuf::from(state_home);
         if path.is_absolute() {
-            return Some(path.join("fresh").join("logs"));
+            return Some(path.join("fresher").join("logs"));
         }
     }
 
     // Fall back to ~/.local/state
     if let Some(home) = home_dir() {
-        return Some(home.join(".local").join("state").join("fresh").join("logs"));
+        return Some(home.join(".local").join("state").join("fresher").join("logs"));
     }
 
     None

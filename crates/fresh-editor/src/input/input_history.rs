@@ -382,8 +382,8 @@ impl InputHistory {
 }
 
 /// Get the data directory for Fresh editor state
-/// Returns $XDG_DATA_HOME/fresh or ~/.local/share/fresh on Linux
-/// Returns ~/Library/Application Support/fresh on macOS
+/// Returns $XDG_DATA_HOME/fresher or ~/.local/share/fresher on Linux
+/// Returns ~/Library/Application Support/fresher on macOS
 pub fn get_data_dir() -> std::io::Result<std::path::PathBuf> {
     let data_dir = dirs::data_dir().ok_or_else(|| {
         std::io::Error::new(
@@ -391,7 +391,7 @@ pub fn get_data_dir() -> std::io::Result<std::path::PathBuf> {
             "Could not determine data directory",
         )
     })?;
-    Ok(data_dir.join("fresh"))
+    Ok(data_dir.join("fresher"))
 }
 
 /// Get the path for search history file

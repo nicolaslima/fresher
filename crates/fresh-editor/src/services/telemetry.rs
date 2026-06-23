@@ -33,7 +33,7 @@ struct StampData {
 
 /// Get the path to the telemetry stamp file
 fn stamp_file_path(data_dir: &std::path::Path) -> PathBuf {
-    data_dir.join("fresh").join(STAMP_FILE_NAME)
+    data_dir.join("fresher").join(STAMP_FILE_NAME)
 }
 
 /// Generate a random 64-bit hex string using std's RandomState
@@ -132,7 +132,7 @@ pub fn track_open(unique_id: &str) {
     let event = Event {
         version: Some(env!("CARGO_PKG_VERSION")),
         os: Some(format!("{}-{}", OS, ARCH)),
-        command: Some("fresh"),
+        command: Some("fresher"),
         value: std::env::var("TERM").ok(),
         uid: Some(unique_id.to_string()),
     };

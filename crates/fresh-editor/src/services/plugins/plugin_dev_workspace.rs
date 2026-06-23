@@ -41,22 +41,22 @@ const TSCONFIG_CONTENT: &str = r#"{
 impl PluginDevWorkspace {
     /// Create a new plugin dev workspace for the given buffer.
     ///
-    /// This creates a temp directory, copies `fresh.d.ts` from the source,
+    /// This creates a temp directory, copies `fresher.d.ts` from the source,
     /// writes `tsconfig.json`, and writes the buffer content to `plugin.ts`.
     ///
     /// # Arguments
     /// * `buffer_id` - The buffer ID (used to create a unique directory)
     /// * `content` - The current buffer content
-    /// * `fresh_dts_source` - Path to the `fresh.d.ts` file to copy
+    /// * `fresher_dts_source` - Path to the `fresher.d.ts` file to copy
     pub fn create(
         buffer_id: usize,
         content: &str,
-        fresh_dts_source: &Path,
+        fresher_dts_source: &Path,
     ) -> Result<Self, String> {
         let cache_dir =
             dirs::cache_dir().ok_or_else(|| "Could not determine cache directory".to_string())?;
         let dir = cache_dir
-            .join("fresh")
+            .join("fresher")
             .join("plugin-dev")
             .join(buffer_id.to_string());
 
@@ -64,10 +64,10 @@ impl PluginDevWorkspace {
         std::fs::create_dir_all(&dir)
             .map_err(|e| format!("Failed to create plugin dev workspace: {}", e))?;
 
-        // Copy fresh.d.ts
-        let dest_dts = dir.join("fresh.d.ts");
-        std::fs::copy(fresh_dts_source, &dest_dts)
-            .map_err(|e| format!("Failed to copy fresh.d.ts: {}", e))?;
+        // Copy fresher.d.ts
+        let dest_dts = dir.join("fresher.d.ts");
+        std::fs::copy(fresher_dts_source, &dest_dts)
+            .map_err(|e| format!("Failed to copy fresher.d.ts: {}", e))?;
 
         // Write tsconfig.json
         let tsconfig_path = dir.join("tsconfig.json");

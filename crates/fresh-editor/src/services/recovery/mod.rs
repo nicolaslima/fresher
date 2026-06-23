@@ -14,7 +14,7 @@
 //! ## File Layout
 //!
 //! ```text
-//! ~/.local/share/fresh/recovery/
+//! ~/.local/share/fresher/recovery/
 //! ├── session.lock           # Session info (PID, start time)
 //! ├── {hash}.meta.json       # Recovery metadata with chunk index
 //! ├── {hash}.chunk.0         # Chunk 0 binary content

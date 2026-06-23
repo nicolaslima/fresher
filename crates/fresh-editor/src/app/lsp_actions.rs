@@ -1246,15 +1246,15 @@ impl Editor {
 
     /// Set up a plugin development workspace for LSP support on a buffer.
     ///
-    /// Creates a temp directory with `fresh.d.ts` + `tsconfig.json` so that
+    /// Creates a temp directory with `fresher.d.ts` + `tsconfig.json` so that
     /// `typescript-language-server` can provide autocomplete and type checking
     /// for plugin buffers (including unsaved/unnamed ones).
     pub(crate) fn setup_plugin_dev_lsp(&mut self, buffer_id: BufferId, content: &str) {
         use crate::services::plugins::plugin_dev_workspace::PluginDevWorkspace;
 
-        // Use the exact cached extraction location for fresh.d.ts
+        // Use the exact cached extraction location for fresher.d.ts
         #[cfg(feature = "embed-plugins")]
-        let fresh_dts_path = {
+        let fresher_dts_path = {
             let Some(embedded_dir) = crate::services::plugins::embedded::get_embedded_plugins_dir()
             else {
                 tracing::warn!(
@@ -1262,10 +1262,10 @@ impl Editor {
                 );
                 return;
             };
-            let path = embedded_dir.join("lib").join("fresh.d.ts");
+            let path = embedded_dir.join("lib").join("fresher.d.ts");
             if !path.exists() {
                 tracing::warn!(
-                    "Cannot set up plugin dev LSP: fresh.d.ts not found at {:?}",
+                    "Cannot set up plugin dev LSP: fresher.d.ts not found at {:?}",
                     path
                 );
                 return;
@@ -1274,15 +1274,15 @@ impl Editor {
         };
 
         #[cfg(not(feature = "embed-plugins"))]
-        let fresh_dts_path = {
+        let fresher_dts_path = {
             // In non-embedded builds (development), use the source tree path
             let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("plugins")
                 .join("lib")
-                .join("fresh.d.ts");
+                .join("fresher.d.ts");
             if !path.exists() {
                 tracing::warn!(
-                    "Cannot set up plugin dev LSP: fresh.d.ts not found at {:?}",
+                    "Cannot set up plugin dev LSP: fresher.d.ts not found at {:?}",
                     path
                 );
                 return;
@@ -1292,7 +1292,7 @@ impl Editor {
 
         // Create the workspace
         let buffer_id_num: usize = buffer_id.0;
-        match PluginDevWorkspace::create(buffer_id_num, content, &fresh_dts_path) {
+        match PluginDevWorkspace::create(buffer_id_num, content, &fresher_dts_path) {
             Ok(workspace) => {
                 let plugin_file = workspace.plugin_file.clone();
 
@@ -1356,7 +1356,7 @@ impl Editor {
                 // Actually spawn the LSP server and send didOpen for this buffer
                 self.send_lsp_did_open_for_buffer(buffer_id, "typescript");
 
-                // Add the plugin workspace folder so tsserver discovers tsconfig.json + fresh.d.ts
+                // Add the plugin workspace folder so tsserver discovers tsconfig.json + fresher.d.ts
                 if let Some(lsp) = self.lsp() {
                     if let Some(handle) = lsp.get_handle("typescript") {
                         if let Some(uri) = super::types::file_path_to_lsp_uri_with_translation(

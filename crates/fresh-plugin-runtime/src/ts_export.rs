@@ -513,6 +513,7 @@ interface HookEventMap {
   ready: Record<string, never>;
   focus_gained: Record<string, never>;
   authority_changed: { label: string };
+  trust_changed: { level: "trusted" | "restricted" | "blocked" };
 
   // ── buffer lifecycle ─────────────────────────────────────────────────────
   buffer_activated: { buffer_id: number };
@@ -618,6 +619,10 @@ interface HookEventMap {
   // ── LSP ──────────────────────────────────────────────────────────────────
   diagnostics_updated: { uri: string; count: number };
   lsp_references: {
+    symbol: string;
+    locations: { file: string; line: number; column: number }[];
+  };
+  lsp_implementation: {
     symbol: string;
     locations: { file: string; line: number; column: number }[];
   };
@@ -1354,6 +1359,8 @@ mod tests {
             "addConceal",
             "clearConcealNamespace",
             "clearConcealsInRange",
+            "charWidth",
+            "stringWidth",
             "addSoftBreak",
             "clearSoftBreakNamespace",
             "clearSoftBreaksInRange",

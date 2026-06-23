@@ -1226,6 +1226,13 @@
             "checkbox": null
           },
           {
+            "label": "Go to Implementation",
+            "action": "lsp_implementation",
+            "args": {},
+            "when": null,
+            "checkbox": null
+          },
+          {
             "separator": true
           },
           {
@@ -1274,6 +1281,13 @@
           {
             "label": "Find References",
             "action": "lsp_references",
+            "args": {},
+            "when": "lsp_available",
+            "checkbox": null
+          },
+          {
+            "label": "Go to Implementation",
+            "action": "lsp_implementation",
             "args": {},
             "when": "lsp_available",
             "checkbox": null

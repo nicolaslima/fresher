@@ -1,7 +1,7 @@
 //! Menu bar rendering
 
 use crate::app::types::CellThemeRecorder;
-use crate::config::{generate_dynamic_items, Menu, MenuConfig, MenuExt, MenuItem, MenuItemExt};
+use crate::config::{generate_dynamic_items, Menu, MenuItem, MenuItemExt};
 use crate::primitives::display_width::str_width;
 use crate::view::theme::Theme;
 use crate::view::ui::layout::point_in_rect;
@@ -114,7 +114,10 @@ impl MenuLayout {
 // Re-export MenuContext from fresh-core so existing editor code keeps compiling.
 pub use fresh_core::menu::MenuContext;
 
-fn is_menu_item_enabled(item: &MenuItem, context: &MenuContext) -> bool {
+/// Whether a menu item is enabled given the current menu context. Shared by the
+/// TUI renderer and the web `menu_view` projection so both frontends agree on
+/// item state from one definition (see view/scene.rs).
+pub(crate) fn is_menu_item_enabled(item: &MenuItem, context: &MenuContext) -> bool {
     match item {
         MenuItem::Action { when, .. } => {
             match when.as_deref() {
@@ -126,10 +129,22 @@ fn is_menu_item_enabled(item: &MenuItem, context: &MenuContext) -> bool {
     }
 }
 
-fn is_checkbox_checked(checkbox: &Option<String>, context: &MenuContext) -> bool {
+/// Whether a checkbox menu item is checked given the current context. Shared by
+/// the TUI renderer and the web `menu_view` projection.
+pub(crate) fn is_checkbox_checked(checkbox: &Option<String>, context: &MenuContext) -> bool {
     match checkbox.as_deref() {
         Some(name) => context.get(name),
         None => false,
+    }
+}
+
+/// Whether a top-level menu is visible given its `when` condition. Shared by the
+/// TUI `MenuRenderer` and the web `menu_view` projection so menu visibility is
+/// computed in one place rather than independently per frontend.
+pub(crate) fn is_menu_visible(menu: &Menu, context: &MenuContext) -> bool {
+    match &menu.when {
+        Some(condition) => context.get(condition),
+        None => true, // No condition = always visible
     }
 }
 
@@ -241,12 +256,10 @@ impl MenuState {
         // No visible menu found, stay on current
     }
 
-    /// Check if a menu is visible based on its `when` condition
+    /// Check if a menu is visible based on its `when` condition. Delegates to
+    /// the shared `is_menu_visible` so the TUI and the web projection agree.
     fn is_menu_visible(&self, menu: &Menu) -> bool {
-        match &menu.when {
-            Some(condition) => self.context.get(condition),
-            None => true, // No condition = always visible
-        }
+        is_menu_visible(menu, &self.context)
     }
 
     /// Check if we're currently in a submenu
@@ -496,13 +509,19 @@ impl MenuRenderer {
     pub fn render(
         frame: &mut Frame,
         area: Rect,
-        menu_config: &MenuConfig,
+        // The already-expanded menu list (config + plugin menus, dynamic
+        // submenus resolved) — produced by `Editor::all_menus_expanded()`, the
+        // single content source shared with the web `menu_view()` projection.
+        all_menus: &[Menu],
         menu_state: &MenuState,
         keybindings: &crate::input::keybindings::KeybindingResolver,
         theme: &Theme,
         hover_target: Option<&crate::app::HoverTarget>,
         mnemonics_enabled: bool,
         mut rec: Option<&mut CellThemeRecorder>,
+        // When false, compute + record layout but skip emitting cells (the host
+        // renders the menu from the semantic model). See UNIFIED_SCENE_DESIGN.md.
+        draw: bool,
     ) -> MenuLayout {
         let mut layout = MenuLayout::new(area);
         // Seed the menu bar with its base keys; each label overwrites its own
@@ -517,17 +536,7 @@ impl MenuRenderer {
                 "Menu Bar",
             );
         }
-        // Combine config menus with plugin menus, expanding any DynamicSubmenus
-        let all_menus: Vec<Menu> = menu_config
-            .menus
-            .iter()
-            .chain(menu_state.plugin_menus.iter())
-            .cloned()
-            .map(|mut menu| {
-                menu.expand_dynamic_items(&menu_state.themes_dir);
-                menu
-            })
-            .collect();
+        // `all_menus` is already expanded (config + plugin menus) by the caller.
 
         // Track which menus are visible (based on their `when` condition)
         let menu_visible: Vec<bool> = all_menus
@@ -628,9 +637,11 @@ impl MenuRenderer {
             current_x += label_width + 1;
         }
 
-        let line = Line::from(spans);
-        let paragraph = Paragraph::new(line).style(Style::default().bg(theme.menu_bg));
-        frame.render_widget(paragraph, area);
+        if draw {
+            let line = Line::from(spans);
+            let paragraph = Paragraph::new(line).style(Style::default().bg(theme.menu_bg));
+            frame.render_widget(paragraph, area);
+        }
 
         // Render dropdown if a menu is active
         if let Some(active_idx) = menu_state.active_menu {
@@ -641,12 +652,13 @@ impl MenuRenderer {
                     menu,
                     menu_state,
                     active_idx,
-                    &all_menus,
+                    all_menus,
                     keybindings,
                     theme,
                     hover_target,
                     &mut layout,
                     rec,
+                    draw,
                 );
             }
         }
@@ -668,6 +680,7 @@ impl MenuRenderer {
         hover_target: Option<&crate::app::HoverTarget>,
         layout: &mut MenuLayout,
         mut rec: Option<&mut CellThemeRecorder>,
+        draw: bool,
     ) {
         // Calculate the x position of the top-level dropdown based on menu index
         // Skip hidden menus (those with `when` conditions that evaluate to false)
@@ -722,6 +735,7 @@ impl MenuRenderer {
                 &menu_state.context,
                 layout,
                 rec.as_deref_mut(),
+                draw,
             );
 
             // If not at the deepest level, navigate into the submenu for next iteration
@@ -799,42 +813,15 @@ impl MenuRenderer {
         context: &MenuContext,
         layout: &mut MenuLayout,
         mut rec: Option<&mut CellThemeRecorder>,
+        draw: bool,
     ) -> Rect {
-        let max_width = Self::calculate_dropdown_width(items);
-        let dropdown_height = items.len() + 2; // +2 for borders
-
-        let desired_width = max_width as u16;
-        let desired_height = dropdown_height as u16;
-
-        // Bounds check: ensure dropdown fits within the visible area
-        let adjusted_x = if x.saturating_add(desired_width) > terminal_width {
-            terminal_width.saturating_sub(desired_width)
-        } else {
-            x
-        };
-
-        let available_height = terminal_height.saturating_sub(y);
-        let height = desired_height.min(available_height);
-
-        let available_width = terminal_width.saturating_sub(adjusted_x);
-        let width = desired_width.min(available_width);
+        let dropdown_area = Self::fit_dropdown_area(items, x, y, terminal_width, terminal_height);
 
         // Only render if we have at least minimal space
-        if width < 10 || height < 3 {
-            return Rect {
-                x: adjusted_x,
-                y,
-                width,
-                height,
-            };
+        if dropdown_area.width < 10 || dropdown_area.height < 3 {
+            return dropdown_area;
         }
-
-        let dropdown_area = Rect {
-            x: adjusted_x,
-            y,
-            width,
-            height,
-        };
+        let adjusted_x = dropdown_area.x;
 
         // Seed the dropdown box (border + fill) with its surface keys; each
         // item row overwrites its own cells below.
@@ -853,9 +840,9 @@ impl MenuRenderer {
 
         // Build dropdown content
         let mut lines = Vec::new();
-        let max_items = (height.saturating_sub(2)) as usize;
+        let max_items = (dropdown_area.height.saturating_sub(2)) as usize;
         let items_to_show = items.len().min(max_items);
-        let content_width = (width as usize).saturating_sub(2);
+        let content_width = (dropdown_area.width as usize).saturating_sub(2);
 
         for (idx, item) in items.iter().enumerate().take(items_to_show) {
             let is_highlighted = highlighted_item == Some(idx);
@@ -887,139 +874,27 @@ impl MenuRenderer {
 
             // Record this item's keys, mirroring the per-kind style below.
             if let Some(r) = rec.as_deref_mut() {
-                let (fg, bg) = match item {
-                    MenuItem::Separator { .. } => ("ui.menu_separator_fg", "ui.menu_dropdown_bg"),
-                    MenuItem::Label { .. } => ("ui.menu_disabled_fg", "ui.menu_dropdown_bg"),
-                    _ if !enabled => ("ui.menu_disabled_fg", "ui.menu_disabled_bg"),
-                    _ if is_highlighted || has_open_submenu => {
-                        ("ui.menu_highlight_fg", "ui.menu_highlight_bg")
-                    }
-                    _ => ("ui.menu_dropdown_fg", "ui.menu_dropdown_bg"),
-                };
-                r.run(
-                    item_area.x,
-                    item_area.y,
-                    item_area.width,
-                    Some(fg),
-                    Some(bg),
-                    "Menu Dropdown",
+                Self::record_dropdown_item_run(
+                    r,
+                    item,
+                    item_area,
+                    enabled,
+                    is_highlighted,
+                    has_open_submenu,
                 );
             }
 
-            let line = match item {
-                MenuItem::Action {
-                    label,
-                    action,
-                    checkbox,
-                    ..
-                } => {
-                    let style = if !enabled {
-                        Style::default()
-                            .fg(theme.menu_disabled_fg)
-                            .bg(theme.menu_disabled_bg)
-                    } else if is_highlighted {
-                        Style::default()
-                            .fg(theme.menu_highlight_fg)
-                            .bg(theme.menu_highlight_bg)
-                    } else if is_hovered {
-                        Style::default()
-                            .fg(theme.menu_hover_fg)
-                            .bg(theme.menu_hover_bg)
-                    } else {
-                        Style::default()
-                            .fg(theme.menu_dropdown_fg)
-                            .bg(theme.menu_dropdown_bg)
-                    };
-
-                    let keybinding = keybindings
-                        .find_keybinding_for_action(
-                            action,
-                            crate::input::keybindings::KeyContext::Normal,
-                        )
-                        .unwrap_or_default();
-
-                    let checkbox_icon = if checkbox.is_some() {
-                        if is_checkbox_checked(checkbox, context) {
-                            "☑ "
-                        } else {
-                            "☐ "
-                        }
-                    } else {
-                        ""
-                    };
-
-                    let checkbox_width = if checkbox.is_some() { 2 } else { 0 };
-                    let label_display_width = str_width(label);
-                    let keybinding_display_width = str_width(&keybinding);
-
-                    let text = if keybinding.is_empty() {
-                        let padding_needed =
-                            content_width.saturating_sub(checkbox_width + label_display_width + 1);
-                        format!(" {}{}{}", checkbox_icon, label, " ".repeat(padding_needed))
-                    } else {
-                        let padding_needed = content_width.saturating_sub(
-                            checkbox_width + label_display_width + keybinding_display_width + 2,
-                        );
-                        format!(
-                            " {}{}{} {}",
-                            checkbox_icon,
-                            label,
-                            " ".repeat(padding_needed),
-                            keybinding
-                        )
-                    };
-
-                    Line::from(vec![Span::styled(text, style)])
-                }
-                MenuItem::Separator { .. } => {
-                    let separator = "─".repeat(content_width);
-                    Line::from(vec![Span::styled(
-                        format!(" {separator}"),
-                        Style::default()
-                            .fg(theme.menu_separator_fg)
-                            .bg(theme.menu_dropdown_bg),
-                    )])
-                }
-                MenuItem::Submenu { label, .. } | MenuItem::DynamicSubmenu { label, .. } => {
-                    // Highlight submenu items that have an open child
-                    let style = if is_highlighted || has_open_submenu {
-                        Style::default()
-                            .fg(theme.menu_highlight_fg)
-                            .bg(theme.menu_highlight_bg)
-                    } else if is_hovered {
-                        Style::default()
-                            .fg(theme.menu_hover_fg)
-                            .bg(theme.menu_hover_bg)
-                    } else {
-                        Style::default()
-                            .fg(theme.menu_dropdown_fg)
-                            .bg(theme.menu_dropdown_bg)
-                    };
-
-                    // Format: " Label        > " - label left-aligned, arrow near the end with padding
-                    // content_width minus: leading space (1) + space before arrow (1) + arrow (1) + trailing space (2)
-                    let label_display_width = str_width(label);
-                    let padding_needed = content_width.saturating_sub(label_display_width + 5);
-                    Line::from(vec![Span::styled(
-                        format!(" {}{} >  ", label, " ".repeat(padding_needed)),
-                        style,
-                    )])
-                }
-                MenuItem::Label { info } => {
-                    // Disabled info label - always shown in disabled style
-                    let style = Style::default()
-                        .fg(theme.menu_disabled_fg)
-                        .bg(theme.menu_dropdown_bg);
-                    let info_display_width = str_width(info);
-                    let padding_needed = content_width.saturating_sub(info_display_width);
-                    Line::from(vec![Span::styled(
-                        format!(" {}{}", info, " ".repeat(padding_needed)),
-                        style,
-                    )])
-                }
-            };
-
-            lines.push(line);
+            lines.push(Self::build_dropdown_item_line(
+                item,
+                content_width,
+                enabled,
+                is_highlighted,
+                is_hovered,
+                has_open_submenu,
+                keybindings,
+                theme,
+                context,
+            ));
         }
 
         let block = Block::default()
@@ -1027,16 +902,210 @@ impl MenuRenderer {
             .border_style(Style::default().fg(theme.menu_border_fg))
             .style(Style::reset().bg(theme.menu_dropdown_bg));
 
-        let paragraph = Paragraph::new(lines).block(block);
-        frame.render_widget(paragraph, dropdown_area);
+        if draw {
+            let paragraph = Paragraph::new(lines).block(block);
+            frame.render_widget(paragraph, dropdown_area);
+        }
 
         dropdown_area
+    }
+
+    /// Compute the on-screen rectangle for a dropdown of `items` anchored at
+    /// (`x`, `y`), clamped to stay within the terminal. The width is derived
+    /// from the longest label; near a screen edge the returned rect may be
+    /// smaller than desired, which callers treat as "no room to render".
+    fn fit_dropdown_area(
+        items: &[MenuItem],
+        x: u16,
+        y: u16,
+        terminal_width: u16,
+        terminal_height: u16,
+    ) -> Rect {
+        let desired_width = Self::calculate_dropdown_width(items) as u16;
+        let desired_height = (items.len() + 2) as u16; // +2 for borders
+
+        // Bounds check: ensure the dropdown fits within the visible area.
+        let adjusted_x = if x.saturating_add(desired_width) > terminal_width {
+            terminal_width.saturating_sub(desired_width)
+        } else {
+            x
+        };
+
+        let width = desired_width.min(terminal_width.saturating_sub(adjusted_x));
+        let height = desired_height.min(terminal_height.saturating_sub(y));
+
+        Rect {
+            x: adjusted_x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    /// Record the theme-key run for one dropdown item row. The fg/bg selection
+    /// mirrors the visual style chosen in [`Self::build_dropdown_item_line`] so
+    /// the theme inspector matches what is painted.
+    fn record_dropdown_item_run(
+        rec: &mut CellThemeRecorder,
+        item: &MenuItem,
+        item_area: Rect,
+        enabled: bool,
+        is_highlighted: bool,
+        has_open_submenu: bool,
+    ) {
+        let (fg, bg) = match item {
+            MenuItem::Separator { .. } => ("ui.menu_separator_fg", "ui.menu_dropdown_bg"),
+            MenuItem::Label { .. } => ("ui.menu_disabled_fg", "ui.menu_dropdown_bg"),
+            _ if !enabled => ("ui.menu_disabled_fg", "ui.menu_disabled_bg"),
+            _ if is_highlighted || has_open_submenu => {
+                ("ui.menu_highlight_fg", "ui.menu_highlight_bg")
+            }
+            _ => ("ui.menu_dropdown_fg", "ui.menu_dropdown_bg"),
+        };
+        rec.run(
+            item_area.x,
+            item_area.y,
+            item_area.width,
+            Some(fg),
+            Some(bg),
+            "Menu Dropdown",
+        );
+    }
+
+    /// Build the styled line for one dropdown item: an action (with optional
+    /// checkbox and keybinding hint), a separator, a submenu row (with the `>`
+    /// arrow), or a disabled info label.
+    #[allow(clippy::too_many_arguments)]
+    fn build_dropdown_item_line(
+        item: &MenuItem,
+        content_width: usize,
+        enabled: bool,
+        is_highlighted: bool,
+        is_hovered: bool,
+        has_open_submenu: bool,
+        keybindings: &crate::input::keybindings::KeybindingResolver,
+        theme: &Theme,
+        context: &MenuContext,
+    ) -> Line<'static> {
+        match item {
+            MenuItem::Action {
+                label,
+                action,
+                checkbox,
+                ..
+            } => {
+                let style = if !enabled {
+                    Style::default()
+                        .fg(theme.menu_disabled_fg)
+                        .bg(theme.menu_disabled_bg)
+                } else if is_highlighted {
+                    Style::default()
+                        .fg(theme.menu_highlight_fg)
+                        .bg(theme.menu_highlight_bg)
+                } else if is_hovered {
+                    Style::default()
+                        .fg(theme.menu_hover_fg)
+                        .bg(theme.menu_hover_bg)
+                } else {
+                    Style::default()
+                        .fg(theme.menu_dropdown_fg)
+                        .bg(theme.menu_dropdown_bg)
+                };
+
+                let keybinding = keybindings
+                    .find_keybinding_for_action(
+                        action,
+                        crate::input::keybindings::KeyContext::Normal,
+                    )
+                    .unwrap_or_default();
+
+                let checkbox_icon = if checkbox.is_some() {
+                    if is_checkbox_checked(checkbox, context) {
+                        "☑ "
+                    } else {
+                        "☐ "
+                    }
+                } else {
+                    ""
+                };
+
+                let checkbox_width = if checkbox.is_some() { 2 } else { 0 };
+                let label_display_width = str_width(label);
+                let keybinding_display_width = str_width(&keybinding);
+
+                let text = if keybinding.is_empty() {
+                    let padding_needed =
+                        content_width.saturating_sub(checkbox_width + label_display_width + 1);
+                    format!(" {}{}{}", checkbox_icon, label, " ".repeat(padding_needed))
+                } else {
+                    let padding_needed = content_width.saturating_sub(
+                        checkbox_width + label_display_width + keybinding_display_width + 2,
+                    );
+                    format!(
+                        " {}{}{} {}",
+                        checkbox_icon,
+                        label,
+                        " ".repeat(padding_needed),
+                        keybinding
+                    )
+                };
+
+                Line::from(vec![Span::styled(text, style)])
+            }
+            MenuItem::Separator { .. } => {
+                let separator = "─".repeat(content_width);
+                Line::from(vec![Span::styled(
+                    format!(" {separator}"),
+                    Style::default()
+                        .fg(theme.menu_separator_fg)
+                        .bg(theme.menu_dropdown_bg),
+                )])
+            }
+            MenuItem::Submenu { label, .. } | MenuItem::DynamicSubmenu { label, .. } => {
+                // Highlight submenu items that have an open child
+                let style = if is_highlighted || has_open_submenu {
+                    Style::default()
+                        .fg(theme.menu_highlight_fg)
+                        .bg(theme.menu_highlight_bg)
+                } else if is_hovered {
+                    Style::default()
+                        .fg(theme.menu_hover_fg)
+                        .bg(theme.menu_hover_bg)
+                } else {
+                    Style::default()
+                        .fg(theme.menu_dropdown_fg)
+                        .bg(theme.menu_dropdown_bg)
+                };
+
+                // Format: " Label        > " - label left-aligned, arrow near the end with padding
+                // content_width minus: leading space (1) + space before arrow (1) + arrow (1) + trailing space (2)
+                let label_display_width = str_width(label);
+                let padding_needed = content_width.saturating_sub(label_display_width + 5);
+                Line::from(vec![Span::styled(
+                    format!(" {}{} >  ", label, " ".repeat(padding_needed)),
+                    style,
+                )])
+            }
+            MenuItem::Label { info } => {
+                // Disabled info label - always shown in disabled style
+                let style = Style::default()
+                    .fg(theme.menu_disabled_fg)
+                    .bg(theme.menu_dropdown_bg);
+                let info_display_width = str_width(info);
+                let padding_needed = content_width.saturating_sub(info_display_width);
+                Line::from(vec![Span::styled(
+                    format!(" {}{}", info, " ".repeat(padding_needed)),
+                    style,
+                )])
+            }
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::MenuConfig;
     use std::collections::HashMap;
 
     fn create_test_menus() -> Vec<Menu> {

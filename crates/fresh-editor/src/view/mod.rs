@@ -79,6 +79,7 @@ pub mod prompt_input;
 pub mod query_replace_input;
 #[cfg(feature = "runtime")]
 pub mod reference_highlight_overlay;
+pub mod scene;
 #[cfg(feature = "runtime")]
 pub mod split;
 #[cfg(feature = "runtime")]

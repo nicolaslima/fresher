@@ -4,10 +4,10 @@
 
 use rust_i18n::t;
 
-use crate::primitives::display_width::str_width;
+use crate::primitives::display_width::{char_width, str_width};
 
 use super::entry_dialog::EntryDialogState;
-use super::items::SettingControl;
+use super::items::{ItemBox, ItemBoxStyle, SettingControl, SettingItem};
 use super::layout::{SettingsHit, SettingsLayout};
 use super::search::{DeepMatch, SearchResult};
 use super::state::SettingsState;
@@ -118,6 +118,39 @@ fn truncate_chars_with_ellipsis(s: &str, max_chars: usize) -> String {
         let kept: String = s.chars().take(max_chars.saturating_sub(3)).collect();
         format!("{}...", kept)
     }
+}
+
+/// Truncate `s` to at most `max_width` terminal columns, appending `"..."`.
+///
+/// Unlike [`truncate_chars_with_ellipsis`], this is display-width aware so a
+/// CJK or emoji label cannot overflow a fixed-width TUI cell after truncation.
+fn truncate_display_width_with_ellipsis(s: &str, max_width: usize) -> String {
+    if str_width(s) <= max_width {
+        return s.to_string();
+    }
+    if max_width == 0 {
+        return String::new();
+    }
+
+    let ellipsis = "...";
+    let ellipsis_width = str_width(ellipsis);
+    if max_width <= ellipsis_width {
+        return ".".repeat(max_width);
+    }
+
+    let target_width = max_width - ellipsis_width;
+    let mut kept = String::new();
+    let mut used = 0usize;
+    for ch in s.chars() {
+        let width = char_width(ch);
+        if used + width > target_width {
+            break;
+        }
+        kept.push(ch);
+        used += width;
+    }
+    kept.push_str(ellipsis);
+    kept
 }
 
 /// Render the settings modal
@@ -408,7 +441,7 @@ fn render_categories_horizontal(
 
     for (i, page) in state.pages.iter().enumerate() {
         let is_selected = i == state.selected_category;
-        let has_modified = page.items.iter().any(|item| item.modified);
+        let has_modified = state.page_has_pending_changes(i);
 
         let indicator = if has_modified { "● " } else { "  " };
         let name = &page.name;
@@ -524,6 +557,7 @@ fn render_categories(
         has_changes: bool,
         indent_cols: u16,
         is_category: bool,
+        is_plugin_category: bool,
         cat_idx: Option<usize>,
         section_idx: Option<usize>,
         label: String,
@@ -552,9 +586,10 @@ fn render_categories(
                     // Category row is "selected" iff the keyboard cursor
                     // is sitting on it (no section is the cursor target).
                     is_selected: idx == selected_category && tree_cursor.is_none(),
-                    has_changes: page.items.iter().any(|i| i.modified),
+                    has_changes: state.page_has_pending_changes(idx),
                     indent_cols: 0,
                     is_category: true,
+                    is_plugin_category: page.name.starts_with("Plugin: "),
                     cat_idx: Some(idx),
                     section_idx: None,
                     label: page.name.clone(),
@@ -579,6 +614,7 @@ fn render_categories(
                     has_changes: false,
                     indent_cols: 4,
                     is_category: false,
+                    is_plugin_category: false,
                     cat_idx: Some(cat_idx),
                     section_idx: Some(section_idx),
                     label: section.name.clone(),
@@ -666,7 +702,18 @@ fn render_categories(
             } else {
                 spans.push(Span::styled(" ", style));
             }
-            spans.push(Span::styled(data.label.clone(), style));
+            let label = if data.is_plugin_category {
+                let prefix_width: usize = spans
+                    .iter()
+                    .map(|span| str_width(span.content.as_ref()))
+                    .sum();
+                let label_width = row_area.width as usize;
+                let label_width = label_width.saturating_sub(prefix_width);
+                truncate_display_width_with_ellipsis(&data.label, label_width)
+            } else {
+                data.label.clone()
+            };
+            spans.push(Span::styled(label, style));
 
             frame.render_widget(Paragraph::new(Line::from(spans)), row_area);
 
@@ -724,20 +771,30 @@ fn render_settings_panel(
     theme: &Theme,
     layout: &mut SettingsLayout,
 ) {
-    let page = match state.current_page() {
-        Some(p) => p,
+    let (page_title, page_nullable) = match state.current_page() {
+        Some(p) => (p.name.clone(), p.nullable),
         None => return,
     };
 
-    // Page description suppressed: it duplicated the category name visible
-    // in the sidebar and pushed the actual settings down without adding
-    // information. The category names + section headers carry enough
-    // context.
     let mut y = area.y;
     let header_start_y = y;
 
+    // Right-panel page title is the full context fallback for sidebar labels,
+    // which are width-clamped because plugin names are external input.
+    if area.height > 0 && area.width > 0 {
+        let title = truncate_display_width_with_ellipsis(&page_title, area.width as usize);
+        let title_style = Style::default()
+            .fg(theme.editor_fg)
+            .add_modifier(Modifier::BOLD);
+        frame.render_widget(
+            Paragraph::new(title).style(title_style),
+            Rect::new(area.x, y, area.width, 1),
+        );
+        y += 1;
+    }
+
     // "Clear" button for nullable categories (e.g., Option<LanguageConfig>)
-    if page.nullable && state.current_category_has_values() {
+    if page_nullable && state.current_category_has_values() {
         let btn_text = format!("[{}]", t!("settings.btn_clear_category"));
         let btn_len = btn_text.len() as u16;
         let is_hovered = matches!(state.hover_hit, Some(SettingsHit::ClearCategoryButton));
@@ -798,15 +855,20 @@ fn render_settings_panel(
         .filter_map(|item| {
             // Only consider single-row controls for alignment
             match &item.control {
-                SettingControl::Toggle(s) => Some(s.label.len() as u16),
-                SettingControl::Number(s) => Some(s.label.len() as u16),
-                SettingControl::Dropdown(s) => Some(s.label.len() as u16),
-                SettingControl::Text(s) => Some(s.label.len() as u16),
+                SettingControl::Toggle(s) => Some(str_width(&s.label) as u16),
+                SettingControl::Number(s) => Some(str_width(&s.label) as u16),
+                SettingControl::Dropdown(s) => Some(str_width(&s.label) as u16),
+                SettingControl::Text(s) => Some(str_width(&s.label) as u16),
                 // Multi-row controls have their labels on separate lines
                 _ => None,
             }
         })
         .max();
+    let pending_dirty_by_item: Vec<bool> = page
+        .items
+        .iter()
+        .map(|item| state.path_has_pending_change(&item.path))
+        .collect();
 
     // Use ScrollablePanel to render items with automatic scroll handling
     let panel_layout = state.scroll_panel.render(
@@ -823,6 +885,10 @@ fn render_settings_panel(
                 &render_ctx,
                 theme,
                 max_label_width,
+                pending_dirty_by_item
+                    .get(info.index)
+                    .copied()
+                    .unwrap_or(false),
             )
         },
         theme,
@@ -890,12 +956,255 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
     lines
 }
 
+/// The vertical clip window for one item's bands: the physical `area` it
+/// occupies, the count of logical rows scrolled off the top (`skip_top`), and
+/// the exclusive logical row where the viewport ends. Bundling these three
+/// keeps the band helpers from threading the same trio of arguments around.
+#[derive(Clone, Copy)]
+struct BandViewport {
+    area: Rect,
+    skip_top: u16,
+    viewport_end_logical: u16,
+}
+
+impl BandViewport {
+    fn new(area: Rect, skip_top: u16) -> Self {
+        Self {
+            area,
+            skip_top,
+            viewport_end_logical: skip_top.saturating_add(area.height), // exclusive
+        }
+    }
+
+    /// Translate a logical band `[logical_y, logical_y + rows)` to a physical
+    /// sub-rectangle of `area`, accounting for `skip_top` clipping. Returns
+    /// `None` when the band is entirely outside the visible viewport.
+    fn band_rect(&self, logical_y: u16, rows: u16) -> Option<Rect> {
+        if rows == 0 {
+            return None;
+        }
+        let band_end = logical_y.saturating_add(rows);
+        if band_end <= self.skip_top || logical_y >= self.viewport_end_logical {
+            return None;
+        }
+        let visible_top_logical = logical_y.max(self.skip_top);
+        let visible_bottom_logical = band_end.min(self.viewport_end_logical);
+        let physical_y = self.area.y + (visible_top_logical - self.skip_top);
+        let visible_h = visible_bottom_logical - visible_top_logical;
+        Some(Rect::new(
+            self.area.x,
+            physical_y,
+            self.area.width,
+            visible_h,
+        ))
+    }
+}
+
+/// Shrink `r` horizontally, trimming `left` columns from the start and
+/// `right` columns from the end. The y/height are left untouched.
+fn inset_horizontal(r: Rect, left: u16, right: u16) -> Rect {
+    Rect::new(
+        r.x.saturating_add(left),
+        r.y,
+        r.width.saturating_sub(left.saturating_add(right)),
+        r.height,
+    )
+}
+
+/// Inset a band by the card's left chrome (border + focus indicator gutter)
+/// and right chrome (border), matching the alignment used by the control and
+/// description text.
+fn inset_by_chrome(r: Rect, style: &ItemBoxStyle) -> Rect {
+    inset_horizontal(
+        r,
+        style.card_border_cols + style.focus_indicator_cols,
+        style.card_border_cols,
+    )
+}
+
+/// Decide which edges of the card box are visible given the viewport clip.
+/// LEFT/RIGHT follow the side-border setting; TOP/BOTTOM are only drawn when
+/// their logical row actually sits inside `[skip_top, viewport_end_logical)`.
+fn card_borders(
+    style: &ItemBoxStyle,
+    card_logical_top: u16,
+    card_logical_bottom: u16,
+    vp: BandViewport,
+) -> Borders {
+    let mut borders = Borders::NONE;
+    if style.card_border_cols > 0 {
+        borders |= Borders::LEFT | Borders::RIGHT;
+    }
+    if style.card_border_rows > 0 {
+        if card_logical_top >= vp.skip_top {
+            borders |= Borders::TOP;
+        }
+        let bottom_logical = card_logical_bottom.saturating_sub(1);
+        if bottom_logical >= vp.skip_top && bottom_logical < vp.viewport_end_logical {
+            borders |= Borders::BOTTOM;
+        }
+    }
+    borders
+}
+
+/// Paint the section heading band: a blank gap on the leading rows, with the
+/// title butted against the top of the card it labels. This puts the
+/// breathing room above the heading so the title reads as "belongs to what's
+/// below" rather than "belongs to what's above".
+fn render_section_header(
+    frame: &mut Frame,
+    vp: BandViewport,
+    plan: &ItemBox,
+    item: &SettingItem,
+    theme: &Theme,
+) {
+    let Some(section_name) = item.section.as_deref().filter(|_| item.is_section_start) else {
+        return;
+    };
+    if vp.band_rect(0, plan.section_header_rows).is_none() {
+        return;
+    }
+    let title_logical_y = plan.section_header_rows.saturating_sub(1);
+    let Some(title_rect) = vp.band_rect(title_logical_y, 1) else {
+        return;
+    };
+    let header_style = Style::default()
+        .fg(theme.editor_fg)
+        .add_modifier(Modifier::BOLD);
+    frame.render_widget(
+        Paragraph::new(section_name).style(header_style),
+        Rect::new(title_rect.x, title_rect.y, title_rect.width, 1),
+    );
+}
+
+/// Render the trailing "(Inherited)" badge or "[Inherit]" button on the
+/// control's first row. Returns the button's hit-test rect when a clickable
+/// button was drawn (the badge is decorative and returns `None`).
+fn render_inherit_affordance(
+    frame: &mut Frame,
+    control_rect: Rect,
+    item: &SettingItem,
+    idx: usize,
+    hover_hit: Option<SettingsHit>,
+    theme: &Theme,
+) -> Option<Rect> {
+    if !item.nullable || control_rect.width == 0 {
+        return None;
+    }
+    if item.is_null {
+        let badge_text = t!("settings.inherited_badge").to_string();
+        let badge_len = badge_text.len() as u16 + 1;
+        let badge_x = control_rect
+            .x
+            .saturating_add(control_rect.width)
+            .saturating_sub(badge_len);
+        if badge_x > control_rect.x {
+            frame.render_widget(
+                Paragraph::new(badge_text).style(
+                    Style::default()
+                        .fg(theme.line_number_fg)
+                        .add_modifier(Modifier::ITALIC),
+                ),
+                Rect::new(badge_x, control_rect.y, badge_len, 1),
+            );
+        }
+        None
+    } else {
+        let btn_text = format!("[{}]", t!("settings.btn_inherit"));
+        let btn_len = btn_text.len() as u16 + 1;
+        let btn_x = control_rect
+            .x
+            .saturating_add(control_rect.width)
+            .saturating_sub(btn_len);
+        if btn_x <= control_rect.x {
+            return None;
+        }
+        let btn_area = Rect::new(btn_x, control_rect.y, btn_len, 1);
+        let is_hovered = matches!(hover_hit, Some(SettingsHit::ControlInherit(i)) if i == idx);
+        let btn_style = if is_hovered {
+            Style::default()
+                .fg(theme.menu_hover_fg)
+                .bg(theme.menu_hover_bg)
+        } else {
+            Style::default().fg(theme.line_number_fg)
+        };
+        frame.render_widget(Paragraph::new(btn_text).style(btn_style), btn_area);
+        Some(btn_area)
+    }
+}
+
+/// Render the wrapped description text below the control, falling back to just
+/// the config-layer label when there's no description but the source layer
+/// still needs to be shown.
+fn render_description_band(
+    frame: &mut Frame,
+    vp: BandViewport,
+    plan: &ItemBox,
+    style: &ItemBoxStyle,
+    item: &SettingItem,
+    theme: &Theme,
+) {
+    let layer_label = match item.layer_source {
+        crate::config_io::ConfigLayer::System => None,
+        crate::config_io::ConfigLayer::User => Some("user"),
+        crate::config_io::ConfigLayer::Project => Some("project"),
+        crate::config_io::ConfigLayer::Session => Some("session"),
+    };
+
+    if plan.description_rows > 0 {
+        let Some(desc_rect) = vp
+            .band_rect(plan.description_y(), plan.description_rows)
+            .map(|r| inset_by_chrome(r, style))
+        else {
+            return;
+        };
+        let desc_skip = vp.skip_top.saturating_sub(plan.description_y());
+        let max_text_width = desc_rect
+            .width
+            .saturating_sub(style.description_right_padding_cols)
+            as usize;
+        let mut lines = match item.description.as_deref() {
+            Some(d) if !d.is_empty() => wrap_text(d, max_text_width),
+            _ => Vec::new(),
+        };
+        if let Some(layer) = layer_label {
+            if let Some(last) = lines.last_mut() {
+                last.push_str(&format!(" ({})", layer));
+            } else {
+                lines.push(format!("({})", layer));
+            }
+        }
+        let desc_style = Style::default().fg(theme.line_number_fg);
+        let take = desc_rect.height as usize;
+        for (i, line) in lines.iter().skip(desc_skip as usize).take(take).enumerate() {
+            frame.render_widget(
+                Paragraph::new(line.as_str()).style(desc_style),
+                Rect::new(desc_rect.x, desc_rect.y + i as u16, desc_rect.width, 1),
+            );
+        }
+    } else if let Some(layer) = layer_label {
+        // No description, just a layer label on the row immediately below the control.
+        let Some(layer_rect) = vp
+            .band_rect(plan.description_y(), 1)
+            .map(|r| inset_by_chrome(r, style))
+        else {
+            return;
+        };
+        frame.render_widget(
+            Paragraph::new(format!("({})", layer)).style(Style::default().fg(theme.line_number_fg)),
+            layer_rect,
+        );
+    }
+}
+
 /// Pure render function for a setting item (returns layout, doesn't modify external state)
 ///
 /// Driven by `item.layout_box(area.width, &item.style)` — every y-offset comes
 /// from the resulting `ItemBox`, so adjusting card chrome (border, padding,
 /// section header height) happens by changing `ItemBoxStyle`, not by editing
-/// renderer arithmetic.
+/// renderer arithmetic. Each visual band (section header, card box, control,
+/// description) is painted by a dedicated helper; this function only computes
+/// geometry and wires them together.
 ///
 /// # Arguments
 /// * `skip_top` - Number of rows to skip at top of item (for partial visibility when scrolling)
@@ -904,81 +1213,31 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
 fn render_setting_item_pure(
     frame: &mut Frame,
     area: Rect,
-    item: &super::items::SettingItem,
+    item: &SettingItem,
     idx: usize,
     skip_top: u16,
     ctx: &RenderContext,
     theme: &Theme,
     label_width: Option<u16>,
+    pending_dirty: bool,
 ) -> SettingItemLayoutInfo {
     let plan = item.layout_box(area.width, &item.style);
     let style = item.style;
-    let viewport_end_logical = skip_top.saturating_add(area.height); // exclusive
-
-    // Translate a logical band [logical_y, logical_y + rows) to a physical
-    // sub-rectangle of `area`, accounting for `skip_top` clipping. Returns
-    // None when the band is entirely outside the visible viewport.
-    let band_rect = |logical_y: u16, rows: u16| -> Option<Rect> {
-        if rows == 0 {
-            return None;
-        }
-        let band_end = logical_y.saturating_add(rows);
-        if band_end <= skip_top || logical_y >= viewport_end_logical {
-            return None;
-        }
-        let visible_top_logical = logical_y.max(skip_top);
-        let visible_bottom_logical = band_end.min(viewport_end_logical);
-        let physical_y = area.y + (visible_top_logical - skip_top);
-        let visible_h = visible_bottom_logical - visible_top_logical;
-        Some(Rect::new(area.x, physical_y, area.width, visible_h))
-    };
+    let vp = BandViewport::new(area, skip_top);
 
     // ── Section header band ────────────────────────────────────────────────
-    // Layout: blank gap on the leading rows, title on the last row of the
-    // band. This puts the breathing room above the heading and butts the
-    // title against the card it labels, which reads as "title belongs to
-    // what's below" rather than "title belongs to what's above".
-    if let (Some(section_name), Some(_header_rect)) = (
-        item.section.as_deref().filter(|_| item.is_section_start),
-        band_rect(0, plan.section_header_rows),
-    ) {
-        let title_logical_y = plan.section_header_rows.saturating_sub(1);
-        if let Some(title_rect) = band_rect(title_logical_y, 1) {
-            let header_style = Style::default()
-                .fg(theme.editor_fg)
-                .add_modifier(Modifier::BOLD);
-            frame.render_widget(
-                Paragraph::new(section_name).style(header_style),
-                Rect::new(title_rect.x, title_rect.y, title_rect.width, 1),
-            );
-        }
-    }
+    render_section_header(frame, vp, &plan, item, theme);
 
     // ── Card box ───────────────────────────────────────────────────────────
     // The card spans logical rows [card_top_y, total_rows). Render it with a
-    // single Block, choosing which edges to draw based on which logical rows
-    // are inside the visible viewport.
+    // single Block, choosing which edges to draw based on the viewport clip.
     let card_logical_top = plan.card_top_y();
     let card_logical_bottom = plan.total_rows();
-    if let Some(card_rect) = band_rect(
+    if let Some(card_rect) = vp.band_rect(
         card_logical_top,
         card_logical_bottom.saturating_sub(card_logical_top),
     ) {
-        let mut borders = Borders::NONE;
-        if style.card_border_cols > 0 {
-            borders |= Borders::LEFT | Borders::RIGHT;
-        }
-        if style.card_border_rows > 0 {
-            // TOP edge is only visible when its logical row sits inside [skip_top, viewport_end).
-            if card_logical_top >= skip_top {
-                borders |= Borders::TOP;
-            }
-            // BOTTOM edge is the last logical row of the card.
-            let bottom_logical = card_logical_bottom.saturating_sub(1);
-            if bottom_logical >= skip_top && bottom_logical < viewport_end_logical {
-                borders |= Borders::BOTTOM;
-            }
-        }
+        let borders = card_borders(&style, card_logical_top, card_logical_bottom, vp);
         if !borders.is_empty() {
             // Subdued color for the card chrome — distinct from the
             // panel/popup border around the modal so the cards read as
@@ -1014,16 +1273,12 @@ fn render_setting_item_pure(
     let content_logical_bottom = plan.bottom_border_y();
     let mut control_layout = ControlLayoutInfo::default();
     let mut inherit_button_area: Option<Rect> = None;
-    if let Some(content_rect) = band_rect(
+    if let Some(content_rect) = vp.band_rect(
         content_logical_top,
         content_logical_bottom.saturating_sub(content_logical_top),
     ) {
-        // Trim left/right by the card side borders.
-        let inner_x = content_rect.x.saturating_add(style.card_border_cols);
-        let inner_width = content_rect
-            .width
-            .saturating_sub(2 * style.card_border_cols);
-        let inner_area = Rect::new(inner_x, content_rect.y, inner_width, content_rect.height);
+        let inner_area =
+            inset_horizontal(content_rect, style.card_border_cols, style.card_border_cols);
 
         // Highlight background for focused/hovered items. Limited to the
         // label row so chip / description text below stays on popup_bg
@@ -1032,8 +1287,8 @@ fn render_setting_item_pure(
         // `settings_selected_bg` (selected) and `menu_hover_bg` (hovered)
         // — each theme is responsible for picking values that contrast
         // with its own popup_bg AND don't collide with chip text colors.
-        let label_visible = skip_top <= content_logical_top;
-        if is_focused_or_hovered && inner_width > 0 && label_visible {
+        let label_visible = vp.skip_top <= content_logical_top;
+        if is_focused_or_hovered && inner_area.width > 0 && label_visible {
             let bg_style = if is_selected {
                 Style::default().bg(theme.settings_selected_bg)
             } else {
@@ -1046,7 +1301,7 @@ fn render_setting_item_pure(
         // skip_top relative to the start of the control band — used by
         // multi-row controls and by the description renderer to know how
         // many leading rows are off-screen.
-        let content_skip_top = skip_top.saturating_sub(content_logical_top);
+        let content_skip_top = vp.skip_top.saturating_sub(content_logical_top);
 
         // Focus indicator (`>`) at column 0 of inner area, modified marker
         // (`●`) at column 1. Only paint them when the control's first row is
@@ -1062,7 +1317,7 @@ fn render_setting_item_pure(
                 Rect::new(inner_area.x, inner_area.y, 1, 1),
             );
         }
-        if item.modified && label_row_visible && inner_area.width >= 2 {
+        if pending_dirty && label_row_visible && inner_area.width >= 2 {
             frame.render_widget(
                 Paragraph::new("●").style(Style::default().fg(theme.settings_selected_fg)),
                 Rect::new(inner_area.x + 1, inner_area.y, 1, 1),
@@ -1070,15 +1325,10 @@ fn render_setting_item_pure(
         }
 
         // Control occupies its own band at the top of the content rect.
-        let control_logical_rows = plan.control_rows;
-        if let Some(control_rect) = band_rect(content_logical_top, control_logical_rows).map(|r| {
-            let x =
-                r.x.saturating_add(style.card_border_cols + style.focus_indicator_cols);
-            let w = r
-                .width
-                .saturating_sub(2 * style.card_border_cols + style.focus_indicator_cols);
-            Rect::new(x, r.y, w, r.height)
-        }) {
+        if let Some(control_rect) = vp
+            .band_rect(content_logical_top, plan.control_rows)
+            .map(|r| inset_by_chrome(r, &style))
+        {
             control_layout = render_control(
                 frame,
                 control_rect,
@@ -1086,122 +1336,20 @@ fn render_setting_item_pure(
                 &item.name,
                 content_skip_top,
                 theme,
-                label_width
-                    .map(|w| w.saturating_sub(style.card_border_cols + style.focus_indicator_cols)),
+                label_width,
                 item.read_only,
                 item.is_null,
             );
 
-            // (Inherited) badge / [Inherit] button: rendered on the same row
-            // as the control's first line, at its right edge.
-            if item.nullable && content_skip_top == 0 && control_rect.width > 0 {
-                if item.is_null {
-                    let badge_text = t!("settings.inherited_badge").to_string();
-                    let badge_len = badge_text.len() as u16 + 1;
-                    let badge_x = control_rect
-                        .x
-                        .saturating_add(control_rect.width)
-                        .saturating_sub(badge_len);
-                    if badge_x > control_rect.x {
-                        frame.render_widget(
-                            Paragraph::new(badge_text).style(
-                                Style::default()
-                                    .fg(theme.line_number_fg)
-                                    .add_modifier(Modifier::ITALIC),
-                            ),
-                            Rect::new(badge_x, control_rect.y, badge_len, 1),
-                        );
-                    }
-                } else {
-                    let btn_text = format!("[{}]", t!("settings.btn_inherit"));
-                    let btn_len = btn_text.len() as u16 + 1;
-                    let btn_x = control_rect
-                        .x
-                        .saturating_add(control_rect.width)
-                        .saturating_sub(btn_len);
-                    if btn_x > control_rect.x {
-                        let btn_area = Rect::new(btn_x, control_rect.y, btn_len, 1);
-                        let is_hovered = matches!(
-                            ctx.hover_hit,
-                            Some(SettingsHit::ControlInherit(i)) if i == idx
-                        );
-                        let btn_style = if is_hovered {
-                            Style::default()
-                                .fg(theme.menu_hover_fg)
-                                .bg(theme.menu_hover_bg)
-                        } else {
-                            Style::default().fg(theme.line_number_fg)
-                        };
-                        frame.render_widget(Paragraph::new(btn_text).style(btn_style), btn_area);
-                        inherit_button_area = Some(btn_area);
-                    }
-                }
+            // (Inherited) badge / [Inherit] button, on the control's first row.
+            if content_skip_top == 0 {
+                inherit_button_area =
+                    render_inherit_affordance(frame, control_rect, item, idx, ctx.hover_hit, theme);
             }
         }
 
-        // Description band: below the control. Wraps to the inner text width
-        // computed by the style, falling back to a layer label when there's
-        // no description but we still need to show the source layer.
-        let desc_logical_rows = plan.description_rows;
-        let layer_label = match item.layer_source {
-            crate::config_io::ConfigLayer::System => None,
-            crate::config_io::ConfigLayer::User => Some("user"),
-            crate::config_io::ConfigLayer::Project => Some("project"),
-            crate::config_io::ConfigLayer::Session => Some("session"),
-        };
-
-        if desc_logical_rows > 0 {
-            if let Some(desc_rect) = band_rect(plan.description_y(), desc_logical_rows).map(|r| {
-                let x =
-                    r.x.saturating_add(style.card_border_cols + style.focus_indicator_cols);
-                let w = r
-                    .width
-                    .saturating_sub(2 * style.card_border_cols + style.focus_indicator_cols);
-                Rect::new(x, r.y, w, r.height)
-            }) {
-                let desc_skip = skip_top.saturating_sub(plan.description_y());
-                let max_text_width = desc_rect
-                    .width
-                    .saturating_sub(style.description_right_padding_cols)
-                    as usize;
-                let mut lines = match item.description.as_deref() {
-                    Some(d) if !d.is_empty() => wrap_text(d, max_text_width),
-                    _ => Vec::new(),
-                };
-                if let Some(layer) = layer_label {
-                    if let Some(last) = lines.last_mut() {
-                        last.push_str(&format!(" ({})", layer));
-                    } else {
-                        lines.push(format!("({})", layer));
-                    }
-                }
-                let desc_style = Style::default().fg(theme.line_number_fg);
-                let take = desc_rect.height as usize;
-                for (i, line) in lines.iter().skip(desc_skip as usize).take(take).enumerate() {
-                    frame.render_widget(
-                        Paragraph::new(line.as_str()).style(desc_style),
-                        Rect::new(desc_rect.x, desc_rect.y + i as u16, desc_rect.width, 1),
-                    );
-                }
-            }
-        } else if let Some(layer) = layer_label {
-            // No description, just a layer label on the row immediately
-            // below the control.
-            if let Some(layer_rect) = band_rect(plan.description_y(), 1).map(|r| {
-                let x =
-                    r.x.saturating_add(style.card_border_cols + style.focus_indicator_cols);
-                let w = r
-                    .width
-                    .saturating_sub(2 * style.card_border_cols + style.focus_indicator_cols);
-                Rect::new(x, r.y, w, r.height)
-            }) {
-                frame.render_widget(
-                    Paragraph::new(format!("({})", layer))
-                        .style(Style::default().fg(theme.line_number_fg)),
-                    layer_rect,
-                );
-            }
-        }
+        // Description band: below the control.
+        render_description_band(frame, vp, &plan, &style, item, theme);
     }
 
     SettingItemLayoutInfo {
@@ -1237,7 +1385,7 @@ fn render_control(
             }
             let colors = ToggleColors::from_theme(theme);
             let toggle_layout = render_toggle_aligned(frame, area, state, &colors, label_width);
-            ControlLayoutInfo::Toggle(toggle_layout.full_area)
+            ControlLayoutInfo::Toggle(toggle_layout.checkbox_area)
         }
 
         SettingControl::Number(state) => {
@@ -3021,104 +3169,103 @@ fn build_highlighted_text(
 }
 
 /// Render the unsaved changes confirmation dialog
-fn render_confirm_dialog(
+/// Draw a centered modal dialog: clear the region, paint a rounded border in
+/// `border_fg`, and return `(dialog_area, inner)` where `inner` is the
+/// 2-column / 1-row padded content rect. Shared by every settings confirm
+/// dialog so the centering, border, and inset math live in one place.
+fn centered_dialog_frame(
     frame: &mut Frame,
     parent_area: Rect,
-    state: &SettingsState,
+    width: u16,
+    height: u16,
+    title: String,
+    border_fg: Color,
     theme: &Theme,
-) {
-    // Calculate dialog size
-    let changes = state.get_change_descriptions();
-    let dialog_width = 50.min(parent_area.width.saturating_sub(4));
-    // Base height: 2 borders + 2 prompt lines + 1 separator + 1 buttons + 1 help = 7
-    // Plus one line per change
-    let dialog_height = (7 + changes.len() as u16)
-        .min(20)
-        .min(parent_area.height.saturating_sub(4));
+) -> (Rect, Rect) {
+    let dialog_x = parent_area.x + (parent_area.width.saturating_sub(width)) / 2;
+    let dialog_y = parent_area.y + (parent_area.height.saturating_sub(height)) / 2;
+    let dialog_area = Rect::new(dialog_x, dialog_y, width, height);
 
-    // Center the dialog
-    let dialog_x = parent_area.x + (parent_area.width.saturating_sub(dialog_width)) / 2;
-    let dialog_y = parent_area.y + (parent_area.height.saturating_sub(dialog_height)) / 2;
-    let dialog_area = Rect::new(dialog_x, dialog_y, dialog_width, dialog_height);
-
-    // Clear and draw border
     frame.render_widget(Clear, dialog_area);
 
-    let title = format!(" {} ", t!("confirm.unsaved_changes_title"));
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme.diagnostic_warning_fg))
+        .border_style(Style::default().fg(border_fg))
         .style(Style::default().bg(theme.popup_bg));
     frame.render_widget(block, dialog_area);
 
-    // Inner area
     let inner = Rect::new(
         dialog_area.x + 2,
         dialog_area.y + 1,
         dialog_area.width.saturating_sub(4),
         dialog_area.height.saturating_sub(2),
     );
+    (dialog_area, inner)
+}
 
-    let mut y = inner.y;
-
-    // Prompt text
-    let prompt = t!("confirm.unsaved_changes_prompt").to_string();
-    let prompt_style = Style::default().fg(theme.popup_text_fg);
+/// Render the standard one-line key-hint footer just below the button row.
+fn render_dialog_help(frame: &mut Frame, inner: Rect, button_y: u16, help: &str, theme: &Theme) {
     frame.render_widget(
-        Paragraph::new(prompt).style(prompt_style),
-        Rect::new(inner.x, y, inner.width, 1),
+        Paragraph::new(help.to_string()).style(Style::default().fg(theme.line_number_fg)),
+        Rect::new(inner.x, button_y + 1, inner.width, 1),
     );
-    y += 2;
+}
 
-    // List changes. Character-based truncation here (rather than byte
-    // truncation) keeps CJK / emoji change descriptions from byte-slicing
-    // through a multi-byte UTF-8 sequence and panicking — same class as
-    // #1718.
+/// List the pending-change descriptions as bulleted, width-truncated lines
+/// starting at `start_y`. Character-based truncation (rather than byte
+/// truncation) keeps CJK / emoji descriptions from slicing through a
+/// multi-byte UTF-8 sequence and panicking — same class as #1718.
+fn render_change_list(
+    frame: &mut Frame,
+    inner: Rect,
+    start_y: u16,
+    changes: &[String],
+    dialog_height: u16,
+    theme: &Theme,
+) {
     let change_style = Style::default().fg(theme.popup_text_fg);
-    for change in changes
+    for (i, change) in changes
         .iter()
         .take((dialog_height as usize).saturating_sub(7))
+        .enumerate()
     {
         let max_chars = (inner.width as usize).saturating_sub(2);
         let truncated = format!("• {}", truncate_chars_with_ellipsis(change, max_chars));
         frame.render_widget(
             Paragraph::new(truncated).style(change_style),
-            Rect::new(inner.x, y, inner.width, 1),
+            Rect::new(inner.x, start_y + i as u16, inner.width, 1),
         );
-        y += 1;
     }
+}
 
-    // Skip to button row
-    let button_y = dialog_area.y + dialog_area.height - 3;
-
-    // Draw separator
-    let sep_line: String = "─".repeat(inner.width as usize);
-    frame.render_widget(
-        Paragraph::new(sep_line).style(Style::default().fg(theme.split_separator_fg)),
-        Rect::new(inner.x, button_y - 1, inner.width, 1),
-    );
-
-    // Render the three options
-    let options = [
-        t!("confirm.save_and_exit").to_string(),
-        t!("confirm.discard").to_string(),
-        t!("confirm.cancel").to_string(),
-    ];
+/// Render a centered row of `[ label ]` choice buttons using the menu
+/// highlight/hover palette. The selected button is prefixed with `>` and bold;
+/// a hovered (but unselected) button uses the hover palette. Shared by the
+/// unsaved-changes and reset confirm dialogs.
+fn render_choice_buttons(
+    frame: &mut Frame,
+    inner: Rect,
+    button_y: u16,
+    options: &[String],
+    selected: usize,
+    hover: Option<usize>,
+    theme: &Theme,
+) {
     let total_width: u16 = options.iter().map(|o| o.len() as u16 + 4).sum::<u16>() + 4; // +4 for gaps
     let mut x = inner.x + (inner.width.saturating_sub(total_width)) / 2;
 
     for (idx, label) in options.iter().enumerate() {
-        let is_selected = idx == state.confirm_dialog_selection;
-        let is_hovered = state.confirm_dialog_hover == Some(idx);
+        let is_selected = idx == selected;
+        let is_hovered = hover == Some(idx);
         let button_width = label.len() as u16 + 4;
 
         let style = if is_selected {
             Style::default()
                 .fg(theme.menu_highlight_fg)
                 .bg(theme.menu_highlight_bg)
-                .add_modifier(ratatui::style::Modifier::BOLD)
+                .add_modifier(Modifier::BOLD)
         } else if is_hovered {
             Style::default()
                 .fg(theme.menu_hover_fg)
@@ -3139,181 +3286,29 @@ fn render_confirm_dialog(
 
         x += button_width + 3;
     }
-
-    // Help text
-    let help = "←/→/Tab: Select   Enter: Confirm   Esc: Cancel";
-    let help_style = Style::default().fg(theme.line_number_fg);
-    frame.render_widget(
-        Paragraph::new(help).style(help_style),
-        Rect::new(inner.x, button_y + 1, inner.width, 1),
-    );
 }
 
-/// Render the reset confirmation dialog
-fn render_reset_dialog(frame: &mut Frame, parent_area: Rect, state: &SettingsState, theme: &Theme) {
-    let changes = state.get_change_descriptions();
-    let dialog_width = 50.min(parent_area.width.saturating_sub(4));
-    // Base height: 2 borders + 2 prompt lines + 1 separator + 1 buttons + 1 help = 7
-    // Plus one line per change
-    let dialog_height = (7 + changes.len() as u16)
-        .min(20)
-        .min(parent_area.height.saturating_sub(4));
-
-    // Center the dialog
-    let dialog_x = parent_area.x + (parent_area.width.saturating_sub(dialog_width)) / 2;
-    let dialog_y = parent_area.y + (parent_area.height.saturating_sub(dialog_height)) / 2;
-    let dialog_area = Rect::new(dialog_x, dialog_y, dialog_width, dialog_height);
-
-    // Clear and draw border
-    frame.render_widget(Clear, dialog_area);
-
-    let block = Block::default()
-        .title(" Reset All Changes ")
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme.diagnostic_warning_fg))
-        .style(Style::default().bg(theme.popup_bg));
-    frame.render_widget(block, dialog_area);
-
-    // Inner area
-    let inner = Rect::new(
-        dialog_area.x + 2,
-        dialog_area.y + 1,
-        dialog_area.width.saturating_sub(4),
-        dialog_area.height.saturating_sub(2),
-    );
-
-    let mut y = inner.y;
-
-    // Prompt text
-    let prompt_style = Style::default().fg(theme.popup_text_fg);
-    frame.render_widget(
-        Paragraph::new("Discard all pending changes?").style(prompt_style),
-        Rect::new(inner.x, y, inner.width, 1),
-    );
-    y += 2;
-
-    // List changes. Character-based truncation here (rather than byte
-    // truncation) keeps CJK / emoji change descriptions from byte-slicing
-    // through a multi-byte UTF-8 sequence and panicking — same class as
-    // #1718.
-    let change_style = Style::default().fg(theme.popup_text_fg);
-    for change in changes
-        .iter()
-        .take((dialog_height as usize).saturating_sub(7))
-    {
-        let max_chars = (inner.width as usize).saturating_sub(2);
-        let truncated = format!("• {}", truncate_chars_with_ellipsis(change, max_chars));
-        frame.render_widget(
-            Paragraph::new(truncated).style(change_style),
-            Rect::new(inner.x, y, inner.width, 1),
-        );
-        y += 1;
-    }
-
-    // Skip to button row
-    let button_y = dialog_area.y + dialog_area.height - 3;
-
-    // Draw separator
-    let sep_line: String = "─".repeat(inner.width as usize);
-    frame.render_widget(
-        Paragraph::new(sep_line).style(Style::default().fg(theme.split_separator_fg)),
-        Rect::new(inner.x, button_y - 1, inner.width, 1),
-    );
-
-    // Render the two options: Reset, Cancel
-    let options = ["Reset", "Cancel"];
-    let total_width: u16 = options.iter().map(|o| o.len() as u16 + 4).sum::<u16>() + 4;
-    let mut x = inner.x + (inner.width.saturating_sub(total_width)) / 2;
-
-    for (idx, label) in options.iter().enumerate() {
-        let is_selected = idx == state.reset_dialog_selection;
-        let is_hovered = state.reset_dialog_hover == Some(idx);
-        let button_width = label.len() as u16 + 4;
-
-        let style = if is_selected {
-            Style::default()
-                .fg(theme.menu_highlight_fg)
-                .bg(theme.menu_highlight_bg)
-                .add_modifier(ratatui::style::Modifier::BOLD)
-        } else if is_hovered {
-            Style::default()
-                .fg(theme.menu_hover_fg)
-                .bg(theme.menu_hover_bg)
-        } else {
-            Style::default().fg(theme.popup_text_fg)
-        };
-
-        let text = if is_selected {
-            format!(">[ {} ]", label)
-        } else {
-            format!(" [ {} ]", label)
-        };
-        frame.render_widget(
-            Paragraph::new(text).style(style),
-            Rect::new(x, button_y, button_width + 1, 1),
-        );
-
-        x += button_width + 3;
-    }
-
-    // Help text
-    let help = "←/→/Tab: Select   Enter: Confirm   Esc: Cancel";
-    let help_style = Style::default().fg(theme.line_number_fg);
-    frame.render_widget(
-        Paragraph::new(help).style(help_style),
-        Rect::new(inner.x, button_y + 1, inner.width, 1),
-    );
-}
-
-/// Render the "Discard changes?" prompt that appears when the user
-/// presses Esc on a dirty entry dialog.
-fn render_entry_discard_confirm(
+/// Render a centered row of `[ label ]` buttons for a destructive-action
+/// confirm dialog: the button at `destructive_idx` is tinted with the danger
+/// foreground, and the selected button gets the popup-selection background.
+/// Shared by the entry discard / delete confirm dialogs.
+fn render_destructive_buttons(
     frame: &mut Frame,
-    parent_area: Rect,
-    state: &SettingsState,
+    inner: Rect,
+    button_y: u16,
+    options: &[&str],
+    selected: usize,
+    destructive_idx: usize,
     theme: &Theme,
 ) {
-    let dialog_width = 50.min(parent_area.width.saturating_sub(4));
-    let dialog_height = 7u16.min(parent_area.height.saturating_sub(4));
-    let dialog_x = parent_area.x + (parent_area.width.saturating_sub(dialog_width)) / 2;
-    let dialog_y = parent_area.y + (parent_area.height.saturating_sub(dialog_height)) / 2;
-    let dialog_area = Rect::new(dialog_x, dialog_y, dialog_width, dialog_height);
-
-    frame.render_widget(Clear, dialog_area);
-
-    let block = Block::default()
-        .title(" Discard changes? ")
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme.diagnostic_warning_fg))
-        .style(Style::default().bg(theme.popup_bg));
-    frame.render_widget(block, dialog_area);
-
-    let inner = Rect::new(
-        dialog_area.x + 2,
-        dialog_area.y + 1,
-        dialog_area.width.saturating_sub(4),
-        dialog_area.height.saturating_sub(2),
-    );
-
-    let prompt_style = Style::default().fg(theme.popup_text_fg);
-    frame.render_widget(
-        Paragraph::new("You have uncommitted edits in this dialog.").style(prompt_style),
-        Rect::new(inner.x, inner.y, inner.width, 1),
-    );
-
-    // Buttons. 0 = Keep editing (default), 1 = Discard. Discard styled
-    // in the danger fg to make the destructive choice unmistakable.
-    let button_y = dialog_area.y + dialog_area.height - 3;
-    let options = ["Keep editing", "Discard"];
-    let total_width: u16 = options.iter().map(|o| o.len() as u16 + 4).sum::<u16>() + 4;
+    let total_width: u16 =
+        options.iter().map(|o| o.len() as u16 + 5).sum::<u16>() + 2 * (options.len() as u16 - 1);
     let mut x = inner.x + (inner.width.saturating_sub(total_width)) / 2;
 
     for (idx, label) in options.iter().enumerate() {
-        let is_selected = idx == state.entry_discard_confirm_selection;
-        let is_discard = idx == 1;
-        let style = if is_selected && is_discard {
+        let is_selected = idx == selected;
+        let is_destructive = idx == destructive_idx;
+        let style = if is_selected && is_destructive {
             Style::default()
                 .fg(theme.diagnostic_error_fg)
                 .bg(theme.popup_selection_bg)
@@ -3323,7 +3318,7 @@ fn render_entry_discard_confirm(
                 .fg(theme.popup_selection_fg)
                 .bg(theme.popup_selection_bg)
                 .add_modifier(Modifier::BOLD)
-        } else if is_discard {
+        } else if is_destructive {
             Style::default()
                 .fg(theme.diagnostic_error_fg)
                 .add_modifier(Modifier::BOLD)
@@ -3342,12 +3337,173 @@ fn render_entry_discard_confirm(
         );
         x += w + 2;
     }
+}
 
-    let help = "Tab/←→: Select   Enter: Confirm   Esc: Keep editing";
-    let help_style = Style::default().fg(theme.line_number_fg);
+fn render_confirm_dialog(
+    frame: &mut Frame,
+    parent_area: Rect,
+    state: &SettingsState,
+    theme: &Theme,
+) {
+    let changes = state.get_change_descriptions();
+    let dialog_width = 50.min(parent_area.width.saturating_sub(4));
+    // Base height: 2 borders + 2 prompt lines + 1 separator + 1 buttons + 1 help = 7
+    // Plus one line per change
+    let dialog_height = (7 + changes.len() as u16)
+        .min(20)
+        .min(parent_area.height.saturating_sub(4));
+
+    let title = format!(" {} ", t!("confirm.unsaved_changes_title"));
+    let (dialog_area, inner) = centered_dialog_frame(
+        frame,
+        parent_area,
+        dialog_width,
+        dialog_height,
+        title,
+        theme.diagnostic_warning_fg,
+        theme,
+    );
+
+    // Prompt text
+    let prompt = t!("confirm.unsaved_changes_prompt").to_string();
     frame.render_widget(
-        Paragraph::new(help).style(help_style),
-        Rect::new(inner.x, button_y + 1, inner.width, 1),
+        Paragraph::new(prompt).style(Style::default().fg(theme.popup_text_fg)),
+        Rect::new(inner.x, inner.y, inner.width, 1),
+    );
+    render_change_list(frame, inner, inner.y + 2, &changes, dialog_height, theme);
+
+    let button_y = dialog_area.y + dialog_area.height - 3;
+
+    // Draw separator
+    let sep_line: String = "─".repeat(inner.width as usize);
+    frame.render_widget(
+        Paragraph::new(sep_line).style(Style::default().fg(theme.split_separator_fg)),
+        Rect::new(inner.x, button_y - 1, inner.width, 1),
+    );
+
+    let options = [
+        t!("confirm.save_and_exit").to_string(),
+        t!("confirm.discard").to_string(),
+        t!("confirm.cancel").to_string(),
+    ];
+    render_choice_buttons(
+        frame,
+        inner,
+        button_y,
+        &options,
+        state.confirm_dialog_selection,
+        state.confirm_dialog_hover,
+        theme,
+    );
+    render_dialog_help(
+        frame,
+        inner,
+        button_y,
+        "←/→/Tab: Select   Enter: Confirm   Esc: Cancel",
+        theme,
+    );
+}
+
+/// Render the reset confirmation dialog
+fn render_reset_dialog(frame: &mut Frame, parent_area: Rect, state: &SettingsState, theme: &Theme) {
+    let changes = state.get_change_descriptions();
+    let dialog_width = 50.min(parent_area.width.saturating_sub(4));
+    // Base height: 2 borders + 2 prompt lines + 1 separator + 1 buttons + 1 help = 7
+    // Plus one line per change
+    let dialog_height = (7 + changes.len() as u16)
+        .min(20)
+        .min(parent_area.height.saturating_sub(4));
+
+    let (dialog_area, inner) = centered_dialog_frame(
+        frame,
+        parent_area,
+        dialog_width,
+        dialog_height,
+        " Reset All Changes ".to_string(),
+        theme.diagnostic_warning_fg,
+        theme,
+    );
+
+    // Prompt text
+    frame.render_widget(
+        Paragraph::new("Discard all pending changes?")
+            .style(Style::default().fg(theme.popup_text_fg)),
+        Rect::new(inner.x, inner.y, inner.width, 1),
+    );
+    render_change_list(frame, inner, inner.y + 2, &changes, dialog_height, theme);
+
+    let button_y = dialog_area.y + dialog_area.height - 3;
+
+    // Draw separator
+    let sep_line: String = "─".repeat(inner.width as usize);
+    frame.render_widget(
+        Paragraph::new(sep_line).style(Style::default().fg(theme.split_separator_fg)),
+        Rect::new(inner.x, button_y - 1, inner.width, 1),
+    );
+
+    let options = ["Reset".to_string(), "Cancel".to_string()];
+    render_choice_buttons(
+        frame,
+        inner,
+        button_y,
+        &options,
+        state.reset_dialog_selection,
+        state.reset_dialog_hover,
+        theme,
+    );
+    render_dialog_help(
+        frame,
+        inner,
+        button_y,
+        "←/→/Tab: Select   Enter: Confirm   Esc: Cancel",
+        theme,
+    );
+}
+
+/// Render the "Discard changes?" prompt that appears when the user
+/// presses Esc on a dirty entry dialog.
+fn render_entry_discard_confirm(
+    frame: &mut Frame,
+    parent_area: Rect,
+    state: &SettingsState,
+    theme: &Theme,
+) {
+    let dialog_width = 50.min(parent_area.width.saturating_sub(4));
+    let dialog_height = 7u16.min(parent_area.height.saturating_sub(4));
+    let (dialog_area, inner) = centered_dialog_frame(
+        frame,
+        parent_area,
+        dialog_width,
+        dialog_height,
+        " Discard changes? ".to_string(),
+        theme.diagnostic_warning_fg,
+        theme,
+    );
+
+    frame.render_widget(
+        Paragraph::new("You have uncommitted edits in this dialog.")
+            .style(Style::default().fg(theme.popup_text_fg)),
+        Rect::new(inner.x, inner.y, inner.width, 1),
+    );
+
+    // Buttons. 0 = Keep editing (default), 1 = Discard. Discard styled
+    // in the danger fg to make the destructive choice unmistakable.
+    let button_y = dialog_area.y + dialog_area.height - 3;
+    render_destructive_buttons(
+        frame,
+        inner,
+        button_y,
+        &["Keep editing", "Discard"],
+        state.entry_discard_confirm_selection,
+        1,
+        theme,
+    );
+    render_dialog_help(
+        frame,
+        inner,
+        button_y,
+        "Tab/←→: Select   Enter: Confirm   Esc: Keep editing",
+        theme,
     );
 }
 
@@ -3389,11 +3545,6 @@ fn render_entry_delete_confirm(
 ) {
     let dialog_width = 60.min(parent_area.width.saturating_sub(4));
     let dialog_height = 7u16.min(parent_area.height.saturating_sub(4));
-    let dialog_x = parent_area.x + (parent_area.width.saturating_sub(dialog_width)) / 2;
-    let dialog_y = parent_area.y + (parent_area.height.saturating_sub(dialog_height)) / 2;
-    let dialog_area = Rect::new(dialog_x, dialog_y, dialog_width, dialog_height);
-
-    frame.render_widget(Clear, dialog_area);
 
     let title = if !state.entry_delete_target_name.is_empty() {
         format!(" Delete \"{}\"? ", state.entry_delete_target_name)
@@ -3403,19 +3554,14 @@ fn render_entry_delete_confirm(
         " Delete entry? ".to_string()
     };
 
-    let block = Block::default()
-        .title(title)
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme.diagnostic_error_fg))
-        .style(Style::default().bg(theme.popup_bg));
-    frame.render_widget(block, dialog_area);
-
-    let inner = Rect::new(
-        dialog_area.x + 2,
-        dialog_area.y + 1,
-        dialog_area.width.saturating_sub(4),
-        dialog_area.height.saturating_sub(2),
+    let (dialog_area, inner) = centered_dialog_frame(
+        frame,
+        parent_area,
+        dialog_width,
+        dialog_height,
+        title,
+        theme.diagnostic_error_fg,
+        theme,
     );
 
     let body = if !state.entry_delete_target_name.is_empty() {
@@ -3428,55 +3574,27 @@ fn render_entry_delete_confirm(
     } else {
         "This will permanently remove the entry.".to_string()
     };
-    let prompt_style = Style::default().fg(theme.popup_text_fg);
     frame.render_widget(
-        Paragraph::new(body).style(prompt_style),
+        Paragraph::new(body).style(Style::default().fg(theme.popup_text_fg)),
         Rect::new(inner.x, inner.y, inner.width, 1),
     );
 
     let button_y = dialog_area.y + dialog_area.height - 3;
-    let options = ["Cancel", "Delete"];
-    let total_width: u16 = options.iter().map(|o| o.len() as u16 + 5).sum::<u16>() + 2;
-    let mut x = inner.x + (inner.width.saturating_sub(total_width)) / 2;
-
-    for (idx, label) in options.iter().enumerate() {
-        let is_selected = idx == state.entry_delete_confirm_selection;
-        let is_delete = idx == 1;
-        let style = if is_selected && is_delete {
-            Style::default()
-                .fg(theme.diagnostic_error_fg)
-                .bg(theme.popup_selection_bg)
-                .add_modifier(Modifier::BOLD)
-        } else if is_selected {
-            Style::default()
-                .fg(theme.popup_selection_fg)
-                .bg(theme.popup_selection_bg)
-                .add_modifier(Modifier::BOLD)
-        } else if is_delete {
-            Style::default()
-                .fg(theme.diagnostic_error_fg)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(theme.popup_text_fg)
-        };
-        let text = if is_selected {
-            format!(">[ {} ]", label)
-        } else {
-            format!(" [ {} ]", label)
-        };
-        let w = label.len() as u16 + 5;
-        frame.render_widget(
-            Paragraph::new(text).style(style),
-            Rect::new(x, button_y, w, 1),
-        );
-        x += w + 2;
-    }
-
-    let help = "Tab/←→: Select   Enter: Confirm   Esc: Cancel";
-    let help_style = Style::default().fg(theme.line_number_fg);
-    frame.render_widget(
-        Paragraph::new(help).style(help_style),
-        Rect::new(inner.x, button_y + 1, inner.width, 1),
+    render_destructive_buttons(
+        frame,
+        inner,
+        button_y,
+        &["Cancel", "Delete"],
+        state.entry_delete_confirm_selection,
+        1,
+        theme,
+    );
+    render_dialog_help(
+        frame,
+        inner,
+        button_y,
+        "Tab/←→: Select   Enter: Confirm   Esc: Cancel",
+        theme,
     );
 }
 
@@ -3662,6 +3780,67 @@ fn render_entry_items(
             item.read_only,
             item.is_null,
         );
+
+        // Per-field affordances on the control's first row at the right edge:
+        // a dim `(Inherited)` badge when the value is inherited, otherwise the
+        // applicable action buttons (`[Reset]` to the built-in default and/or
+        // `[Inherit]` to the global/parent value). A field only offers the
+        // action(s) that lead to a different result (issue #2345). Hit-testing
+        // mirrors this geometry in `handle_entry_dialog_item_click`.
+        if !item.read_only && skip_rows == 0 && control_area.width > 0 {
+            let right_edge = control_area.x.saturating_add(control_area.width);
+            let inherits = dialog
+                .inheritable_fields
+                .contains(item.path.trim_start_matches('/'));
+            if item.nullable && item.is_null {
+                // Only show the "(Inherited)" badge when the unset value really
+                // does inherit a parent value; a clear-only field (e.g. a
+                // formatter) just reads as empty/not-set.
+                if inherits {
+                    let badge = t!("settings.inherited_badge").to_string();
+                    let w = badge.chars().count() as u16 + 1;
+                    let x = right_edge.saturating_sub(w);
+                    if x > control_area.x {
+                        frame.render_widget(
+                            Paragraph::new(badge).style(
+                                Style::default()
+                                    .fg(theme.line_number_fg)
+                                    .add_modifier(Modifier::ITALIC),
+                            ),
+                            Rect::new(x, screen_y, w, 1),
+                        );
+                    }
+                }
+            } else {
+                let buttons = dialog.field_action_buttons(idx);
+                let positions =
+                    super::entry_dialog::layout_field_action_buttons(&buttons, right_edge);
+                let focused = if dialog.selected_item == idx {
+                    dialog.field_button_focus
+                } else {
+                    None
+                };
+                for (bi, ((_, label), (_, x, w))) in
+                    buttons.iter().zip(positions.iter()).enumerate()
+                {
+                    if *x <= control_area.x {
+                        continue;
+                    }
+                    let style = if Some(bi) == focused {
+                        Style::default()
+                            .fg(theme.menu_hover_fg)
+                            .bg(theme.menu_hover_bg)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(theme.line_number_fg)
+                    };
+                    frame.render_widget(
+                        Paragraph::new(label.clone()).style(style),
+                        Rect::new(*x, screen_y, *w, 1),
+                    );
+                }
+            }
+        }
 
         screen_y += render_height as u16;
         content_y = item_end;
@@ -3880,7 +4059,7 @@ fn render_entry_footer(
     } else {
         // The `●:modified` legend is the only place that explains the row-indicator.
         (
-            "↑↓:Navigate  Tab:Fields/Buttons  Enter:Edit  Ctrl+S:Save  Ctrl+R:Reset  Esc:Cancel  ●:modified",
+            "↑↓:Navigate  Tab:Fields/Buttons  Enter:Edit/Apply  Ctrl+S:Save  Esc:Cancel  ●:modified",
             Style::default().fg(theme.line_number_fg),
         )
     };
@@ -4098,6 +4277,28 @@ mod tests {
         let out = truncate_chars_with_ellipsis("📦📦📦📦📦📦📦📦", 5);
         assert!(out.ends_with("..."));
         assert_eq!(out.chars().count(), 5);
+    }
+
+    #[test]
+    fn truncate_display_width_with_ellipsis_ascii_truncates_to_width() {
+        let out = truncate_display_width_with_ellipsis("Plugin: very-long-plugin-name", 18);
+        assert_eq!(out, "Plugin: very-lo...");
+        assert!(str_width(&out) <= 18);
+    }
+
+    #[test]
+    fn truncate_display_width_with_ellipsis_handles_tiny_widths() {
+        assert_eq!(truncate_display_width_with_ellipsis("abcdef", 0), "");
+        assert_eq!(truncate_display_width_with_ellipsis("abcdef", 1), ".");
+        assert_eq!(truncate_display_width_with_ellipsis("abcdef", 2), "..");
+        assert_eq!(truncate_display_width_with_ellipsis("abcdef", 3), "...");
+    }
+
+    #[test]
+    fn truncate_display_width_with_ellipsis_multicolumn_does_not_overflow() {
+        let out = truncate_display_width_with_ellipsis("Plugin: 你好世界📦📦", 14);
+        assert!(out.ends_with("..."));
+        assert!(str_width(&out) <= 14, "{out:?} was too wide");
     }
 
     // Basic compile test - actual rendering tests would need a test backend

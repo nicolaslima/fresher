@@ -110,6 +110,31 @@ editor.on("lsp_references", async (data) => {
   });
 });
 
+// Handle lsp_implementation hook — implementation results reuse the same
+// "list of locations" Finder UX as references, just with a different title.
+editor.on("lsp_implementation", async (data) => {
+  editor.debug(
+    `Received ${data.locations.length} implementations for '${data.symbol}'`
+  );
+
+  if (data.locations.length === 0) {
+    editor.setStatus(`No implementation found for '${data.symbol}'`);
+    return;
+  }
+
+  // Load line content for descriptions
+  pendingRefs = await loadLineContent(data.locations);
+
+  // Use prompt mode with filter source - same UX as references/grep plugins
+  finder.prompt({
+    title: `Implementations of '${data.symbol}' (${data.locations.length})`,
+    source: {
+      mode: "filter",
+      load: async () => pendingRefs,
+    },
+  });
+});
+
 // Close function for command palette
 function close_references() : void {
   finder.close();

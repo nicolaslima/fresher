@@ -1,6 +1,6 @@
 //! In-process control listener for "direct" (non-server) mode.
 //!
-//! When Fresh runs as a plain in-process editor (no detached session
+//! When Fresh runs as a plain in-process editor (no detached daemon
 //! server), it still binds a *control* socket so that a `fresh`
 //! invoked from inside its own embedded terminal can forward
 //! file/directory open requests back to this process instead of
@@ -24,7 +24,7 @@
 //!
 //! This deliberately reuses the same IPC primitives ([`ServerListener`],
 //! [`ServerConnection`]) and wire protocol ([`ClientControl`] /
-//! [`ServerControl`]) as the full session server, but does *not* render:
+//! [`ServerControl`]) as the full daemon server, but does *not* render:
 //! the direct-mode crossterm render/input path is untouched.
 
 use std::collections::HashMap;
@@ -178,7 +178,7 @@ pub fn pump(editor: &mut Editor) -> bool {
                 let last = files.len().saturating_sub(1);
                 for (i, fr) in files.into_iter().enumerate() {
                     // Only the last file carries the wait id (it's the one
-                    // left active), mirroring the session server.
+                    // left active), mirroring the daemon server.
                     let file_wait_id = if i == last { wait_id } else { None };
                     editor.queue_file_open(
                         PathBuf::from(fr.path),
@@ -192,7 +192,7 @@ pub fn pump(editor: &mut Editor) -> bool {
                 }
                 // Open them in the window that is active *now*, before any
                 // later OpenWindow request in this same batch switches the
-                // active window. ("Open a file → current session"; only
+                // active window. ("Open a file → current workspace"; only
                 // directories spawn a new one.) This also installs the
                 // wait_tracking that `take_completed_waits` reports below.
                 editor.process_pending_file_opens();
@@ -204,12 +204,19 @@ pub fn pump(editor: &mut Editor) -> bool {
                         .file_name()
                         .map(|s| s.to_string_lossy().into_owned())
                         .unwrap_or_else(|| path.to_string_lossy().into_owned());
+                    // A directory that already has a session window is
+                    // restored by `set_active_window` → `materialize_window`
+                    // and keeps its persisted explorer visibility. Only a
+                    // brand-new directory gets the fresh-session default,
+                    // mirroring a normal `fresh <dir>` launch instead of
+                    // leaving the new window on an empty buffer.
+                    let known_session = editor.find_window_by_root(&path).is_some();
                     let id = editor.create_window_at(path, label);
                     editor.set_active_window(id);
-                    // Match a normal `fresh <dir>` launch, which opens the
-                    // file explorer for a directory argument (see `main.rs`),
-                    // rather than leaving the new window on an empty buffer.
-                    editor.show_file_explorer();
+                    if !known_session {
+                        editor.apply_active_window_explorer_default(false, false);
+                        editor.relayout();
+                    }
                     changed = true;
                 } else {
                     tracing::warn!("OpenWindow ignored: path must be absolute: {:?}", path);
@@ -293,7 +300,7 @@ fn handle_connection(
     loop {
         // Re-assert blocking mode before every read. `accept()` leaves the
         // socket non-blocking, and `ServerConnection::write_control` (shared
-        // with the poll-driven session server) flips it back to non-blocking
+        // with the poll-driven daemon server) flips it back to non-blocking
         // after each reply — so without this a blocking `read_line` would
         // return `WouldBlock` immediately, drop the connection, and leave the
         // nested client to fall back to inline. We read blocking here.
@@ -356,7 +363,7 @@ fn handle_connection(
 }
 
 /// Read the `Hello`, version-check, and reply with `ServerHello` — the
-/// same shape as the session server's handshake, minus the data-channel
+/// same shape as the daemon server's handshake, minus the data-channel
 /// terminal setup (nested clients never render).
 ///
 /// Shares the connection's [`BufReader`] with the post-handshake command

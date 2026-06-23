@@ -40,14 +40,14 @@ const BEFORE_HELP_EN: &str =
 // The doc comments on `Cli` and its fields are intentionally short and
 // only used by the derive — the English `before_help` banner below is
 // the user's escape hatch back to a known language.
-/// fresher
+/// fresh
 #[derive(Parser, Debug)]
-#[command(name = "fresher")]
+#[command(name = "fresh")]
 #[command(version, propagate_version = true)]
 #[command(before_help = BEFORE_HELP_EN)]
 struct Cli {
     /// Run a command instead of opening files
-    /// Commands: session (list|attach|new|kill|open-file), config (show|paths), grammar (list), init
+    /// Commands: daemon (list|attach|new|kill|open-file), config (show|paths), grammar (list), init
     #[arg(long, num_args = 1.., value_name = "COMMAND", allow_hyphen_values = true)]
     cmd: Vec<String>,
 
@@ -55,7 +55,7 @@ struct Cli {
     #[arg(value_name = "FILES")]
     files: Vec<String>,
 
-    /// Attach to session. Use -a for current dir, -a NAME for named session
+    /// Attach to a daemon. Use -a for current dir, -a NAME for a named daemon
     #[arg(short = 'a', long, value_name = "NAME", num_args = 0..=1, default_missing_value = "")]
     attach: Option<String>,
 
@@ -67,7 +67,7 @@ struct Cli {
     #[arg(long)]
     no_plugins: bool,
 
-    /// Skip `~/.config/fresher/init.ts` for this launch
+    /// Skip `~/.config/fresh/init.ts` for this launch
     #[arg(long)]
     no_init: bool,
 
@@ -124,11 +124,11 @@ struct Cli {
     ssh_url: Option<String>,
 
     // === Deprecated flags from pre-subcommand CLI (hidden, with warnings) ===
-    /// [deprecated: use `fresher config show`]
+    /// [deprecated: use `fresh config show`]
     #[arg(long, hide = true)]
     dump_config: bool,
 
-    /// [deprecated: use `fresher config paths`]
+    /// [deprecated: use `fresh config paths`]
     #[arg(long, hide = true)]
     show_paths: bool,
 
@@ -136,7 +136,7 @@ struct Cli {
     #[arg(long, hide = true, value_name = "PLUGIN_PATH")]
     check_plugin: Option<PathBuf>,
 
-    /// [deprecated: use `fresher init`]
+    /// [deprecated: use `fresh init`]
     #[arg(long, hide = true, value_name = "TYPE")]
     init: Option<Option<String>>,
 
@@ -174,12 +174,12 @@ struct Args {
     /// when the client saw an `ssh://` / scp-style remote in
     /// `files`.  Populated only for the daemon side.
     ssh_url: Option<String>,
-    // Session-related fields (set via subcommands or -a shortcut)
+    // Daemon-related fields (set via subcommands or -a shortcut)
     attach: bool,
     list_sessions: bool,
     session_name: Option<String>,
     kill: Option<Option<String>>,
-    /// Open files in a session without attaching (session_name, files, wait)
+    /// Open files in a daemon without attaching (session_name, files, wait)
     open_files_in_session: Option<(Option<String>, Vec<String>, bool)>,
     /// Launch in GUI mode
     #[cfg(feature = "gui")]
@@ -214,13 +214,20 @@ impl From<Cli> for Args {
             // Parse command from --cmd arguments
             let cmd_args: Vec<&str> = cli.cmd.iter().map(|s| s.as_str()).collect();
             match cmd_args.as_slice() {
-                // Session commands
-                ["session", "list", ..]
+                // Daemon commands. `daemon` is the current term; `session`
+                // (and the `s` short form) are kept as non-breaking aliases.
+                ["daemon", "list", ..]
+                | ["d", "list", ..]
+                | ["daemon", "ls", ..]
+                | ["d", "ls", ..]
+                | ["session", "list", ..]
                 | ["s", "list", ..]
                 | ["session", "ls", ..]
                 | ["s", "ls", ..] => (true, None, false, None, false, false, None, cli.files, None),
-                // Open file in session: fresher --cmd session open-file <name> <files...> [--wait]
-                ["session", "open-file", name, files @ ..]
+                // Open file in a daemon: fresh --cmd daemon open-file <name> <files...> [--wait]
+                ["daemon", "open-file", name, files @ ..]
+                | ["d", "open-file", name, files @ ..]
+                | ["session", "open-file", name, files @ ..]
                 | ["s", "open-file", name, files @ ..] => {
                     let session = if *name == "." {
                         None
@@ -245,7 +252,11 @@ impl From<Cli> for Args {
                         Some((session, file_list, wait)),
                     )
                 }
-                ["session", "attach", name, ..]
+                ["daemon", "attach", name, ..]
+                | ["d", "attach", name, ..]
+                | ["daemon", "a", name, ..]
+                | ["d", "a", name, ..]
+                | ["session", "attach", name, ..]
                 | ["s", "attach", name, ..]
                 | ["session", "a", name, ..]
                 | ["s", "a", name, ..] => (
@@ -259,10 +270,19 @@ impl From<Cli> for Args {
                     cli.files,
                     None,
                 ),
-                ["session", "attach"] | ["s", "attach"] | ["session", "a"] | ["s", "a"] => {
-                    (false, None, true, None, false, false, None, cli.files, None)
-                }
-                ["session", "new", name, rest @ ..]
+                ["daemon", "attach"]
+                | ["d", "attach"]
+                | ["daemon", "a"]
+                | ["d", "a"]
+                | ["session", "attach"]
+                | ["s", "attach"]
+                | ["session", "a"]
+                | ["s", "a"] => (false, None, true, None, false, false, None, cli.files, None),
+                ["daemon", "new", name, rest @ ..]
+                | ["d", "new", name, rest @ ..]
+                | ["daemon", "n", name, rest @ ..]
+                | ["d", "n", name, rest @ ..]
+                | ["session", "new", name, rest @ ..]
                 | ["s", "new", name, rest @ ..]
                 | ["session", "n", name, rest @ ..]
                 | ["s", "n", name, rest @ ..] => {
@@ -279,7 +299,11 @@ impl From<Cli> for Args {
                         None,
                     )
                 }
-                ["session", "kill", "--all"]
+                ["daemon", "kill", "--all"]
+                | ["d", "kill", "--all"]
+                | ["daemon", "k", "--all"]
+                | ["d", "k", "--all"]
+                | ["session", "kill", "--all"]
                 | ["s", "kill", "--all"]
                 | ["session", "k", "--all"]
                 | ["s", "k", "--all"] => (
@@ -293,7 +317,11 @@ impl From<Cli> for Args {
                     cli.files,
                     None,
                 ),
-                ["session", "kill", name, ..]
+                ["daemon", "kill", name, ..]
+                | ["d", "kill", name, ..]
+                | ["daemon", "k", name, ..]
+                | ["d", "k", name, ..]
+                | ["session", "kill", name, ..]
                 | ["s", "kill", name, ..]
                 | ["session", "k", name, ..]
                 | ["s", "k", name, ..] => (
@@ -307,7 +335,14 @@ impl From<Cli> for Args {
                     cli.files,
                     None,
                 ),
-                ["session", "kill"] | ["s", "kill"] | ["session", "k"] | ["s", "k"] => (
+                ["daemon", "kill"]
+                | ["d", "kill"]
+                | ["daemon", "k"]
+                | ["d", "k"]
+                | ["session", "kill"]
+                | ["s", "kill"]
+                | ["session", "k"]
+                | ["s", "k"] => (
                     false,
                     Some(None),
                     false,
@@ -319,12 +354,15 @@ impl From<Cli> for Args {
                     None,
                 ),
 
-                ["session", "info", name, ..] | ["s", "info", name, ..] => {
+                ["daemon", "info", name, ..]
+                | ["d", "info", name, ..]
+                | ["session", "info", name, ..]
+                | ["s", "info", name, ..] => {
                     // Info not fully implemented, treat as list for now
                     let _ = name;
                     (true, None, false, None, false, false, None, cli.files, None)
                 }
-                ["session", "info"] | ["s", "info"] => {
+                ["daemon", "info"] | ["d", "info"] | ["session", "info"] | ["s", "info"] => {
                     (true, None, false, None, false, false, None, cli.files, None)
                 }
                 // Config commands
@@ -364,7 +402,7 @@ impl From<Cli> for Args {
                 // Unknown command
                 _ => {
                     eprintln!("Unknown command: {}", cli.cmd.join(" "));
-                    eprintln!("Available commands: session (list|attach|new|kill|info|open-file), config (show|paths), grammar (list), init");
+                    eprintln!("Available commands: daemon (list|attach|new|kill|info|open-file), config (show|paths), grammar (list), init");
                     std::process::exit(1);
                 }
             }
@@ -493,7 +531,7 @@ struct SetupState {
     /// Single backend slot for "where does the editor act?".
     ///
     /// The editor always boots with `Authority::local()`. The SSH
-    /// startup form (`fresher user@host:path`) replaces it with
+    /// startup form (`fresh user@host:path`) replaces it with
     /// `Authority::ssh(...)` here. Devcontainer attach is now a plugin
     /// concern (it calls `editor.setAuthority({...})` from
     /// `plugins/devcontainer.ts` after `devcontainer up` returns) so
@@ -539,7 +577,7 @@ fn start_stdin_streaming() -> AnyhowResult<StdinStreamState> {
 
     // Create empty temp file
     let temp_dir = std::env::temp_dir();
-    let temp_path = temp_dir.join(format!("fresher-stdin-{}.tmp", std::process::id()));
+    let temp_path = temp_dir.join(format!("fresh-stdin-{}.tmp", std::process::id()));
     File::create(&temp_path)?;
 
     // Reopen stdin from /dev/tty so crossterm can use it for keyboard input
@@ -588,7 +626,7 @@ pub struct StdinStreamState {
 }
 
 /// Stream stdin content to a temp file on Windows.
-/// This is called when stdin is a pipe (e.g., `cat file.txt | fresher`).
+/// This is called when stdin is a pipe (e.g., `cat file.txt | fresh`).
 /// We duplicate the stdin handle, spawn a thread to read from it,
 /// and then reopen stdin from CONIN$ for keyboard input.
 #[cfg(windows)]
@@ -634,7 +672,7 @@ fn start_stdin_streaming() -> AnyhowResult<StdinStreamState> {
 
     // Create a temp file to store the piped content
     let temp_dir = std::env::temp_dir();
-    let temp_path = temp_dir.join(format!("fresher-stdin-{}.txt", std::process::id()));
+    let temp_path = temp_dir.join(format!("fresh-stdin-{}.txt", std::process::id()));
 
     let temp_path_clone = temp_path.clone();
 
@@ -782,7 +820,14 @@ fn handle_first_run_setup(
         && (args.force_restore || editor.config().editor.restore_previous_session);
 
     if restore_full_session {
-        match editor.try_restore_workspace() {
+        // Shared window-restore flow — the same `restore_window` the
+        // orchestrator dock's `materialize_window` uses — so the
+        // foreground directory applies its persisted explorer visibility,
+        // or the fresh-session default, exactly as a dock switch would. A
+        // bare single-directory launch (`show_file_explorer`) defaults to
+        // the tree only when nothing was restored, which keeps a
+        // deliberately-closed explorer closed across relaunches.
+        match editor.restore_active_window_on_launch(!show_file_explorer) {
             Ok(true) => {
                 tracing::info!("Workspace restored successfully");
             }
@@ -827,6 +872,10 @@ fn handle_first_run_setup(
                 tracing::warn!("Failed to restore hot-exit buffers: {}", e);
             }
         }
+        // No workspace was restored, so the persisted explorer visibility
+        // never loaded — apply the same fresh-session default the restore
+        // flow would, so a bare directory launch still opens the tree.
+        editor.apply_active_window_explorer_default(!show_file_explorer, false);
     }
 
     // Handle stdin streaming (takes priority over files)
@@ -862,9 +911,10 @@ fn handle_first_run_setup(
         editor.schedule_hot_exit_recovery();
     }
 
-    if show_file_explorer {
-        editor.show_file_explorer();
-    }
+    // The file-explorer default is applied by the restore/no-restore
+    // branches above (via `restore_window` / `apply_active_window_explorer_default`),
+    // which respect a deliberately-closed explorer rather than re-opening
+    // it unconditionally on every relaunch.
 
     if editor.has_recovery_files().unwrap_or(false) {
         tracing::info!("Recovery files found from previous session, recovering...");
@@ -1838,7 +1888,7 @@ fn check_plugin_bundle(plugin_path: &std::path::Path) -> AnyhowResult<()> {
     Ok(())
 }
 
-/// `fresher --cmd init check` — syntax-check ~/.config/fresher/init.ts via oxc.
+/// `fresh --cmd init check` — syntax-check ~/.config/fresh/init.ts via oxc.
 /// Exits 0 if the file is absent or parses cleanly, 1 on any parse error.
 fn init_check_command() -> AnyhowResult<()> {
     let dir_context = fresh::config_io::DirectoryContext::from_system()
@@ -1884,7 +1934,7 @@ fn init_check_command() -> AnyhowResult<()> {
     std::process::exit(1);
 }
 
-/// Initialize a new Fresher package (plugin, theme, or language pack)
+/// Initialize a new Fresh package (plugin, theme, or language pack)
 fn init_package_command(package_type: Option<String>) -> AnyhowResult<()> {
     use std::io::{BufRead, Write};
 
@@ -1902,7 +1952,7 @@ fn init_package_command(package_type: Option<String>) -> AnyhowResult<()> {
         input.trim().to_string()
     };
 
-    println!("Fresher Package Initializer");
+    println!("Fresh Package Initializer");
     println!("=========================\n");
 
     // Determine package type
@@ -1919,7 +1969,7 @@ fn init_package_command(package_type: Option<String>) -> AnyhowResult<()> {
         }
         None => {
             println!("Package types:");
-            println!("  1. plugin   - Extend Fresher with custom commands and functionality");
+            println!("  1. plugin   - Extend Fresh with custom commands and functionality");
             println!("  2. theme    - Custom color schemes and styling");
             println!("  3. language - Syntax highlighting, LSP, and language configuration\n");
 
@@ -1941,7 +1991,7 @@ fn init_package_command(package_type: Option<String>) -> AnyhowResult<()> {
     };
 
     // Get package name
-    let default_name = format!("my-fresher-{}", pkg_type);
+    let default_name = format!("my-fresh-{}", pkg_type);
     let name = loop {
         let input = prompt(&format!("Package name [{}]: ", default_name));
         let name = if input.is_empty() {
@@ -1991,7 +2041,7 @@ fn init_package_command(package_type: Option<String>) -> AnyhowResult<()> {
     match pkg_type {
         "plugin" => {
             println!("  2. Edit plugin.ts to add your functionality");
-            println!("  3. Test locally: fresher --check-plugin .");
+            println!("  3. Test locally: fresh --check-plugin .");
             println!("  4. Validate manifest: ./validate.sh");
         }
         "theme" => {
@@ -2001,14 +2051,14 @@ fn init_package_command(package_type: Option<String>) -> AnyhowResult<()> {
         "language" => {
             println!("  2. Edit grammars/syntax.sublime-syntax (YAML format)");
             println!("  3. Update package.json with file extensions and LSP command");
-            println!("  4. Test by copying to ~/.config/fresher/grammars/");
+            println!("  4. Test by copying to ~/.config/fresh/grammars/");
             println!("  5. Validate manifest: ./validate.sh");
         }
         _ => unreachable!(),
     }
     println!("\nTo publish:");
     println!("  1. Push your package to a public Git repository");
-    println!("  2. Submit a PR to: https://github.com/nicolaslima/fresher-plugins-registry");
+    println!("  2. Submit a PR to: https://github.com/sinelaw/fresh-plugins-registry");
     println!("     Add your package to the appropriate registry file:");
     match pkg_type {
         "plugin" => println!("     - plugins.json"),
@@ -2016,7 +2066,7 @@ fn init_package_command(package_type: Option<String>) -> AnyhowResult<()> {
         "language" => println!("     - languages.json"),
         _ => unreachable!(),
     }
-    println!("\nDocumentation: https://github.com/nicolaslima/fresher-plugins-registry#readme");
+    println!("\nDocumentation: https://github.com/sinelaw/fresh-plugins-registry#readme");
 
     Ok(())
 }
@@ -2024,10 +2074,10 @@ fn init_package_command(package_type: Option<String>) -> AnyhowResult<()> {
 /// Write a validation script that checks package.json against the official schema
 fn write_validate_script(dir: &Path) -> AnyhowResult<()> {
     let validate_sh = r#"#!/bin/bash
-# Validate package.json against the official Fresher package schema
+# Validate package.json against the official Fresh package schema
 #
 # Prerequisite: pip install jsonschema
-curl -sSL https://raw.githubusercontent.com/nicolaslima/fresher/main/scripts/validate-package.sh | bash
+curl -sSL https://raw.githubusercontent.com/sinelaw/fresh/main/scripts/validate-package.sh | bash
 "#;
     write_script_file(dir, "validate.sh", validate_sh)
 }
@@ -2035,13 +2085,13 @@ curl -sSL https://raw.githubusercontent.com/nicolaslima/fresher/main/scripts/val
 /// Write a validation script for themes (validates both package.json and theme.json)
 fn write_theme_validate_script(dir: &Path) -> AnyhowResult<()> {
     let validate_sh = r#"#!/bin/bash
-# Validate Fresher theme package
+# Validate Fresh theme package
 #
 # Prerequisite: pip install jsonschema
 set -e
 
 echo "Validating package.json..."
-curl -sSL https://raw.githubusercontent.com/nicolaslima/fresher/main/scripts/validate-package.sh | bash
+curl -sSL https://raw.githubusercontent.com/sinelaw/fresh/main/scripts/validate-package.sh | bash
 
 echo "Validating theme.json..."
 python3 -c "
@@ -2050,7 +2100,7 @@ import json, jsonschema, urllib.request, sys
 with open('theme.json') as f:
     data = json.load(f)
 
-schema_url = 'https://raw.githubusercontent.com/nicolaslima/fresher/main/crates/fresh-editor/plugins/schemas/theme.schema.json'
+schema_url = 'https://raw.githubusercontent.com/sinelaw/fresh/main/crates/fresh-editor/plugins/schemas/theme.schema.json'
 try:
     with urllib.request.urlopen(schema_url, timeout=5) as resp:
         schema = json.load(resp)
@@ -2097,7 +2147,7 @@ fn write_package_json(
     };
     let content = format!(
         r#"{{
-  "$schema": "https://raw.githubusercontent.com/nicolaslima/fresher/main/crates/fresh-editor/plugins/schemas/package.schema.json",
+  "$schema": "https://raw.githubusercontent.com/sinelaw/fresh/main/crates/fresh-editor/plugins/schemas/package.schema.json",
   "name": "{name}",
   "version": "0.1.0",
   "description": "{desc}",
@@ -2124,7 +2174,7 @@ fn create_plugin_package(
         description,
         author,
         "plugin",
-        "A Fresher plugin",
+        "A Fresh plugin",
         r#"{
     "entry": "plugin.ts"
   }"#,
@@ -2134,8 +2184,8 @@ fn create_plugin_package(
     write_validate_script(dir)?;
 
     // plugin.ts
-    let plugin_ts = r#"// Fresher Plugin
-// Documentation: https://github.com/user/fresher/blob/main/docs/plugins.md
+    let plugin_ts = r#"// Fresh Plugin
+// Documentation: https://github.com/user/fresh/blob/main/docs/plugins.md
 
 const editor = getEditor();
 
@@ -2157,7 +2207,7 @@ function onBufferOpened(): void {
 registerHandler("on_buffer_opened", onBufferOpened);
 editor.on("buffer_opened", "on_buffer_opened");
 
-// Example: Add a keybinding in your Fresher config:
+// Example: Add a keybinding in your Fresh config:
 // {
 //   "keyBindings": {
 //     "ctrl+alt+h": "command:hello"
@@ -2174,7 +2224,7 @@ editor.on("buffer_opened", "on_buffer_opened");
 
 ## Installation
 
-Install via Fresher's package manager:
+Install via Fresh's package manager:
 ```
 :pkg install {}
 ```
@@ -2195,7 +2245,7 @@ MIT
 "#,
         name,
         if description.is_empty() {
-            "A Fresher plugin."
+            "A Fresh plugin."
         } else {
             description
         },
@@ -2219,7 +2269,7 @@ fn create_theme_package(
         description,
         author,
         "theme",
-        "A Fresher theme",
+        "A Fresh theme",
         r#"{
     "theme": "theme.json"
   }"#,
@@ -2265,7 +2315,7 @@ fn create_theme_package(
 
 ## Installation
 
-Install via Fresher's package manager:
+Install via Fresh's package manager:
 ```
 :pkg install {}
 ```
@@ -2277,7 +2327,7 @@ After installation, activate the theme:
 :theme {}
 ```
 
-Or add to your Fresher config:
+Or add to your Fresh config:
 ```json
 {{
   "theme": "{}"
@@ -2294,7 +2344,7 @@ MIT
 "#,
         name,
         if description.is_empty() {
-            "A Fresher theme."
+            "A Fresh theme."
         } else {
             description
         },
@@ -2322,7 +2372,7 @@ fn create_language_package(
         description,
         author,
         "language",
-        "Language support for Fresher",
+        "Language support for Fresh",
         r#"{
     "grammar": {
       "file": "grammars/syntax.sublime-syntax",
@@ -2401,7 +2451,7 @@ contexts:
 
 ## Installation
 
-Install via Fresher's package manager:
+Install via Fresh's package manager:
 ```
 :pkg install {}
 ```
@@ -2429,7 +2479,7 @@ Update `package.json` to match your language's requirements.
 
 1. Edit `grammars/syntax.sublime-syntax` for syntax highlighting
 2. Update `package.json` with correct file extensions and LSP command
-3. Test by copying to `~/.config/fresher/grammars/` and restarting Fresher
+3. Test by copying to `~/.config/fresh/grammars/` and restarting Fresh
 
 **Tip:** Search GitHub for existing `<language> sublime-syntax` files you can adapt.
 If using an existing grammar, check its license and include a copy in `grammars/LICENSE`.
@@ -2451,7 +2501,7 @@ MIT
 "#,
         name,
         if description.is_empty() {
-            "Language support for Fresher."
+            "Language support for Fresh."
         } else {
             description
         },
@@ -2535,7 +2585,7 @@ fn list_sessions_command() -> AnyhowResult<()> {
     let socket_dir = SocketPaths::socket_directory()?;
 
     if !socket_dir.exists() {
-        println!("No active sessions.");
+        println!("No running daemons.");
         return Ok(());
     }
 
@@ -2583,55 +2633,55 @@ fn list_sessions_command() -> AnyhowResult<()> {
     }
 
     if stale_cleaned > 0 {
-        eprintln!("Cleaned up {} stale session(s).", stale_cleaned);
+        eprintln!("Cleaned up {} stale daemon(s).", stale_cleaned);
     }
 
     if sessions.is_empty() {
-        println!("No active sessions.");
+        println!("No running daemons.");
     } else {
-        println!("Active sessions:");
+        println!("Running daemons:");
         for (id, display) in &sessions {
             if display != id {
-                // Working-directory session: show path and usable name
+                // Working-directory daemon: show path and usable name
                 println!("  {}  (name: {})", display, id);
             } else {
-                // Named session
+                // Named daemon
                 println!("  {}", id);
             }
         }
         println!();
-        // Show the most convenient attach form for each session type
+        // Show the most convenient attach form for each daemon type
         if sessions.len() == 1 {
             let (id, display) = &sessions[0];
             if display != id {
-                println!("Attach with: fresher -a  (from that directory)");
-                println!("         or: fresher -a {}", id);
+                println!("Attach with: fresh -a  (from that directory)");
+                println!("         or: fresh -a {}", id);
             } else {
-                println!("Attach with: fresher -a {}", id);
+                println!("Attach with: fresh -a {}", id);
             }
         } else {
-            println!("Attach with: fresher -a [NAME]");
+            println!("Attach with: fresh -a [NAME]");
         }
     }
 
     Ok(())
 }
 
-/// Kill a session (terminate the server)
+/// Kill a daemon (terminate the daemon process)
 fn kill_session_command(session: Option<&str>, args: &Args) -> AnyhowResult<()> {
     use fresh::server::ipc::ClientConnection;
     use fresh::server::protocol::ClientControl;
 
     let working_dir = std::env::current_dir()?;
 
-    // Determine session name: explicit arg > --session-name flag > working dir
+    // Determine daemon name: explicit arg > --session-name flag > working dir
     let socket_paths = match session.or(args.session_name.as_deref()) {
         Some(name) => SocketPaths::for_session_name(name)?,
         None => SocketPaths::for_working_dir(&working_dir)?,
     };
 
     if !socket_paths.data.exists() || !socket_paths.control.exists() {
-        eprintln!("No session found to kill.");
+        eprintln!("No daemon found to kill.");
         return Ok(());
     }
 
@@ -2682,7 +2732,7 @@ fn kill_session_command(session: Option<&str>, args: &Args) -> AnyhowResult<()> 
         let _ = std::fs::remove_file(&socket_paths.control);
     }
 
-    println!("Session terminated.");
+    println!("Daemon terminated.");
     Ok(())
 }
 
@@ -2845,7 +2895,7 @@ fn resolve_session(session_name: Option<&str>) -> anyhow::Result<SocketPaths> {
     }
 }
 
-/// Open files in a running session without attaching
+/// Open files in a running daemon without attaching
 fn run_open_files_command(
     session_name: Option<&str>,
     files: &[String],
@@ -2936,14 +2986,14 @@ fn run_open_files_command(
             return run_attach(session_name, &[]);
         } else {
             eprintln!(
-                "Started new session and opened {} file(s). Attach with: fresher -a{}",
+                "Started a new daemon and opened {} file(s). Attach with: fresh -a{}",
                 file_requests.len(),
                 session_name.map_or(String::new(), |n| format!(" {}", n)),
             );
             return Ok(());
         }
     } else if wait {
-        // Existing session — block until the server sends WaitComplete
+        // Existing daemon — block until the daemon sends WaitComplete
         loop {
             match conn.read_control() {
                 Ok(Some(line)) => {
@@ -2960,7 +3010,7 @@ fn run_open_files_command(
             }
         }
     } else {
-        eprintln!("Opened {} file(s) in session.", file_requests.len());
+        eprintln!("Opened {} file(s) in the daemon.", file_requests.len());
     }
     Ok(())
 }
@@ -3121,7 +3171,7 @@ fn forward_to_session(session: &str, files: &[String]) -> AnyhowResult<bool> {
     Ok(true)
 }
 
-/// Attach to an existing session, starting a server if needed
+/// Attach to an existing daemon, starting one if needed
 fn run_attach_command(args: &Args) -> AnyhowResult<()> {
     run_attach(args.session_name.as_deref(), &args.files)
 }
@@ -3161,14 +3211,14 @@ fn run_attach(session_name: Option<&str>, files: &[String]) -> AnyhowResult<()> 
     // Determine socket paths based on session name or working directory
     let socket_paths = resolve_session(session_name)?;
 
-    // Clean up stale sockets if server is dead
+    // Clean up stale sockets if the daemon is dead
     if socket_paths.cleanup_if_stale() {
-        eprintln!("Cleaned up stale session.");
+        eprintln!("Cleaned up stale daemon.");
     }
 
-    // Check if a server is running, if not start one
+    // Check if a daemon is running, if not start one
     let server_was_started = if !socket_paths.is_server_alive() {
-        eprintln!("Starting server...");
+        eprintln!("Starting daemon...");
 
         // Spawn server in background
         let _pid = spawn_server_detached(session_name, ssh_url.as_deref())?;
@@ -3224,10 +3274,10 @@ fn run_attach(session_name: Option<&str>, files: &[String]) -> AnyhowResult<()> 
         ServerControl::Hello(server_hello) => {
             if server_hello.protocol_version != PROTOCOL_VERSION {
                 eprintln!(
-                    "Version mismatch: server is v{}",
+                    "Version mismatch: daemon is v{}",
                     server_hello.server_version
                 );
-                eprintln!("Please restart the server with the same version as the client.");
+                eprintln!("Please restart the daemon with the same version as the client.");
                 return Ok(());
             }
             tracing::info!(
@@ -3237,8 +3287,8 @@ fn run_attach(session_name: Option<&str>, files: &[String]) -> AnyhowResult<()> 
             );
         }
         ServerControl::VersionMismatch(mismatch) => {
-            eprintln!("Version mismatch: server is v{}", mismatch.server_version);
-            eprintln!("Please restart the server with the same version as the client.");
+            eprintln!("Version mismatch: daemon is v{}", mismatch.server_version);
+            eprintln!("Please restart the daemon with the same version as the client.");
             return Ok(());
         }
         ServerControl::Error { message } => {
@@ -3309,13 +3359,13 @@ fn run_attach(session_name: Option<&str>, files: &[String]) -> AnyhowResult<()> 
         }
         Ok(client::ClientExitReason::Detached) => {
             tracing::debug!("Client exit: Detached");
-            eprintln!("Detached from session. Server continues running.");
-            eprintln!("Reattach with: fresher -a  or  fresher session attach");
+            eprintln!("Detached from daemon. The daemon keeps running.");
+            eprintln!("Reattach with: fresh -a  or  fresh --cmd daemon attach");
         }
         Ok(client::ClientExitReason::VersionMismatch { server_version }) => {
             tracing::debug!("Client exit: VersionMismatch");
-            eprintln!("Version mismatch: server is v{}", server_version);
-            eprintln!("Please restart the server with the same version as the client.");
+            eprintln!("Version mismatch: daemon is v{}", server_version);
+            eprintln!("Please restart the daemon with the same version as the client.");
         }
         Ok(client::ClientExitReason::Error(e)) => {
             tracing::debug!("Client exit: Error({})", e);
@@ -3336,13 +3386,13 @@ fn print_deprecation_warnings(cli: &Cli) {
 
     // These flags existed in master and are now reorganized into --cmd commands
     if cli.dump_config {
-        eprintln!("warning: --dump-config is deprecated, use `fresher --cmd config show` instead");
+        eprintln!("warning: --dump-config is deprecated, use `fresh --cmd config show` instead");
     }
     if cli.show_paths {
-        eprintln!("warning: --show-paths is deprecated, use `fresher --cmd config paths` instead");
+        eprintln!("warning: --show-paths is deprecated, use `fresh --cmd config paths` instead");
     }
     if cli.init.is_some() {
-        eprintln!("warning: --init is deprecated, use `fresher --cmd init` instead");
+        eprintln!("warning: --init is deprecated, use `fresh --cmd init` instead");
     }
 }
 
@@ -3446,7 +3496,12 @@ fn run_if_subcommand(
 /// Attempt workspace or hot-exit restore when the editor restarts into a new project.
 fn restore_editor_workspace(editor: &mut Editor, args: &Args) {
     if args.force_restore || editor.config().editor.restore_previous_session {
-        match editor.try_restore_workspace() {
+        // Shared restore flow (same as startup / the dock's
+        // `materialize_window`): applies the new project's persisted
+        // explorer visibility, or the fresh-session default when there is
+        // nothing to restore — so a project whose explorer was closed
+        // does not spring back open on a Switch Project restart.
+        match editor.restore_active_window_on_launch(false) {
             Ok(true) => tracing::info!("Workspace restored successfully"),
             Ok(false) => tracing::debug!("No previous workspace found"),
             Err(e) => tracing::warn!("Failed to restore workspace: {}", e),
@@ -3465,6 +3520,8 @@ fn restore_editor_workspace(editor: &mut Editor, args: &Args) {
             Ok(_) => {}
             Err(e) => tracing::warn!("Failed to restore hot-exit buffers on restart: {}", e),
         }
+        // Nothing restored — apply the bare-directory explorer default.
+        editor.apply_active_window_explorer_default(false, false);
     }
 }
 
@@ -3533,23 +3590,23 @@ fn build_localized_after_help() -> String {
 
     out.push_str(&format!("{}\n", t("cli.section.session")));
     out.push_str(&format!(
-        "  session list              {}\n",
+        "  daemon list              {}\n",
         t("cli.cmd.session_list")
     ));
     out.push_str(&format!(
-        "  session attach [NAME]     {}\n",
+        "  daemon attach [NAME]     {}\n",
         t("cli.cmd.session_attach")
     ));
     out.push_str(&format!(
-        "  session new NAME          {}\n",
+        "  daemon new NAME          {}\n",
         t("cli.cmd.session_new")
     ));
     out.push_str(&format!(
-        "  session kill [NAME]       {}\n",
+        "  daemon kill [NAME]       {}\n",
         t("cli.cmd.session_kill")
     ));
     out.push_str(&format!(
-        "  session open-file NAME FILES [--wait]   {}\n",
+        "  daemon open-file NAME FILES [--wait]   {}\n",
         t("cli.cmd.session_open_file")
     ));
     out.push('\n');
@@ -3600,26 +3657,26 @@ fn build_localized_after_help() -> String {
         t("cli.example.attach_name")
     ));
     out.push_str(&format!(
-        "  fresher --cmd session new proj                 {}\n",
+        "  fresh --cmd daemon new proj                  {}\n",
         t("cli.example.new_session")
     ));
     out.push_str(&format!(
-        "  fresher --cmd session open-file . main.rs     {}\n",
+        "  fresh --cmd daemon open-file . main.rs      {}\n",
         t("cli.example.open_in_dir")
     ));
     out.push_str(&format!(
-        "  fresher --cmd session open-file proj a.rs     {}\n",
+        "  fresh --cmd daemon open-file proj a.rs      {}\n",
         t("cli.example.open_in_named")
     ));
     out.push('\n');
 
     out.push_str(&format!("{}\n", t("cli.section.remote")));
     out.push_str(&format!(
-        "  fresher ssh://[user@]host[:port]/path[:line[:col]]   {}\n",
+        "  fresh ssh://[user@]host[:port]/path[:line[:col]]   {}\n",
         t("cli.example.remote_url")
     ));
     out.push_str(&format!(
-        "  fresher user@host:path[:line[:col]]                  {}\n",
+        "  fresh user@host:path[:line[:col]]                  {}\n",
         t("cli.example.remote_scp")
     ));
     out.push_str(&format!("  {}\n", t("cli.remote.note")));
@@ -3629,17 +3686,17 @@ fn build_localized_after_help() -> String {
     out.push_str(&format!("  {}\n\n", t("cli.guided.wait_intro")));
     out.push_str(&format!("  {}\n\n", t("cli.guided.session_dot")));
     out.push_str(&format!("  {}\n", t("cli.guided.annotation")));
-    out.push_str("    fresher --cmd session open-file . 'src/main.rs:10-25@\"msg\"' --wait\n\n");
+    out.push_str("    fresh --cmd daemon open-file . 'src/main.rs:10-25@\"msg\"' --wait\n\n");
     out.push_str(&format!("  {}\n", t("cli.guided.markdown")));
     out.push_str(
-        "    fresher --cmd session open-file . \\\n      $'src/main.rs:10-25@\"**Title**\\nBody text here\"' --wait\n\n",
+        "    fresh --cmd daemon open-file . \\\n      $'src/main.rs:10-25@\"**Title**\\nBody text here\"' --wait\n\n",
     );
     out.push_str(&format!("  {}\n", t("cli.guided.walkthrough")));
-    out.push_str("    fresher --cmd session open-file . 'a.rs:1-10@\"Step 1\"' --wait\n");
-    out.push_str("    fresher --cmd session open-file . 'b.rs:5-20@\"Step 2\"' --wait\n");
-    out.push_str("    fresher --cmd session open-file . 'c.rs:30@\"Step 3\"'   --wait\n\n");
+    out.push_str("    fresh --cmd daemon open-file . 'a.rs:1-10@\"Step 1\"' --wait\n");
+    out.push_str("    fresh --cmd daemon open-file . 'b.rs:5-20@\"Step 2\"' --wait\n");
+    out.push_str("    fresh --cmd daemon open-file . 'c.rs:30@\"Step 3\"'   --wait\n\n");
     out.push_str(&format!("  {}\n", t("cli.guided.git_editor")));
-    out.push_str("    git config core.editor 'fresher --cmd session open-file . --wait'\n\n");
+    out.push_str("    git config core.editor 'fresh --cmd daemon open-file . --wait'\n\n");
 
     out.push_str(&format!(
         "{}: https://getfresh.dev/docs",
@@ -3879,7 +3936,7 @@ fn real_main() -> AnyhowResult<()> {
         // the panic at `effective_active_pair` when workspace
         // restore tried to open files immediately afterwards).
 
-        // User init.ts: auto-load from ~/.config/fresher/init.ts through the
+        // User init.ts: auto-load from ~/.config/fresh/init.ts through the
         // same pipeline as "Load Plugin from Buffer". Respects `--no-init`
         // and `--safe`, and is short-circuited by the crash fuse after
         // repeated failures. Async to avoid blocking the boot sequence;
@@ -3923,8 +3980,14 @@ fn real_main() -> AnyhowResult<()> {
         } else {
             if restore_workspace_on_restart {
                 restore_editor_workspace(&mut editor, &args);
+            } else {
+                // Not restoring on this restart at all — still default the
+                // explorer for the freshly-entered directory.
+                editor.apply_active_window_explorer_default(false, false);
             }
-            editor.show_file_explorer();
+            // Mid-session restart: reflow so the (possibly toggled) sidebar
+            // and the split/terminal viewports match the new visibility.
+            editor.relayout();
             let path = current_working_dir
                 .as_ref()
                 .map(|p| p.display().to_string())
@@ -4053,7 +4116,7 @@ fn real_main() -> AnyhowResult<()> {
         if update_result.update_available {
             eprintln!();
             eprintln!(
-                "A new version of fresher is available: {} -> {}",
+                "A new version of fresh is available: {} -> {}",
                 release_checker::CURRENT_VERSION,
                 update_result.latest_version
             );
@@ -4061,7 +4124,7 @@ fn real_main() -> AnyhowResult<()> {
                 eprintln!("Update with: {}", cmd);
             } else {
                 eprintln!(
-                    "Download from: https://github.com/nicolaslima/fresher/releases/tag/v{}",
+                    "Download from: https://github.com/sinelaw/fresh/releases/tag/v{}",
                     update_result.latest_version
                 );
             }

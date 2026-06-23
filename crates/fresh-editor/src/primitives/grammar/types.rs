@@ -251,6 +251,10 @@ pub const VHDL_GRAMMAR: &str = include_str!("../../grammars/vhdl.sublime-syntax"
 
 pub const C3_GRAMMAR: &str = include_str!("../../grammars/c3.sublime-syntax");
 
+/// Embedded Assembly grammar (GAS/AT&T and Intel/NASM dialects; syntect
+/// doesn't include one)
+pub const ASM_GRAMMAR: &str = include_str!("../../grammars/asm.sublime-syntax");
+
 /// Registry of all available TextMate grammars.
 ///
 /// This struct holds the compiled syntax set and provides lookup methods.
@@ -722,6 +726,7 @@ impl GrammarRegistry {
             (SYSTEMVERILOG_GRAMMAR, "SystemVerilog"),
             (VHDL_GRAMMAR, "VHDL"),
             (C3_GRAMMAR, "C3"),
+            (ASM_GRAMMAR, "Assembly"),
         ];
 
         for (grammar_str, name) in additional_grammars {
@@ -1240,8 +1245,17 @@ impl GrammarRegistry {
         // catalog entry by name — every syntect syntax has a catalog entry,
         // so this round-trip preserves tree-sitter attachment.
         let line = first_line?;
-        let syntax = self.syntax_set.find_syntax_by_first_line(line)?;
-        self.find_by_name(&syntax.name)
+        if let Some(syntax) = self.syntax_set.find_syntax_by_first_line(line) {
+            if let Some(entry) = self.find_by_name(&syntax.name) {
+                return Some(entry);
+            }
+        }
+
+        // Final fallback: map the shebang interpreter directly to a known
+        // grammar, covering interpreters whose grammars ship no syntect
+        // `first_line_match` regex (fish, Lua, PowerShell, …) — see `shebang`.
+        let lang = super::shebang::language_for_shebang(line)?;
+        self.find_by_name(lang)
     }
 
     /// Look up a grammar entry by file extension (case-insensitive, without dot).
@@ -1707,6 +1721,78 @@ mod tests {
                 syntax.name
             );
         }
+    }
+
+    #[test]
+    fn test_shebang_interpreter_targets_resolve() {
+        // Every language id the shebang table can return must exist in the
+        // built-in catalog, otherwise the fallback would silently no-op.
+        let registry = GrammarRegistry::default();
+        for name in [
+            "/bin/sh",
+            "/usr/bin/fish",
+            "/usr/bin/env python3",
+            "/usr/bin/env ruby",
+            "/usr/bin/perl",
+            "/usr/bin/env php",
+            "/usr/bin/env node",
+            "/usr/bin/env deno",
+            "/usr/bin/lua",
+            "/usr/bin/pwsh",
+            "/usr/bin/tclsh",
+            "/usr/bin/env groovy",
+            "/usr/bin/env elixir",
+            "/usr/bin/env Rscript",
+            "/usr/bin/env julia",
+            "/usr/bin/nu",
+            "/usr/bin/dart",
+        ] {
+            let line = format!("#!{name}\n");
+            let lang = super::super::shebang::language_for_shebang(&line)
+                .unwrap_or_else(|| panic!("expected an interpreter mapping for {line:?}"));
+            assert!(
+                registry.find_by_name(lang).is_some(),
+                "interpreter mapping {line:?} → {lang:?} must resolve to a catalog grammar",
+            );
+        }
+    }
+
+    #[test]
+    fn test_find_by_path_detects_shebang_only_interpreters() {
+        // These interpreters have no syntect first-line regex; before the
+        // interpreter-table fallback an extensionless script fell through to
+        // plain text. Now `find_by_path` resolves them from the shebang alone.
+        let registry = GrammarRegistry::default();
+        let cases = [
+            ("#!/usr/bin/fish\n", "fish"),
+            ("#!/usr/bin/lua\n", "lua"),
+            ("#!/usr/bin/pwsh\n", "powershell"),
+            ("#!/usr/bin/tclsh\n", "tcl"),
+            ("#!/usr/bin/env groovy\n", "groovy"),
+            ("#!/usr/bin/env elixir\n", "elixir"),
+            ("#!/usr/bin/env Rscript\n", "r"),
+        ];
+        for (first_line, expected_id) in cases {
+            let entry = registry
+                .find_by_path(Path::new("scriptfile"), Some(first_line))
+                .unwrap_or_else(|| panic!("no grammar for {first_line:?}"));
+            assert_eq!(
+                entry.language_id, expected_id,
+                "shebang {first_line:?} should detect {expected_id:?}, got {:?}",
+                entry.language_id,
+            );
+        }
+    }
+
+    #[test]
+    fn test_find_by_path_extension_still_wins_over_shebang() {
+        // The interpreter fallback must not override an explicit extension
+        // match — a `.py` file stays Python even with a shell shebang.
+        let registry = GrammarRegistry::default();
+        let entry = registry
+            .find_by_path(Path::new("script.py"), Some("#!/bin/sh\n"))
+            .unwrap();
+        assert_eq!(entry.language_id, "python");
     }
 
     #[test]

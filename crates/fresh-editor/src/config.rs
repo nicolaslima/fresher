@@ -1,4 +1,4 @@
-use crate::types::{context_keys, LspLanguageConfig, LspServerConfig, ProcessLimits};
+use crate::types::{context_keys, LspFeature, LspLanguageConfig, LspServerConfig, ProcessLimits};
 
 use rust_i18n::t;
 use schemars::JsonSchema;
@@ -423,6 +423,140 @@ pub struct Config {
     /// Package manager settings for plugin/theme installation
     #[serde(default)]
     pub packages: PackagesConfig,
+
+    /// Environment auto-activation detectors (venv / direnv / mise / …).
+    #[serde(default)]
+    pub env: EnvConfig,
+}
+
+/// Environment-detection configuration: the single source of truth for which
+/// marker files identify which activatable environment and how to activate it.
+///
+/// Core does the detection; the env-manager plugin only *consumes* the
+/// resolved result (via `editor.detectedEnv()`) — it does not probe the
+/// filesystem itself. The same detector markers also feed the Workspace Trust
+/// prompt, so trust and activation can never disagree about what an env file
+/// is. Users may add or override detectors here.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct EnvConfig {
+    /// Ordered list of detectors; the first whose markers match the workspace
+    /// root wins. Defaults cover venv, direnv, mise, pipenv, and poetry.
+    #[serde(default = "default_env_detectors")]
+    pub detectors: Vec<EnvDetector>,
+}
+
+impl Default for EnvConfig {
+    fn default() -> Self {
+        Self {
+            detectors: default_env_detectors(),
+        }
+    }
+}
+
+/// Activation risk class for an environment — decides whether activating it
+/// needs a trust prompt first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum EnvKind {
+    /// Activation only prepends to `PATH` / sets a few vars (e.g. a Python
+    /// virtualenv). Low-risk: auto-activates silently once trusted, and a
+    /// folder whose *only* env is path-only is trusted without a prompt.
+    PathOnly,
+    /// Activation evaluates project-controlled shell (e.g. `direnv export`,
+    /// `mise env`). Runs only after the workspace is trusted.
+    Shell,
+}
+
+/// One environment detector: which marker files/dirs identify it, how risky
+/// activation is, how to activate it, and what to call it.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct EnvDetector {
+    /// Short label shown in the status pill (e.g. ".venv", "direnv", "mise").
+    pub name: String,
+    /// Marker files or directories at the workspace root. The detector matches
+    /// if any one of them exists.
+    pub markers: Vec<String>,
+    /// Activation risk class (see [`EnvKind`]).
+    pub kind: EnvKind,
+    /// Shell snippet handed to `editor.setEnv` to activate. It runs with the
+    /// working directory set to the workspace root, so **prefer relative paths**
+    /// (e.g. `source .venv/bin/activate`). `{dir}` expands to the absolute
+    /// workspace root, but interpolating it into a shell command is a
+    /// shell-injection surface when the path is attacker-influenced
+    /// (cf. CVE-2024-9287) — avoid it unless you control the path.
+    pub snippet: String,
+    /// Optional evidence paths (relative to the workspace root); when present,
+    /// at least one must exist for the detector to match — e.g. a `.venv` must
+    /// actually contain an interpreter, not just the directory. Empty means
+    /// the markers alone are enough.
+    #[serde(default)]
+    pub require: Vec<String>,
+}
+
+/// Built-in environment detectors. The single source for the env files core
+/// knows about, shared by activation detection ([`crate::services::workspace_trust::detect_env`])
+/// and the trust-prompt marker scan
+/// ([`crate::services::workspace_trust::executable_content_markers`]).
+pub fn default_env_detectors() -> Vec<EnvDetector> {
+    let venv_interp = |dir: &str| {
+        vec![
+            format!("{dir}/bin/python"),
+            format!("{dir}/bin/python3"),
+            format!("{dir}/Scripts/python.exe"),
+        ]
+    };
+    vec![
+        EnvDetector {
+            name: ".venv".into(),
+            markers: vec![".venv".into()],
+            kind: EnvKind::PathOnly,
+            // Relative path: the recipe runs with cwd = the workspace root, so
+            // there is no need to interpolate the (attacker-influenced) absolute
+            // path into a `source` command — which would be a shell-injection
+            // surface (cf. CVE-2024-9287, venv activation command injection).
+            snippet: "source .venv/bin/activate".into(),
+            require: venv_interp(".venv"),
+        },
+        EnvDetector {
+            name: "venv".into(),
+            markers: vec!["venv".into()],
+            kind: EnvKind::PathOnly,
+            snippet: "source venv/bin/activate".into(),
+            require: venv_interp("venv"),
+        },
+        EnvDetector {
+            name: "direnv".into(),
+            markers: vec![".envrc".into()],
+            kind: EnvKind::Shell,
+            snippet: "eval \"$(direnv export bash)\"".into(),
+            require: vec![],
+        },
+        EnvDetector {
+            name: "mise".into(),
+            markers: vec![
+                "mise.toml".into(),
+                ".mise.toml".into(),
+                ".tool-versions".into(),
+            ],
+            kind: EnvKind::Shell,
+            snippet: "eval \"$(mise env -s bash)\"".into(),
+            require: vec![],
+        },
+        EnvDetector {
+            name: "pipenv".into(),
+            markers: vec!["Pipfile".into()],
+            kind: EnvKind::Shell,
+            snippet: "source \"$(pipenv --venv)/bin/activate\"".into(),
+            require: vec![],
+        },
+        EnvDetector {
+            name: "poetry".into(),
+            markers: vec!["poetry.lock".into()],
+            kind: EnvKind::Shell,
+            snippet: "source \"$(poetry env info --path)/bin/activate\"".into(),
+            require: vec![],
+        },
+    ]
 }
 
 fn default_keybinding_map_name() -> KeybindingMapName {
@@ -545,6 +679,7 @@ impl WhitespaceVisibility {
 ///
 /// Elements are specified as strings in the config:
 /// - `"{filename}"` — file path with session/remote prefix, modified and read-only indicators
+/// - `"{read_only}"` — persistent `[RO]` indicator, shown only while the buffer is read-only
 /// - `"{cursor}"` — cursor position as `Ln 1, Col 1`
 /// - `"{cursor:compact}"` — cursor position as `1:1`
 /// - `"{diagnostics}"` — error/warning/info counts (e.g. `E:1 W:2`)
@@ -565,6 +700,10 @@ impl WhitespaceVisibility {
 pub enum StatusBarElement {
     /// File path with session/remote prefix, modified/read-only indicators
     Filename,
+    /// Persistent `[RO]` read-only indicator. Renders only while the active
+    /// buffer is read-only, as a steady status segment independent of the
+    /// `{filename}` element (which is omitted from the default layout).
+    ReadOnly,
     /// Cursor position (default format: `Ln 1, Col 1`)
     Cursor,
     /// Cursor position (compact format: `1:1`)
@@ -617,6 +756,7 @@ impl TryFrom<String> for StatusBarElement {
             .unwrap_or(&s);
         match inner {
             "filename" => Ok(Self::Filename),
+            "read_only" => Ok(Self::ReadOnly),
             "cursor" => Ok(Self::Cursor),
             "cursor:compact" => Ok(Self::CursorCompact),
             "diagnostics" => Ok(Self::Diagnostics),
@@ -649,6 +789,7 @@ impl From<StatusBarElement> for String {
     fn from(e: StatusBarElement) -> String {
         match e {
             StatusBarElement::Filename => "{filename}".to_string(),
+            StatusBarElement::ReadOnly => "{read_only}".to_string(),
             StatusBarElement::Cursor => "{cursor}".to_string(),
             StatusBarElement::CursorCompact => "{cursor:compact}".to_string(),
             StatusBarElement::Diagnostics => "{diagnostics}".to_string(),
@@ -679,6 +820,7 @@ impl schemars::JsonSchema for StatusBarElement {
             "type": "string",
             "x-dual-list-options": [
                 {"value": "{filename}", "name": "Filename"},
+                {"value": "{read_only}", "name": "Read-Only"},
                 {"value": "{cursor}", "name": "Cursor"},
                 {"value": "{cursor:compact}", "name": "Cursor (compact)"},
                 {"value": "{diagnostics}", "name": "Diagnostics"},
@@ -722,6 +864,11 @@ fn default_status_bar_left() -> Vec<StatusBarElement> {
 
 fn default_status_bar_right() -> Vec<StatusBarElement> {
     vec![
+        // `{read_only}` leads the right cluster: it renders only while the
+        // buffer is read-only, giving the documented `[RO]` indicator a
+        // standing home even though `{filename}` (its other host) is omitted
+        // from the default layout.
+        StatusBarElement::ReadOnly,
         StatusBarElement::LineEnding,
         StatusBarElement::Encoding,
         StatusBarElement::Language,
@@ -755,7 +902,7 @@ pub struct StatusBarConfig {
     pub left: Vec<StatusBarElement>,
 
     /// Elements shown on the right side of the status bar.
-    /// Default: ["{line_ending}", "{encoding}", "{language}", "{lsp}", "{warnings}", "{update}", "{palette}"]
+    /// Default: ["{read_only}", "{line_ending}", "{encoding}", "{language}", "{lsp}", "{warnings}", "{update}", "{palette}"]
     #[serde(default = "default_status_bar_right")]
     #[schemars(extend("x-section" = "Status Bar", "x-dual-list-sibling" = "/editor/status_bar/left", "x-dynamically-extendable-status-bar-elements" = true))]
     pub right: Vec<StatusBarElement>,
@@ -2679,6 +2826,7 @@ impl Default for Config {
             warnings: WarningsConfig::default(),
             plugins: HashMap::new(),
             packages: PackagesConfig::default(),
+            env: EnvConfig::default(),
         }
     }
 }
@@ -3239,6 +3387,13 @@ impl MenuConfig {
                         when: Some(context_keys::HAS_BUFFER.to_string()),
                         checkbox: None,
                     },
+                    MenuItem::Action {
+                        label: t!("menu.go.goto_implementation").to_string(),
+                        action: "lsp_implementation".to_string(),
+                        args: HashMap::new(),
+                        when: Some(context_keys::HAS_BUFFER.to_string()),
+                        checkbox: None,
+                    },
                     MenuItem::Separator { separator: true },
                     MenuItem::Action {
                         label: t!("menu.go.next_buffer").to_string(),
@@ -3287,6 +3442,13 @@ impl MenuConfig {
                     MenuItem::Action {
                         label: t!("menu.lsp.find_references").to_string(),
                         action: "lsp_references".to_string(),
+                        args: HashMap::new(),
+                        when: Some(context_keys::LSP_AVAILABLE.to_string()),
+                        checkbox: None,
+                    },
+                    MenuItem::Action {
+                        label: t!("menu.lsp.goto_implementation").to_string(),
+                        action: "lsp_implementation".to_string(),
                         args: HashMap::new(),
                         when: Some(context_keys::LSP_AVAILABLE.to_string()),
                         checkbox: None,
@@ -5140,6 +5302,63 @@ impl Config {
                 filenames: vec![],
                 grammar: "VHDL".to_string(),
                 comment_prefix: Some("--".to_string()),
+                auto_indent: true,
+                auto_close: None,
+                auto_surround: None,
+                textmate_grammar: None,
+                show_whitespace_tabs: true,
+                line_wrap: None,
+                wrap_column: None,
+                page_view: None,
+                page_width: None,
+                use_tabs: None,
+                tab_size: None,
+                formatter: None,
+                format_on_save: false,
+                on_save: vec![],
+                word_characters: None,
+                indent: None,
+            },
+        );
+
+        // Assembly is split into two language entries sharing one grammar so
+        // comment toggling matches the dialect: NASM/MASM (Intel) comments
+        // are `;` while GAS (AT&T) x86 comments are `#`.
+        languages.insert(
+            "asm".to_string(),
+            LanguageConfig {
+                extensions: vec!["asm".to_string(), "nasm".to_string()],
+                filenames: vec![],
+                grammar: "Assembly".to_string(),
+                comment_prefix: Some(";".to_string()),
+                auto_indent: true,
+                auto_close: None,
+                auto_surround: None,
+                textmate_grammar: None,
+                show_whitespace_tabs: true,
+                line_wrap: None,
+                wrap_column: None,
+                page_view: None,
+                page_width: None,
+                use_tabs: None,
+                tab_size: None,
+                formatter: None,
+                format_on_save: false,
+                on_save: vec![],
+                word_characters: None,
+                indent: None,
+            },
+        );
+
+        languages.insert(
+            "gas".to_string(),
+            LanguageConfig {
+                // LSP extension matching is case-sensitive: list both `.s`
+                // and `.S` (GAS source that runs through the C preprocessor).
+                extensions: vec!["s".to_string(), "S".to_string()],
+                filenames: vec![],
+                grammar: "Assembly".to_string(),
+                comment_prefix: Some("#".to_string()),
                 auto_indent: true,
                 auto_close: None,
                 auto_surround: None,
@@ -7054,6 +7273,39 @@ impl Config {
             "systemverilog".to_string(),
             LspLanguageConfig::Multi(vec![svls_config]),
         );
+
+        // asm-lsp - Assembly Language Server (https://github.com/bergercookie/asm-lsp)
+        // Install via cargo: cargo install asm-lsp
+        // Handles GAS/NASM/MASM across x86, x86_64, ARM and RISC-V;
+        // configured per-project via .asm-lsp.toml.
+        //
+        // Pull diagnostics are excluded: asm-lsp (≤0.10.x) advertises
+        // `diagnosticProvider` but never answers `textDocument/diagnostic`
+        // (it drops the request id and only pushes `publishDiagnostics`),
+        // so every pull request would stall for the full 30s timeout.
+        // Pushed diagnostics are unaffected by the feature filter.
+        let asm_lsp_config = LspServerConfig {
+            command: "asm-lsp".to_string(),
+            args: vec![],
+            enabled: true,
+            auto_start: false,
+            process_limits: ProcessLimits::default(),
+            initialization_options: None,
+            env: Default::default(),
+            language_id_overrides: Default::default(),
+            name: None,
+            only_features: None,
+            except_features: Some(vec![LspFeature::Diagnostics]),
+            root_markers: vec![".asm-lsp.toml".to_string(), ".git".to_string()],
+        };
+        lsp.insert(
+            "asm".to_string(),
+            LspLanguageConfig::Multi(vec![asm_lsp_config.clone()]),
+        );
+        lsp.insert(
+            "gas".to_string(),
+            LspLanguageConfig::Multi(vec![asm_lsp_config]),
+        );
     }
     pub fn validate(&self) -> Result<(), ConfigError> {
         // Validate tab size
@@ -7928,5 +8180,26 @@ mod tests {
             loaded.universal_lsp.contains_key("quicklsp"),
             "Default quicklsp should be merged from defaults"
         );
+    }
+
+    /// asm-lsp (≤0.10.x) advertises `diagnosticProvider` but never answers
+    /// `textDocument/diagnostic`, so every pull request stalls for the full
+    /// 30s timeout. The default config must exclude the diagnostics feature
+    /// (pushed diagnostics don't go through the feature filter).
+    #[test]
+    fn test_asm_lsp_defaults_exclude_pull_diagnostics() {
+        let config = Config::default();
+        for language in ["asm", "gas"] {
+            let LspLanguageConfig::Multi(servers) = &config.lsp[language] else {
+                panic!("expected Multi LSP config for {language}");
+            };
+            let server = &servers[0];
+            assert_eq!(server.command, "asm-lsp");
+            assert_eq!(
+                server.except_features,
+                Some(vec![LspFeature::Diagnostics]),
+                "{language}: asm-lsp must exclude pull diagnostics"
+            );
+        }
     }
 }

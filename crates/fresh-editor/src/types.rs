@@ -125,8 +125,10 @@ pub enum LspFeature {
     WorkspaceSymbols,
     /// Hover information (exclusive: first eligible server wins)
     Hover,
-    /// Go to definition, declaration, type definition, implementation (exclusive)
+    /// Go to definition, declaration, type definition (exclusive)
     Definition,
+    /// Go to implementation (exclusive)
+    Implementation,
     /// Find references (exclusive)
     References,
     /// Document formatting and range formatting (exclusive)

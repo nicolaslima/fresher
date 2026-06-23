@@ -1,8 +1,72 @@
 # Release Notes
 
-## 0.4.0
+## 0.4.1
+
+This is mostly a bug-fix release.
 
 For live updates on Fresh, [follow me on X](https://x.com/TheNoamLewis).
+
+### Renamed features and clarified docs
+
+This releases introduces new names (in docs, cli, etc) to clarify the ambiguously used word: "session". The new vocabulary:
+
+* **daemon** — the persistent background process you attach to and detach from.
+* **workspace** — the editor's per-project unit. Multiple workspaces are managed by the Orchestrator.
+* **backend** — where a workspace runs (local / SSH / dev container / Kubernetes).
+
+The cli now supports `--cmd daemon`, but still accepts the now-deprecated `--cmd session` as an alias. The new vocabulary also reaches the user-facing surfaces of the editor: the Orchestrator now lists, dives into, and manages **workspaces** (commands, dialogs, dock chrome, and status messages), and the replace-in-project confirmation refers to files open "in this workspace". Localized strings were updated to match in every supported locale.
+
+### Features
+
+* **New language support**:
+  * **Assembly** via [asm-lsp](https://github.com/bergercookie/asm-lsp) (opt-in) — GAS and NASM/Intel across x86/x86_64/ARM/RISC-V, with an offer to generate `.asm-lsp.toml` from the detected dialect (#1964, requested by @viti95).
+  * **Fish** highlighting and auto-indentation (#2272), by @asukaminato0721.
+  * **Smali** highlighting (#2265), by @asukaminato0721.
+  * `yarn.lock` and other well-known lock/config files now highlight by their real format (#2326, reported by @asukaminato0721).
+* **Windows on ARM** release artifacts (#784, requested by @teobugslayer; by @NihilDigit).
+* `CancelMark` / `ClearMark` actions for fine-grained selection-anchor management (#2371, by @masmu).
+* **Git Log (Current File)** command, plus concurrent git-blame buffers.
+* **Open Terminal to the Right** / **Open Terminal Below** commands — create a new terminal in a fresh split beside (vertical) or below (horizontal) the active pane.
+
+### Improvements
+
+* **Workspace trust & environments**:
+  * A single trust prompt for every project — folders with a shell environment (`.envrc` / `mise` / `.tool-versions`) no longer get the env-manager plugin's separate popup; the one prompt names the detected markers and activates on trust.
+  * Environment detection is defined once in core and user-extensible (`env.detectors`, now also covering pipenv and poetry); the activated environment applies uniformly across every backend — integrated terminal, Docker, Kubernetes, SSH.
+  * Hardening: plugins can request but never grant trust; a lone `.venv` no longer silently auto-trusts; venv activation uses a relative `source .venv/bin/activate` snippet to avoid shell injection (cf. CVE-2024-9287).
+* **Settings**: distinct, keyboard-reachable `[Inherit]` / `[Reset]` / `[Clear]` per field; the language entry dialog no longer clobbers inherited fields (#2345, reported by @ren-lv).
+* **Orchestrator localization**: the Orchestrator plugin is now fully internationalized — all 225 user-facing strings go through the editor's i18n mechanism, with translations for the 14 supported locales (cs, de, es, fr, it, ja, ko, pt-BR, ru, th, uk, vi, zh-CN, and en).
+* The Orchestrator New Workspace dialog has a clearer, keyboard-linear focus model (Tab accepts the highlighted completion).
+
+### Bug Fixes
+
+* **vi-mode**: delete/change/yank update the unnamed register (#2368, by @NihilDigit); the cursor moves one column left on leaving insert mode (#2349, by @ianyepan); `%` jumps to the matching bracket (#2346, by @ianyepan).
+* **Theme inspector & plugin panels** (#2321):
+  * Opening the theme editor no longer breaks Orchestrator dock clicks/scrolling — plugin panels are scoped to their owning plugin.
+  * Ctrl+Right-Click reports accurate theme keys for the status bar, tab bar, scrollbar, file explorer, menus, and dock, drawing above the dock.
+  * The plugin bridge no longer corrupts integers larger than 32 bits (timestamps, byte offsets).
+* Shebang language detection now covers interpreters whose grammars ship no first-line regex — `#!/usr/bin/fish`, Lua, PowerShell, Tcl, Groovy, Elixir, R, Julia, Nushell, Dart, Deno, … — so extensionless scripts highlight from the shebang instead of falling through to plain text (#2357, reported by @shemgp). `env` indirection (`env -S`, `env VAR=val`) and versioned interpreters (`python3.11`) are handled; an existing extension match still wins.
+* Java (jdtls) and other Eclipse LSP4J servers: features registered via `client/registerCapability` now work — their string JSON-RPC ids were misparsed as notifications and dropped (#2340, reported by @maxandersen).
+* LSP/plugin popups follow the active theme's `popup_*` colors instead of a hard-wired dark background (#2379, by @peanball).
+* The asm-lsp "no `.asm-lsp.toml` found" offer is now scoped to the assembly buffer that triggered it — it renders only while that buffer is active instead of floating over every other buffer. Plugins can opt into this with the new `buffer_id` field on `showActionPopup`.
+* Paste falls back to the internal clipboard and works again on Termux (#2343, reported by @nightshade427).
+* npm `.cmd`/`.bat` shims resolve on Windows, so npm-installed language servers spawn (#2324, reported by @SupertigerDev).
+* Occurrence highlighting uses a theme-appropriate background in every shipped theme (#2312).
+* Review Diff lists files inside untracked directories (#2315).
+* The embedded terminal forwards the wheel as a mouse report to mouse-tracking programs, so scrolling no longer cycles their history (#2366).
+* The tab bar's "+" new-tab popup and the tab right-click context menu now grab the keyboard while open: Up/Down navigate, Enter selects, Esc dismisses, and every other key is filtered out instead of leaking into the active buffer underneath.
+* Replace toolbar: checked search options are visible in every theme (#2363).
+* Alt+W and other search toggles no longer leak into the close prompt (#2359).
+* Fixed a crash on a stale soft-wrap position in multi-byte text (#2320).
+* Trusting a workspace with a shell or virtualenv environment (`.envrc` / `mise` / `.venv`) no longer restarts the whole editor: other windows keep their running terminals, language servers, and Orchestrator dock; only the active window refreshes to pick up the new environment.
+* A file opened while a split is maximized — for example via an embedded `fresh <file>` forwarded from a maximized terminal dock — is now revealed instead of rendering hidden behind the maximized split (which previously looked like the terminal had hung).
+* Launching an agent (e.g. `claude`) in an SSH or Kubernetes workspace now runs it **on the remote host / in the pod**, rooted at the workspace's remote path, instead of silently running it on the local machine. The agent's launch and resume commands compose with the session's backend via a `cd <dir>; exec <argv>` shell hop (the argv is shell-quoted and handed to a remote login shell so its `PATH` resolves the agent).
+
+### Internals
+
+* Refactored the UI element rendering pipeline to make it easier to introduce alternative rendering frontends.
+
+## 0.4.0
 
 ### Features
 
@@ -31,8 +95,6 @@ For live updates on Fresh, [follow me on X](https://x.com/TheNoamLewis).
 
 ### Bug Fixes
 
-* Java (jdtls) completion, hover, and other features registered via `client/registerCapability` now work. Fresh modelled JSON-RPC ids as integers, but Eclipse LSP4J servers (jdtls, the Groovy/Kotlin servers, lemminx) send their server-initiated requests with string ids, which Fresh misparsed as notifications — dropping every dynamic capability registration (#2340, reported by @maxandersen).
-* Occurrence highlighting now uses a theme-appropriate background in every shipped theme; the `dracula`, `nord`, and `solarized-dark` themes no longer fall back to a hard-wired dark color that clashed with their palette (#2312).
 * Windows: the TUI attaches to the parent process's stdio instead of failing in `-gui` builds (#2276, reported and fixed by @mokurin000 in #2277).
 * Right-side status bar elements render with configurable separators (#2088, reported and fixed by @PavelLoparev), and cursor column numbers are grapheme-correct (#2090, reported and fixed by @PavelLoparev).
 * Scroll panels compute focus offsets from the render width when a scrollbar is present (#2175, by @masmu).

@@ -32,6 +32,29 @@ use crate::state::EditorState;
 use crate::view::split::SplitViewState;
 use rust_i18n::t;
 use std::path::PathBuf;
+use std::sync::Arc;
+
+/// Filesystem for terminal scrollback backing/log files.
+///
+/// The integrated terminal's PTY is always spawned on the **local** host —
+/// even an SSH terminal runs `ssh` as a *local* child process — and the PTY
+/// read loop renders scrollback into the backing file on the local disk via
+/// `std::fs` (`services/terminal/manager.rs`). Those files therefore always
+/// live on the local machine, at a path under the local `data_dir`,
+/// independent of the session's (possibly remote) authority filesystem.
+///
+/// Routing their create / append / truncate / read through the *remote*
+/// authority filesystem (issue #2424) made every scrollback-mode toggle do a
+/// blocking SSH round-trip against a path that only exists locally: it hung
+/// the UI for the round-trip and failed with "Failed to truncate terminal
+/// backing file", leaving the scrollback view empty. Always use this local
+/// handle for terminal backing/log files so it stays consistent with the read
+/// loop. This honours the "use the `FileSystem` trait" rule (it returns a
+/// trait object, never raw `std::fs` at the call site) while pinning the
+/// backend to local — the correct backend for a local artifact.
+pub(crate) fn terminal_backing_fs() -> Arc<dyn crate::model::filesystem::FileSystem + Send + Sync> {
+    Arc::new(crate::model::filesystem::StdFileSystem)
+}
 
 /// How often [`Window::sync_terminal_titles`] polls each terminal's
 /// foreground process group for tmux-style tab auto-naming. Frequent enough
@@ -77,6 +100,53 @@ impl Window {
             .with_user_shell_override(self.resources.config.terminal.shell.as_ref())
     }
 
+    /// The activated-environment delta (venv/direnv/mise) to apply to a newly
+    /// spawned terminal, so it inherits the same env that LSP servers and
+    /// `spawnProcess` already get (issue #2355; see
+    /// docs/internal/uniform-env-activation-design.md). Captured only for a
+    /// **local** host shell: `manages_cwd` marks docker/ssh-style wrappers whose
+    /// inner shell runs on another host, where this locally-captured delta would
+    /// be both wrong and unreachable (the env this `CommandBuilder` sets lands on
+    /// the `docker`/`ssh` client process, not the remote shell). Those backends
+    /// apply their own delta in the wrapper (the per-backend apply paths in the
+    /// design doc). Empty when no env is active or capture fails — the terminal
+    /// degrades to the inherited env exactly as before.
+    pub(crate) fn terminal_env_delta(
+        &self,
+        wrapper: &TerminalWrapper,
+    ) -> crate::services::env_provider::EnvDelta {
+        if wrapper.manages_cwd {
+            return crate::services::env_provider::EnvDelta::default();
+        }
+        self.authority().env_provider.current_local_delta_blocking()
+    }
+
+    /// Apply the activated environment to a *re-parented* terminal wrapper
+    /// (SSH / container), the remote counterpart of [`Self::terminal_env_delta`]
+    /// (which handles the local host shell via `CommandBuilder.env`). For SSH,
+    /// rewrite the remote login-shell `exec` into a python3 launcher that
+    /// captures + applies the activation on the remote before handing off to the
+    /// user's shell, so the SSH terminal sees the same env LSP/`spawnProcess`
+    /// already get (issue #2355). Returns the wrapper unchanged when no env is
+    /// active or the wrapper isn't an SSH re-parent. (Container backends apply
+    /// their captured env through their own wrapper flags; see the design doc.)
+    pub(crate) fn apply_remote_terminal_env(
+        &self,
+        mut wrapper: TerminalWrapper,
+    ) -> TerminalWrapper {
+        use crate::services::remote::{ssh_remote_env_launcher, SSH_EXEC_LOGIN_SHELL};
+
+        if wrapper.command == "ssh" && self.authority().env_provider.is_active() {
+            let recipe = self.authority().env_provider.snippet();
+            if let Some(last) = wrapper.args.last_mut() {
+                if last.contains(SSH_EXEC_LOGIN_SHELL) {
+                    *last = last.replace(SSH_EXEC_LOGIN_SHELL, &ssh_remote_env_launcher(&recipe));
+                }
+            }
+        }
+        wrapper
+    }
+
     /// Get terminal dimensions appropriate for spawning a PTY in this
     /// window. Derived from the window's cached screen size minus a
     /// small constant for menu/status chrome.
@@ -118,7 +188,7 @@ impl Window {
 
         let working_dir = cwd.unwrap_or_else(|| self.root.clone());
         let terminal_root = self.resources.dir_context.terminal_dir_for(&working_dir);
-        if let Err(e) = self.authority().filesystem.create_dir_all(&terminal_root) {
+        if let Err(e) = terminal_backing_fs().create_dir_all(&terminal_root) {
             tracing::warn!("Failed to create terminal directory: {}", e);
         }
 
@@ -152,6 +222,8 @@ impl Window {
             Some(argv) if !argv.is_empty() => self.authority().terminal_command(&argv),
             _ => self.resolved_terminal_wrapper(),
         };
+        let wrapper = self.apply_remote_terminal_env(wrapper);
+        let env_delta = self.terminal_env_delta(&wrapper);
         match self.terminal_manager.spawn(
             cols,
             rows,
@@ -159,6 +231,7 @@ impl Window {
             Some(log_path.clone()),
             Some(backing_path),
             wrapper,
+            env_delta,
         ) {
             Ok(terminal_id) => {
                 self.terminal_log_files.insert(terminal_id, log_path);
@@ -207,7 +280,7 @@ impl Window {
             .cloned()
             .unwrap_or_else(|| {
                 let root = self.resources.dir_context.terminal_dir_for(&self.root);
-                if let Err(e) = self.authority().filesystem.create_dir_all(&root) {
+                if let Err(e) = terminal_backing_fs().create_dir_all(&root) {
                     tracing::warn!("Failed to create terminal directory: {}", e);
                 }
                 root.join(format!("fresh-terminal-{}.txt", terminal_id.0))
@@ -216,8 +289,8 @@ impl Window {
         // Ensure the file exists — but DON'T truncate if it already has
         // content. The PTY read loop may have already started writing
         // scrollback.
-        if !self.authority().filesystem.exists(&backing_file) {
-            if let Err(e) = self.authority().filesystem.write_file(&backing_file, &[]) {
+        if !terminal_backing_fs().exists(&backing_file) {
+            if let Err(e) = terminal_backing_fs().write_file(&backing_file, &[]) {
                 tracing::warn!("Failed to create terminal backing file: {}", e);
             }
         }
@@ -227,7 +300,7 @@ impl Window {
 
         let mut state = EditorState::new_with_path(
             large_file_threshold,
-            std::sync::Arc::clone(&self.authority().filesystem),
+            terminal_backing_fs(),
             backing_file.clone(),
         );
         state.margins.configure_for_line_numbers(false);
@@ -667,21 +740,21 @@ impl Window {
             .cloned()
             .unwrap_or_else(|| {
                 let root = self.resources.dir_context.terminal_dir_for(&self.root);
-                if let Err(e) = self.authority().filesystem.create_dir_all(&root) {
+                if let Err(e) = terminal_backing_fs().create_dir_all(&root) {
                     tracing::warn!("Failed to create terminal directory: {}", e);
                 }
                 root.join(format!("fresh-terminal-{}.txt", terminal_id.0))
             });
 
-        if !self.authority().filesystem.exists(&backing_file) {
-            if let Err(e) = self.authority().filesystem.write_file(&backing_file, &[]) {
+        if !terminal_backing_fs().exists(&backing_file) {
+            if let Err(e) = terminal_backing_fs().write_file(&backing_file, &[]) {
                 tracing::warn!("Failed to create terminal backing file: {}", e);
             }
         }
 
         let mut state = EditorState::new_with_path(
             large_file_threshold,
-            std::sync::Arc::clone(&self.authority().filesystem),
+            terminal_backing_fs(),
             backing_file.clone(),
         );
         state.margins.configure_for_line_numbers(false);
@@ -716,6 +789,124 @@ impl Window {
             }
         }
         self.terminal_buffers.values().copied().max_by_key(|t| t.0)
+    }
+
+    /// Respawn this window's dead embedded terminals through its *current*
+    /// authority, reusing each terminal's backing/log files so scrollback
+    /// continues across the gap.
+    ///
+    /// Called after a live remote reconnect re-points the window's authority
+    /// (`Editor::set_session_authority`): the embedded `ssh -t` PTYs died with
+    /// the carrier (a separate channel from the agent connection, which has its
+    /// own auto-reconnect), so without this they'd sit dead until manually
+    /// reopened. Each respawn re-runs the terminal's stored launch/resume argv
+    /// through `Authority::terminal_command`, so the new PTY runs on the remote
+    /// backend by construction — never the local host.
+    ///
+    /// Only terminals whose handle is missing or no longer alive are respawned;
+    /// a still-live terminal is left untouched (respawning it would orphan its
+    /// PTY). Terminal ids change on respawn — the manager allocates fresh ones —
+    /// so every terminal-id-keyed entry (buffer→terminal binding, backing/log
+    /// files, launch/resume commands, ephemeral marker) is remapped to the new
+    /// id and the dead handle is torn down.
+    pub fn respawn_terminals_through_authority(&mut self) {
+        // Snapshot the (buffer, old terminal id) pairs up front — the loop
+        // mutates `terminal_buffers` as it remaps ids.
+        let bindings: Vec<(BufferId, TerminalId)> = self
+            .terminal_buffers
+            .iter()
+            .map(|(b, t)| (*b, *t))
+            .collect();
+
+        for (buffer_id, old_id) in bindings {
+            // Leave a still-live terminal alone; only revive the dead ones.
+            let handle = self.terminal_manager.get(old_id);
+            if handle.is_some_and(|h| h.is_alive()) {
+                continue;
+            }
+
+            // Size + cwd carry over from the dead handle (so the reborn PTY
+            // matches the split), falling back to the window's dimensions.
+            let (cols, rows) = handle
+                .map(|h| h.size())
+                .unwrap_or_else(|| self.get_terminal_dimensions());
+            let cwd = handle.and_then(|h| h.cwd());
+
+            // Reuse the same backing/log files so the new PTY appends to the
+            // existing scrollback rather than starting blank.
+            let backing_path = self.terminal_backing_files.get(&old_id).cloned();
+            let log_path = self.terminal_log_files.get(&old_id).cloned();
+
+            // Same argv precedence as workspace restore: an agent-resume argv
+            // first (rejoin the conversation), then the launch command, else
+            // the plain interactive shell.
+            let resume_argv = self
+                .terminal_resume_commands
+                .get(&old_id)
+                .filter(|argv| !argv.is_empty() && self.resources.config.terminal.resume_agents)
+                .cloned();
+            let launch_argv = self
+                .terminal_commands
+                .get(&old_id)
+                .filter(|argv| !argv.is_empty())
+                .cloned();
+            let spawn_argv = resume_argv.or(launch_argv);
+            let wrapper = match spawn_argv.as_deref() {
+                Some(argv) => self.authority().terminal_command(argv),
+                None => self.resolved_terminal_wrapper(),
+            };
+            let wrapper = self.apply_remote_terminal_env(wrapper);
+            let env_delta = self.terminal_env_delta(&wrapper);
+
+            let new_id = match self.terminal_manager.spawn(
+                cols,
+                rows,
+                cwd,
+                log_path,
+                backing_path,
+                wrapper,
+                env_delta,
+            ) {
+                Ok(id) => id,
+                Err(e) => {
+                    tracing::warn!("reconnect: failed to respawn terminal {:?}: {}", old_id, e);
+                    continue;
+                }
+            };
+
+            // The dead PTY's handle is now superseded — tear it down.
+            self.terminal_manager.close(old_id);
+
+            // Remap every terminal-id-keyed entry from old_id → new_id.
+            if new_id != old_id {
+                self.terminal_buffers.insert(buffer_id, new_id);
+                if let Some(p) = self.terminal_backing_files.remove(&old_id) {
+                    self.terminal_backing_files.insert(new_id, p);
+                }
+                if let Some(p) = self.terminal_log_files.remove(&old_id) {
+                    self.terminal_log_files.insert(new_id, p);
+                }
+                if let Some(c) = self.terminal_commands.remove(&old_id) {
+                    self.terminal_commands.insert(new_id, c);
+                }
+                if let Some(c) = self.terminal_resume_commands.remove(&old_id) {
+                    self.terminal_resume_commands.insert(new_id, c);
+                }
+                if self.ephemeral_terminals.remove(&old_id) {
+                    self.ephemeral_terminals.insert(new_id);
+                }
+            }
+
+            // Register the reborn leader pid so window-level signal operations
+            // (Stop / Archive / Delete) reach the new process group.
+            if let Some(pid) = self.terminal_manager.get(new_id).and_then(|h| h.pid()) {
+                self.process_groups
+                    .register(pid, format!("terminal #{}", new_id.0));
+            }
+        }
+
+        // Size the freshly-spawned PTYs to their splits' content areas.
+        self.resize_visible_terminals();
     }
 }
 
@@ -780,6 +971,114 @@ impl Editor {
         );
     }
 
+    /// Open a new terminal in a fresh split created from the active pane.
+    ///
+    /// `SplitDirection::Vertical` places the terminal in a pane to the
+    /// right; `SplitDirection::Horizontal` places it below. Unlike
+    /// `open_terminal` (which attaches a terminal tab to the *current*
+    /// split), this seeds a brand-new split leaf with the terminal buffer
+    /// directly — mirroring `Action::OpenTerminalInDock` — so the new pane
+    /// shows only the terminal, with no phantom tab carrying the
+    /// previously-active buffer.
+    pub fn open_terminal_split(&mut self, direction: crate::model::event::SplitDirection) {
+        // Splitting the layout is a commitment gesture for any preview tab.
+        // Promote before touching the split tree so the "preview is anchored
+        // to a single split" invariant holds across the operation (mirrors
+        // `split_pane_impl`).
+        self.active_window_mut().promote_current_preview();
+
+        // Spawn the PTY first so we have a real terminal buffer to seed the
+        // new leaf with — otherwise the leaf would carry the user's
+        // previously-active buffer as a placeholder that would linger as a
+        // phantom tab.
+        let Some(terminal_id) = self.spawn_terminal_session() else {
+            return;
+        };
+        let buffer_id = self.create_terminal_buffer_detached(terminal_id);
+
+        // Split the active pane, placing the new terminal leaf after
+        // (right for Vertical, below for Horizontal).
+        let new_leaf = self
+            .windows
+            .get_mut(&self.active_window)
+            .and_then(|w| w.split_manager_mut())
+            .expect("active window must have a populated split layout")
+            .split_active(direction, buffer_id, 0.5);
+        let new_leaf = match new_leaf {
+            Ok(leaf) => leaf,
+            Err(e) => {
+                self.set_status_message(t!("split.error", error = e.to_string()).to_string());
+                return;
+            }
+        };
+
+        let mut view_state =
+            SplitViewState::with_buffer(self.terminal_width, self.terminal_height, buffer_id);
+        // Terminal-dedicated splits never show line numbers or current-line
+        // highlight (mirrors the dock + plugin-terminal split setup).
+        view_state.apply_config_defaults(
+            false,
+            false,
+            self.active_window().resolve_line_wrap_for_buffer(buffer_id),
+            self.config.editor.wrap_indent,
+            self.active_window()
+                .resolve_wrap_column_for_buffer(buffer_id),
+            self.config.editor.rulers.clone(),
+            0,
+        );
+        // Terminals don't wrap — keep escape sequences intact.
+        view_state.viewport.line_wrap_enabled = false;
+
+        self.windows
+            .get_mut(&self.active_window)
+            .and_then(|w| w.split_view_states_mut())
+            .expect("active window must have a populated split layout")
+            .insert(new_leaf, view_state);
+        self.windows
+            .get_mut(&self.active_window)
+            .and_then(|w| w.split_manager_mut())
+            .expect("active window must have a populated split layout")
+            .set_active_split(new_leaf);
+
+        // Mirror open_terminal's post-attach bookkeeping.
+        self.active_window_mut().terminal_mode = true;
+        self.active_window_mut().key_context = crate::input::keybindings::KeyContext::Terminal;
+        self.active_window_mut().resize_visible_terminals();
+
+        // A new split changes every sibling pane's size. Reflow through the
+        // single layout funnel so existing terminals fit their new panes.
+        self.relayout();
+
+        // Editor-wide: refresh the plugin-state snapshot so plugin hooks see
+        // the new active buffer, then fire `buffer_activated`.
+        #[cfg(feature = "plugins")]
+        self.update_plugin_state_snapshot();
+        #[cfg(feature = "plugins")]
+        self.plugin_manager.read().unwrap().run_hook(
+            "buffer_activated",
+            crate::services::plugins::hooks::HookArgs::BufferActivated { buffer_id },
+        );
+
+        let exit_key = self
+            .keybindings
+            .read()
+            .unwrap()
+            .find_keybinding_for_action(
+                "terminal_escape",
+                crate::input::keybindings::KeyContext::Terminal,
+            )
+            .unwrap_or_else(|| "Ctrl+Space".to_string());
+        self.set_status_message(
+            t!("terminal.opened", id = terminal_id.0, exit_key = exit_key).to_string(),
+        );
+        tracing::info!(
+            "Opened terminal {:?} into new split leaf {:?} (buffer {:?})",
+            terminal_id,
+            new_leaf,
+            buffer_id
+        );
+    }
+
     /// Editor-side thin wrapper. Delegates to the active window's
     /// `Window::create_terminal_buffer_detached` (used during session
     /// restore by `input.rs`).
@@ -808,7 +1107,7 @@ impl Editor {
             if let Some(ref path) = backing_file {
                 // Best-effort cleanup of temporary terminal files.
                 #[allow(clippy::let_underscore_must_use)]
-                let _ = self.authority().filesystem.remove_file(path);
+                let _ = terminal_backing_fs().remove_file(path);
             }
             // Clean up raw log file
             if let Some(log_file) = self
@@ -819,7 +1118,7 @@ impl Editor {
                 if backing_file.as_ref() != Some(&log_file) {
                     // Best-effort cleanup of temporary terminal files.
                     #[allow(clippy::let_underscore_must_use)]
-                    let _ = self.authority().filesystem.remove_file(&log_file);
+                    let _ = terminal_backing_fs().remove_file(&log_file);
                 }
             }
 
@@ -1062,10 +1361,8 @@ impl Editor {
                             let truncate_pos = state.backing_file_history_end();
                             // Always truncate to remove appended visible screen
                             // (even if truncate_pos is 0, meaning no scrollback yet)
-                            if let Err(e) = self
-                                .authority()
-                                .filesystem
-                                .set_file_length(backing_path, truncate_pos)
+                            if let Err(e) =
+                                terminal_backing_fs().set_file_length(backing_path, truncate_pos)
                             {
                                 tracing::warn!("Failed to truncate terminal backing file: {}", e);
                             }
@@ -1163,11 +1460,30 @@ impl Window {
             .map(|s| s.uses_sgr_mouse())
             .unwrap_or(true);
 
-        // For alternate scroll mode, convert scroll to arrow keys.
-        let uses_alt_scroll = self
+        // Alternate-scroll mode converts the wheel into arrow keys so the
+        // wheel scrolls pagers like `less`/`man` that don't track the mouse.
+        // It must be suppressed whenever the program is itself tracking the
+        // mouse: such a program (e.g. Claude Code in its full-screen
+        // "no-flicker" mode) requested mouse reporting precisely so it can
+        // scroll its own viewport from wheel events. Forwarding synthesized
+        // Up/Down arrows instead leaks them into the program's input — for
+        // Claude Code that cycles prompt/message history rather than
+        // scrolling. This mirrors xterm/alacritty, where alternate scroll is
+        // inactive while any mouse-tracking mode is on.
+        //
+        // Note `ALTERNATE_SCROLL` is on by default in alacritty_terminal, so
+        // this branch would otherwise fire for every wheel event forwarded to
+        // an alternate-screen program — the `wants_mouse` guard is what keeps
+        // mouse-aware programs receiving real wheel reports.
+        let wants_mouse = self
             .get_active_terminal_state()
-            .map(|s| s.uses_alternate_scroll())
+            .map(|s| s.wants_mouse_events())
             .unwrap_or(false);
+        let uses_alt_scroll = !wants_mouse
+            && self
+                .get_active_terminal_state()
+                .map(|s| s.uses_alternate_scroll())
+                .unwrap_or(false);
 
         if uses_alt_scroll {
             match kind {
@@ -1262,11 +1578,21 @@ impl Window {
         };
         let visible_buffers = mgr.get_visible_buffers(editor_area);
 
+        let active_buffer = self.active_buffer();
         for (_split_id, buffer_id, split_area) in visible_buffers {
             if self.terminal_buffers.contains_key(&buffer_id) {
-                // Tab bar takes 1 row, scrollbar takes 1 column on the right.
+                // The active split's terminal hides its scrollbar while in
+                // terminal mode (live PTY grid), so the grid reclaims that
+                // column; the read-only scrollback view shown after exiting
+                // keeps its scrollbar. Mirror the renderer's
+                // `terminal_showing_live_grid` test so the PTY width matches
+                // the rendered `content_rect`.
+                let showing_live_grid = buffer_id == active_buffer && self.terminal_mode;
+                let scrollbar_cols = if showing_live_grid { 0 } else { 1 };
+                // Tab bar takes 1 row; reserve 1 row for chrome and the
+                // scrollbar column (when shown) on the right.
                 let content_height = split_area.height.saturating_sub(2);
-                let content_width = split_area.width.saturating_sub(2);
+                let content_width = split_area.width.saturating_sub(1 + scrollbar_cols);
 
                 if content_width > 0 && content_height > 0 {
                     self.resize_terminal(buffer_id, content_width, content_height);
@@ -1310,11 +1636,7 @@ impl Window {
                 // screen into history. The PTY read loop also flushes on output,
                 // but an idle terminal that was only resized has pending lines;
                 // capturing them here guarantees the scroll-back view is complete.
-                if let Ok(mut file) = self
-                    .authority()
-                    .filesystem
-                    .open_file_for_append(&backing_file)
-                {
+                if let Ok(mut file) = terminal_backing_fs().open_file_for_append(&backing_file) {
                     let mut writer = BufWriter::new(&mut *file);
                     if let Err(e) = state.flush_new_scrollback(&mut writer) {
                         tracing::error!("Failed to flush terminal scrollback: {}", e);
@@ -1323,17 +1645,13 @@ impl Window {
 
                 // Record the current file size as the history end point
                 // (before appending visible screen) so we can truncate back to it
-                if let Ok(metadata) = self.authority().filesystem.metadata(&backing_file) {
+                if let Ok(metadata) = terminal_backing_fs().metadata(&backing_file) {
                     state.set_backing_file_history_end(metadata.size);
                     history_end_byte = Some(metadata.size);
                 }
 
                 // Open backing file in append mode to add visible screen
-                if let Ok(mut file) = self
-                    .authority()
-                    .filesystem
-                    .open_file_for_append(&backing_file)
-                {
+                if let Ok(mut file) = terminal_backing_fs().open_file_for_append(&backing_file) {
                     let mut writer = BufWriter::new(&mut *file);
                     if let Err(e) = state.append_visible_screen(&mut writer) {
                         tracing::error!("Failed to append visible screen to backing file: {}", e);
@@ -1342,16 +1660,19 @@ impl Window {
             }
         }
 
-        // Reload buffer from the backing file (reusing existing file loading)
+        // Reload buffer from the backing file (reusing existing file loading).
+        // Force text mode: raw PTY scrollback can contain control bytes that
+        // would otherwise trip binary detection, dropping ANSI colors and
+        // showing escape-code fragments in scrollback mode (#2449).
         let large_file_threshold = self.resources.config.editor.large_file_threshold_bytes as usize;
-        if let Ok(new_state) = EditorState::from_file_with_languages(
+        if let Ok(new_state) = EditorState::from_file_with_languages_force_text(
             &backing_file,
             self.terminal_width,
             self.terminal_height,
             large_file_threshold,
             &self.resources.grammar_registry,
             &self.resources.config.languages,
-            std::sync::Arc::clone(&self.authority().filesystem),
+            terminal_backing_fs(),
         ) {
             let total_bytes = new_state.buffer.total_bytes();
             if let Some(state) = self.buffers.get_mut(&buffer_id) {

@@ -82,10 +82,10 @@ pub struct Window {
     /// Stable identifier. The base window is always `WindowId(1)`.
     pub id: WindowId,
 
-    /// This session's backend — *where* it acts, *whether* it may
+    /// This workspace's backend — *where* it acts, *whether* it may
     /// (`workspace_trust`), and *with what env*. **Owned outright by this
     /// window**, never shared with another: it lives here (not in the
-    /// `Clone` `WindowResources`) so the type system prevents one session's
+    /// `Clone` `WindowResources`) so the type system prevents one workspace's
     /// authority/trust/env from leaking into another (issue #2280). The
     /// editor's active backend is just `active_window().authority` — there is
     /// no separate clonable editor-wide copy.
@@ -205,6 +205,10 @@ pub struct Window {
     /// Pending LSP find-references request id and the symbol name.
     pub pending_references_request: Option<u64>,
     pub pending_references_symbol: String,
+
+    /// Pending LSP go-to-implementation request id and the symbol name.
+    pub pending_implementation_request: Option<u64>,
+    pub pending_implementation_symbol: String,
 
     /// Pending LSP signature-help request id.
     pub pending_signature_help_request: Option<u64>,
@@ -333,17 +337,28 @@ pub struct Window {
     /// data dir so it survives editor restarts.
     pub plugin_state: HashMap<String, HashMap<String, serde_json::Value>>,
 
-    /// Declarative spec for *how to rebuild this session's backend* — the
+    /// Declarative spec for *how to rebuild this workspace's backend* — the
     /// persisted source of truth behind the live `resources.authority`. Set
-    /// when an authority is installed for the session (`setAuthority` →
+    /// when an authority is installed for the workspace (`setAuthority` →
     /// `Plugin`, born-attached remote → `RemoteAgent`, new local → `Local`)
-    /// and round-tripped through the session's workspace file so a restart /
+    /// and round-tripped through the workspace's workspace file so a restart /
     /// relaunch can reconnect the backend rather than degrade it to local.
-    /// `Local` (the default) for an ordinary host-local session. A session
+    /// `Local` (the default) for an ordinary host-local workspace. A workspace
     /// whose spec is remote but whose live `authority` is local is *dormant*
     /// — disconnected, awaiting reconnect. See
     /// `docs/internal/PER_SESSION_BACKENDS_DESIGN.md`.
     pub authority_spec: crate::services::authority::SessionAuthoritySpec,
+
+    /// Error from the most recent failed *reconnect* of this dormant remote
+    /// workspace (the dive-triggered `reconnect_dormant_session_if_needed`
+    /// path). `Some` drives the status-bar remote indicator into `FailedAttach`
+    /// for this window — a persistent, per-window signal that survives until the
+    /// next successful reconnect (cleared on success / on a fresh reconnect
+    /// attempt) or the user dismisses it. Per-window rather than the editor-wide
+    /// `remote_indicator_override` (which the devcontainer plugin owns) so a
+    /// failed SSH/kube reconnect on one workspace can't bleed its error onto
+    /// another window's indicator.
+    pub remote_reconnect_error: Option<String>,
 
     /// Window-scoped layout hit-test cache: split-leaf rects, tab
     /// rects, the file-explorer rect, separators, scrollbars, and
@@ -668,7 +683,7 @@ pub struct Window {
 
     /// Argv each terminal was spawned with, when it ran a command other
     /// than the plain shell (e.g. an Orchestrator agent). Captured at spawn
-    /// and persisted into the workspace so a restored session re-runs the
+    /// and persisted into the workspace so a restored workspace re-runs the
     /// same command rather than coming back as a bare shell. Terminals
     /// spawned as a plain shell have no entry.
     pub terminal_commands:
@@ -872,7 +887,7 @@ pub(crate) fn configure_lsp_servers(
 
     // Auto-detect Deno projects: if deno.json or deno.jsonc exists in the
     // window root, override JS/TS LSP to use `deno lsp` (#1191). Checked
-    // against the window's own root so each session gets the detection for
+    // against the window's own root so each workspace gets the detection for
     // its actual project rather than the process cwd.
     if root.join("deno.json").exists() || root.join("deno.jsonc").exists() {
         tracing::info!("Detected Deno project (deno.json found), using deno lsp for JS/TS");
@@ -1380,12 +1395,32 @@ impl Window {
     ) {
         self.buffers
             .with_buffer_and_view_states(buffer_id, |state, vs_map| {
+                let mut moved_any = false;
                 for leaf_id in splits {
                     let Some(view_state) = vs_map.get_mut(leaf_id) else {
                         continue;
                     };
                     view_state.cursors.primary_mut().move_to(position, false);
                     view_state.ensure_cursor_visible(&mut state.buffer, &state.marker_list);
+                    moved_any = true;
+                }
+                // Refresh the cached primary cursor line number so the status
+                // bar (and any other consumer of `primary_cursor_line_number`)
+                // reflects the new position. Other cursor-move paths update
+                // this cache themselves; without doing the same here, a
+                // plugin-driven setBufferCursor would leave the cache pinned
+                // to its initial Absolute(0) — the user-visible "off-by-one"
+                // when opening blame from line 2 still shows "Ln 1". Guard
+                // on `moved_any` so we don't desync the cache when no split
+                // was actually carrying the buffer's cursor.
+                if moved_any {
+                    let line = state
+                        .buffer
+                        .offset_to_position(position)
+                        .map(|p| p.line)
+                        .unwrap_or(0);
+                    state.primary_cursor_line_number =
+                        crate::model::buffer::LineNumber::Absolute(line);
                 }
             });
     }
@@ -1739,6 +1774,7 @@ impl Window {
             file_mod_times: HashMap::new(),
             plugin_state: HashMap::new(),
             authority_spec: crate::services::authority::SessionAuthoritySpec::Local,
+            remote_reconnect_error: None,
             lsp,
             panel_ids: HashMap::new(),
             buffers: WindowBuffers::new(),
@@ -1763,6 +1799,8 @@ impl Window {
             pending_goto_definition_request: None,
             pending_references_request: None,
             pending_references_symbol: String::new(),
+            pending_implementation_request: None,
+            pending_implementation_symbol: String::new(),
             pending_signature_help_request: None,
             pending_code_actions_requests: std::collections::HashSet::new(),
             pending_code_actions_server_names: std::collections::HashMap::new(),
@@ -2428,6 +2466,10 @@ impl Window {
             },
             view_mode: Default::default(),
             compose_width: None,
+            // Per-buffer line-number / line-wrap overrides are workspace-scoped,
+            // not part of the cross-project global per-file state.
+            line_numbers: None,
+            line_wrap: None,
             plugin_state: std::collections::HashMap::new(),
             folds: Vec::new(),
         };

@@ -163,11 +163,45 @@ impl Editor {
             .to_string();
         snapshot.env_active = self.authority().env_provider.is_active();
 
+        // Core is the *only* place that detects which environment a workspace
+        // has. The env-manager plugin reads this resolved result via
+        // `editor.detectedEnv()` rather than probing the filesystem itself.
+        // Empty string ⇒ no env detected.
+        snapshot.detected_env = crate::services::workspace_trust::detect_env(
+            self.working_dir(),
+            &self.config.env.detectors,
+        )
+        .and_then(|d| serde_json::to_string(&d).ok())
+        .unwrap_or_default();
+
         // Publish the session list so plugins (Orchestrator, etc.)
         // see updates from createWindow/closeWindow without
         // a separate notification path. Sorted by id for
         // deterministic order — `next_window_id` is monotonic
         // so this is "creation order".
+        // Dormant remote sessions (SSH / kube discovered at boot, not yet
+        // connected) have no `Window` — they live in `dormant_remote` as
+        // authority-less descriptors. They must still appear in the dock, so
+        // fold them into the snapshot alongside the live windows. A dive
+        // promotes one to a real window (removing it from `dormant_remote`), so
+        // the two collections are disjoint and never double-list a session.
+        let dormant_infos = self.dormant_remote.values().map(|d| {
+            let slot = d.plugin_state.get("orchestrator");
+            let project_path = slot
+                .and_then(|m| m.get("project_path"))
+                .and_then(|v| v.as_str())
+                .filter(|p| !p.is_empty())
+                .map(std::path::PathBuf::from)
+                .or_else(|| d.project_path.clone())
+                .unwrap_or_else(|| d.root.clone());
+            fresh_core::api::WindowInfo {
+                id: fresh_core::WindowId(d.id),
+                label: d.label.clone(),
+                root: normalize_plugin_path(d.root.clone()),
+                project_path: normalize_plugin_path(project_path),
+                shared_worktree: d.shared_worktree,
+            }
+        });
         let mut session_infos: Vec<fresh_core::api::WindowInfo> = self
             .windows
             .values()
@@ -198,6 +232,7 @@ impl Editor {
                 }
             })
             .collect();
+        session_infos.extend(dormant_infos);
         session_infos.sort_by_key(|s| s.id.0);
         snapshot.windows = session_infos;
         snapshot.active_window_id = self.active_window;
@@ -750,10 +785,21 @@ impl Editor {
                 );
             }
             PluginCommand::SetActiveWindow { id } => {
-                self.set_active_window(id);
+                // Diving into a dormant remote session connects its backend and
+                // promotes it to a real window (born with that authority) rather
+                // than activating a placeholder — see `bring_dormant_remote_online`.
+                if self.dormant_remote.contains_key(&id) {
+                    self.bring_dormant_remote_online(id);
+                } else {
+                    self.set_active_window(id);
+                }
             }
             PluginCommand::SetActiveWindowAnimated { id, from_edge } => {
-                self.set_active_window_animated(id, &from_edge);
+                if self.dormant_remote.contains_key(&id) {
+                    self.bring_dormant_remote_online(id);
+                } else {
+                    self.set_active_window_animated(id, &from_edge);
+                }
             }
             PluginCommand::SetWindowCycleOrder { ids } => {
                 self.window_cycle_order = if ids.is_empty() { None } else { Some(ids) };
@@ -1012,6 +1058,7 @@ impl Editor {
                 show_cursors,
                 editing_disabled,
                 hidden_from_tabs,
+                initial_cursor_line,
                 request_id,
             } => {
                 self.handle_create_virtual_buffer_with_content(
@@ -1023,6 +1070,7 @@ impl Editor {
                     show_cursors,
                     editing_disabled,
                     hidden_from_tabs,
+                    initial_cursor_line,
                     request_id,
                 );
             }
@@ -1075,6 +1123,7 @@ impl Editor {
                 show_cursors,
                 editing_disabled,
                 line_wrap,
+                initial_cursor_line,
                 request_id,
             } => {
                 self.handle_create_virtual_buffer_in_existing_split(
@@ -1087,6 +1136,7 @@ impl Editor {
                     show_cursors,
                     editing_disabled,
                     line_wrap,
+                    initial_cursor_line,
                     request_id,
                 );
             }
@@ -1178,8 +1228,9 @@ impl Editor {
                 title,
                 message,
                 actions,
+                buffer_id,
             } => {
-                self.handle_show_action_popup(popup_id, title, message, actions);
+                self.handle_show_action_popup(popup_id, title, message, actions, buffer_id);
             }
 
             PluginCommand::SetLspMenuContributions {
@@ -1442,9 +1493,17 @@ impl Editor {
                 width_pct,
                 height_pct,
                 as_dock,
+                focus_marker,
             } => {
                 let key = crate::widgets::PanelKey::new(plugin, panel_id);
-                self.handle_mount_floating_widget(key, spec, width_pct, height_pct, as_dock);
+                self.handle_mount_floating_widget(
+                    key,
+                    spec,
+                    width_pct,
+                    height_pct,
+                    as_dock,
+                    focus_marker,
+                );
             }
 
             PluginCommand::UpdateFloatingWidget {
@@ -1501,8 +1560,9 @@ impl Editor {
             self.authority()
                 .env_provider
                 .set(snippet, dir.map(std::path::PathBuf::from));
-            // Re-evaluate already-running tooling under the new env.
-            self.request_restart(self.working_dir().to_path_buf());
+            // Re-evaluate already-running tooling under the new env — scoped to
+            // THIS window only.
+            self.refresh_active_window_lsp_for_env();
         } else {
             self.active_window_mut().status_message =
                 Some("Workspace not trusted — cannot activate environment".to_string());
@@ -1513,7 +1573,48 @@ impl Editor {
         let was_active = self.authority().env_provider.is_active();
         self.authority().env_provider.clear();
         if was_active {
-            self.request_restart(self.working_dir().to_path_buf());
+            self.refresh_active_window_lsp_for_env();
+        }
+    }
+
+    /// Re-launch the *active window's* already-running language servers so they
+    /// pick up a just-changed environment (`editor.setEnv` / `clearEnv`),
+    /// WITHOUT a process-wide editor rebuild.
+    ///
+    /// The window's `EnvProvider` is updated in place (see
+    /// `services::env_provider` — "the plugin sets the recipe in place […] and
+    /// there is no authority rebuild"), so every *new* spawn — new terminals,
+    /// servers started later — already inherits the change. Only servers that
+    /// were spawned under the old env need a re-launch, and only this window's:
+    /// each `Window` owns its own LSP, terminals, and authority, so a single
+    /// workspace's env activation must not touch the others. The previous
+    /// `request_restart` here rebuilt the whole editor — tearing down every
+    /// other orchestrator session's terminals and closing the dock — which is
+    /// the "Trust restarted everything" bug. Already-open terminals keep
+    /// running and only adopt the new env when reopened (matching the env
+    /// subsystem's lazy, capture-at-spawn model).
+    fn refresh_active_window_lsp_for_env(&mut self) {
+        let active_id = self.active_window;
+        let running: Vec<String> = self
+            .windows
+            .get(&active_id)
+            .map(|w| w.lsp.running_servers())
+            .unwrap_or_default();
+        if running.is_empty() {
+            return;
+        }
+        let file_path = self
+            .active_window()
+            .buffer_metadata
+            .get(&self.active_buffer())
+            .and_then(|meta| meta.file_path().cloned());
+        for language in &running {
+            if let Some(w) = self.windows.get_mut(&active_id) {
+                let _ = w.lsp.manual_restart(language, file_path.as_deref());
+            }
+            // Re-send didOpen for this language's buffers so the fresh server
+            // (now under the new env) sees the open documents.
+            self.reopen_buffers_for_language(language);
         }
     }
 
@@ -1989,7 +2090,27 @@ impl Editor {
         use crate::input::keybindings::Action;
         use std::collections::HashMap;
 
+        // Plugins may *request* the trust prompt (`workspace_trust_prompt`,
+        // which asks the user) but must never *set* the trust level
+        // themselves. Granting/lowering trust is a user+core decision — the
+        // same boundary VS Code, JetBrains, and Zed enforce: an extension can
+        // open the prompt, the user decides. Silently drop any attempt to
+        // dispatch the level-setting actions through this generic channel.
+        const PLUGIN_FORBIDDEN_ACTIONS: &[&str] = &[
+            "workspace_trust_trust",
+            "workspace_trust_restrict",
+            "workspace_trust_block",
+        ];
+
         for action_spec in actions {
+            if PLUGIN_FORBIDDEN_ACTIONS.contains(&action_spec.action.as_str()) {
+                tracing::warn!(
+                    "plugin attempted to set workspace trust via '{}' — denied; \
+                     plugins may request the prompt (workspace_trust_prompt), not set the level",
+                    action_spec.action
+                );
+                continue;
+            }
             if let Some(action) = Action::from_str(&action_spec.action, &HashMap::new()) {
                 // Execute the action `count` times
                 for _ in 0..action_spec.count {
@@ -2690,6 +2811,7 @@ impl Editor {
         show_cursors: bool,
         editing_disabled: bool,
         hidden_from_tabs: bool,
+        initial_cursor_line: Option<u32>,
         request_id: Option<u64>,
     ) {
         // Hidden-from-tabs buffers (e.g. composite source panes) must NOT be
@@ -2744,6 +2866,51 @@ impl Editor {
                 if !hidden_from_tabs {
                     self.set_active_buffer(buffer_id);
                     tracing::debug!("Switched to virtual buffer {:?}", buffer_id);
+                }
+
+                // Apply an initial cursor position. We do this in the same
+                // command-processing tick as creation, so the cursor is in
+                // place by the time the editor next processes user input —
+                // a follow-up SetBufferCursor from the plugin would race
+                // against the user. The plugin passes a line index; we
+                // resolve it to a byte here using the buffer's own content
+                // so UTF-8-byte math never touches JS-side string-length
+                // semantics. Done AFTER `set_active_buffer` so the new
+                // buffer is actually mounted in a split when
+                // `set_buffer_cursor_in_splits` walks the split tree.
+                if let Some(line) = initial_cursor_line {
+                    let target_line = line as usize;
+                    let byte = self
+                        .windows
+                        .get_mut(&self.active_window)
+                        .and_then(|w| w.buffers.get_mut(&buffer_id))
+                        .map(|s| {
+                            let total = s.buffer.len();
+                            let mut iter = s.buffer.line_iterator(0, 80);
+                            let mut target_byte = 0;
+                            for current_line in 0..=target_line {
+                                if let Some((line_start, _)) = iter.next_line() {
+                                    if current_line == target_line {
+                                        target_byte = line_start;
+                                        break;
+                                    }
+                                } else {
+                                    target_byte = total;
+                                    break;
+                                }
+                            }
+                            target_byte
+                        })
+                        .unwrap_or(0);
+                    let splits: Vec<super::LeafId> = self
+                        .windows
+                        .get(&self.active_window)
+                        .and_then(|w| w.buffers.splits())
+                        .map(|(mgr, _)| mgr)
+                        .expect("active window must have a populated split layout")
+                        .splits_for_buffer(buffer_id);
+                    self.active_window_mut()
+                        .set_buffer_cursor_in_splits(buffer_id, byte, &splits);
                 }
 
                 // Send response if request_id is present
@@ -2991,6 +3158,7 @@ impl Editor {
         show_cursors: bool,
         editing_disabled: bool,
         line_wrap: Option<bool>,
+        initial_cursor_line: Option<u32>,
         request_id: Option<u64>,
     ) {
         // Create the virtual buffer
@@ -3012,6 +3180,10 @@ impl Editor {
             return;
         }
 
+        // Apply an initial cursor position before the buffer becomes the
+        // active buffer in the split. Same rationale as the equivalent
+        // path in `handle_create_virtual_buffer_with_content`: a follow-up
+        // SetBufferCursor from the plugin would race against user input.
         // Show the buffer in the target split. set_pane_buffer
         // covers the tree + SVS updates the old code did by hand.
         let leaf_id = LeafId(split_id);
@@ -3044,6 +3216,73 @@ impl Editor {
             }
         }
 
+        // Apply an initial cursor position after the buffer is mounted in
+        // the target split. Done in the same command-processing tick as
+        // creation so the cursor is in place before the editor next
+        // processes user input — a follow-up SetBufferCursor from the
+        // plugin would race against the user. The plugin passes a line
+        // index; we resolve it to a byte here using the buffer's content
+        // so UTF-8-byte math never touches JS-side string-length
+        // semantics.
+        if let Some(line) = initial_cursor_line {
+            let target_line = line as usize;
+            let byte = self
+                .windows
+                .get_mut(&self.active_window)
+                .and_then(|w| w.buffers.get_mut(&buffer_id))
+                .map(|s| {
+                    let total = s.buffer.len();
+                    let mut iter = s.buffer.line_iterator(0, 80);
+                    let mut target_byte = 0;
+                    for current_line in 0..=target_line {
+                        if let Some((line_start, _)) = iter.next_line() {
+                            if current_line == target_line {
+                                target_byte = line_start;
+                                break;
+                            }
+                        } else {
+                            target_byte = total;
+                            break;
+                        }
+                    }
+                    target_byte
+                })
+                .unwrap_or(0);
+            // `splits_for_buffer` only walks the main split tree, so a
+            // buffer mounted into an inner leaf of a grouped subtree
+            // (buffer-group panel) wouldn't be found and the cursor move
+            // would silently no-op. Mirror `handle_set_buffer_cursor` and
+            // include any matching inner leaves so the cursor lands
+            // regardless of where the buffer ended up.
+            let mut splits: Vec<LeafId> = self
+                .windows
+                .get(&self.active_window)
+                .and_then(|w| w.buffers.splits())
+                .map(|(mgr, _)| mgr)
+                .expect("active window must have a populated split layout")
+                .splits_for_buffer(buffer_id);
+            for node in self.active_window().grouped_subtrees.values() {
+                if let crate::view::split::SplitNode::Grouped { layout, .. } = node {
+                    for inner_leaf in layout.leaf_split_ids() {
+                        if let Some(vs) = self
+                            .windows
+                            .get(&self.active_window)
+                            .and_then(|w| w.buffers.splits())
+                            .map(|(_, vs)| vs)
+                            .expect("active window must have a populated split layout")
+                            .get(&inner_leaf)
+                        {
+                            if vs.active_buffer == buffer_id && !splits.contains(&inner_leaf) {
+                                splits.push(inner_leaf);
+                            }
+                        }
+                    }
+                }
+            }
+            self.active_window_mut()
+                .set_buffer_cursor_in_splits(buffer_id, byte, &splits);
+        }
+
         tracing::info!(
             "Displayed virtual buffer {:?} in split {:?}",
             buffer_id,
@@ -3069,12 +3308,14 @@ impl Editor {
         title: String,
         message: String,
         actions: Vec<fresh_core::api::ActionPopupAction>,
+        buffer_id: Option<usize>,
     ) {
         tracing::info!(
-            "Action popup requested: id={}, title={}, actions={}",
+            "Action popup requested: id={}, title={}, actions={}, buffer_id={:?}",
             popup_id,
             title,
-            actions.len()
+            actions.len(),
+            buffer_id,
         );
 
         // Build popup list items from actions
@@ -3116,21 +3357,51 @@ impl Editor {
         // The resolver carries the popup_id so confirm/cancel fires
         // `action_popup_result` for exactly THIS popup, even when
         // multiple plugin popups are stacked concurrently.
-        let mut popup_obj = crate::state::convert_popup_data_to_popup(&popup_data);
+        let (popup_bg, popup_border_fg) = {
+            let theme = self.theme();
+            (theme.popup_bg, theme.popup_border_fg)
+        };
+        let mut popup_obj =
+            crate::state::convert_popup_data_to_popup(&popup_data, popup_bg, popup_border_fg);
         popup_obj.resolver = crate::view::popup::PopupResolver::PluginAction {
             popup_id: popup_id.clone(),
         };
 
-        // `convert_popup_data_to_popup` hardcodes a default dark
-        // background because it has no theme handle (it's called from
-        // `EditorState::apply` too). Restamp the active theme's
-        // `popup_bg` / `popup_border_fg` here so plugin popups don't
-        // render as a near-black rectangle on top of a light theme —
-        // #1941 issue 2.
-        {
-            let theme = self.theme();
-            popup_obj.background_style = ratatui::style::Style::default().bg(theme.popup_bg);
-            popup_obj.border_style = ratatui::style::Style::default().fg(theme.popup_border_fg);
+        // Buffer-scoped popup: a plugin raised this for one specific buffer
+        // (e.g. asm-lsp's `.asm-lsp.toml` offer on `after_file_open`), so it
+        // belongs on that buffer's popup stack — it then renders only while
+        // that buffer is active and is dropped when the buffer closes,
+        // instead of floating over every buffer like a global notification.
+        // Fall back to the global stack if the buffer has since closed, so
+        // the popup is never silently lost.
+        if let Some(bid) = buffer_id {
+            let bid = BufferId(bid);
+            let stack = self
+                .windows
+                .values_mut()
+                .find_map(|w| w.buffers.get_mut(&bid))
+                .map(|state| &mut state.popups);
+            if let Some(stack) = stack {
+                // Dedup by `popup_id` within this buffer's stack — repeated
+                // file-open hooks shouldn't pile up duplicate offers.
+                let existing_idx = stack.all().iter().position(|p| {
+                    matches!(
+                        &p.resolver,
+                        crate::view::popup::PopupResolver::PluginAction { popup_id: id } if id == &popup_id,
+                    )
+                });
+                match existing_idx.and_then(|idx| stack.get_mut(idx)) {
+                    Some(slot) => *slot = popup_obj,
+                    None => stack.show(popup_obj),
+                }
+                tracing::info!("Action popup shown on buffer {:?}: id={}", bid, popup_id,);
+                return;
+            }
+            tracing::warn!(
+                "Action popup id={} requested for missing buffer {:?}; showing globally",
+                popup_id,
+                bid,
+            );
         }
 
         // Dismiss any built-in LSP-status popup that the editor put
@@ -3562,11 +3833,34 @@ impl Editor {
     /// the devcontainer plugin can run `devcontainer up`), left to a follow-up.
     /// Idempotent: a reconnect already in flight for this window is a no-op.
     pub(crate) fn reconnect_dormant_session_if_needed(&mut self, window_id: fresh_core::WindowId) {
-        // A live session already holds its connection (keepalive); a local
-        // session has nothing to reconnect.
+        // The *activate* path (diving into a session). A live session already
+        // holds its connection (keepalive), so leave it alone here — switching
+        // to an already-connected window must not tear down and rebuild it. A
+        // local session has nothing to reconnect.
         if self.session_keepalives.contains_key(&window_id) {
             return;
         }
+        self.start_remote_reconnect(window_id);
+    }
+
+    /// Reconnect a session's remote backend on *explicit user request* — the
+    /// remote status indicator's Reconnect / Retry action.
+    ///
+    /// Unlike [`Self::reconnect_dormant_session_if_needed`] (the activate path,
+    /// which no-ops while a keepalive is parked) this forces the connect even
+    /// for a *live* remote `Window` that lost its carrier: such a window keeps
+    /// its now-stale keepalive and `Window`, so the activate-path guard would
+    /// wrongly skip it. On success the `RemoteAttachReady::Reconnect` handler
+    /// re-points the window's authority, replaces the stale keepalive, and
+    /// respawns its dead embedded terminals (see `async_dispatch.rs`).
+    pub(crate) fn force_reconnect_remote_session(&mut self, window_id: fresh_core::WindowId) {
+        self.start_remote_reconnect(window_id);
+    }
+
+    /// Shared body of the two reconnect entry points: read the window's backend
+    /// spec and, for a remote-agent session, kick off the async connect tagged
+    /// with this window so its result re-points *this* window.
+    fn start_remote_reconnect(&mut self, window_id: fresh_core::WindowId) {
         let Some(spec) = self
             .windows
             .get(&window_id)
@@ -3584,15 +3878,18 @@ impl Editor {
                 if self.remote_attach_inflight.contains(&request_id) {
                     return;
                 }
+                // Clear any prior FailedAttach so the indicator shows
+                // "Connecting" (not a stale error) while this retry runs.
+                if let Some(w) = self.windows.get_mut(&window_id) {
+                    w.remote_reconnect_error = None;
+                }
                 self.start_remote_connect(agent_spec, Some(window_id), request_id);
             }
             crate::services::authority::SessionAuthoritySpec::Plugin(_) => {
                 // Container: only the owning plugin can rebuild the backend
                 // (`devcontainer up`). TODO(per-session): fire a
                 // `session_reattach_requested` hook so it can.
-                tracing::debug!(
-                    "dormant container session {window_id}: reattach is plugin-driven (TODO)"
-                );
+                tracing::debug!("remote session {window_id}: reattach is plugin-driven (TODO)");
             }
         }
     }
@@ -3717,6 +4014,7 @@ impl Editor {
                         Err(e) => AsyncMessage::RemoteAttachFailed {
                             error: e.to_string(),
                             request_id,
+                            reconnect_window,
                         },
                     };
                     #[allow(clippy::let_underscore_must_use)]
@@ -3771,6 +4069,7 @@ impl Editor {
                         Err(e) => AsyncMessage::RemoteAttachFailed {
                             error: e.to_string(),
                             request_id,
+                            reconnect_window,
                         },
                     };
                     #[allow(clippy::let_underscore_must_use)]
@@ -4049,7 +4348,7 @@ impl Editor {
                     // (if open) doesn't disappear on a value
                     // mutation that happens to land while the
                     // user is mid-keystroke.
-                    let (scroll, multiline, completions, sel_idx, scroll_off) =
+                    let (scroll, multiline, completions, sel_idx, scroll_off, navigated) =
                         match panel.instance_states.get(&widget_key) {
                             Some(crate::widgets::WidgetInstanceState::Text {
                                 editor,
@@ -4057,14 +4356,16 @@ impl Editor {
                                 completions,
                                 completion_selected_index,
                                 completion_scroll_offset,
+                                completion_navigated,
                             }) => (
                                 *scroll,
                                 editor.multiline,
                                 completions.clone(),
                                 *completion_selected_index,
                                 *completion_scroll_offset,
+                                *completion_navigated,
                             ),
-                            _ => (0u32, true, Vec::new(), 0usize, 0u32),
+                            _ => (0u32, true, Vec::new(), 0usize, 0u32, false),
                         };
                     let mut editor = if multiline {
                         crate::primitives::text_edit::TextEdit::with_text(&value)
@@ -4084,6 +4385,7 @@ impl Editor {
                             completions,
                             completion_selected_index: sel_idx,
                             completion_scroll_offset: scroll_off,
+                            completion_navigated: navigated,
                         },
                     );
                 }
@@ -4152,12 +4454,18 @@ impl Editor {
                         completions,
                         completion_selected_index,
                         completion_scroll_offset,
+                        completion_navigated,
                         ..
                     }) = panel.instance_states.get_mut(&widget_key)
                     {
                         *completions = items;
                         *completion_selected_index = 0;
                         *completion_scroll_offset = 0;
+                        // A (re)opened popup is not yet "entered": Tab /
+                        // Enter act on the form until the user steps in
+                        // with ↑/↓. (Closing — empty `items` — also
+                        // resets it, harmlessly.)
+                        *completion_navigated = false;
                     }
                 }
             }
@@ -4282,6 +4590,7 @@ impl Editor {
         width_pct: u8,
         height_pct: u8,
         as_dock: bool,
+        focus_marker: bool,
     ) {
         let width_pct = width_pct.clamp(1, 100);
         let height_pct = height_pct.clamp(1, 100);
@@ -4334,11 +4643,18 @@ impl Editor {
             scrollbar_hover_zones: Vec::new(),
             scrollbar_zone_hovered: false,
             fullscreen: false,
+            focus_marker,
         });
         let prev = std::collections::HashMap::new();
         let prev_focus = String::new();
         let panel_width = self.floating_panel_inner_width(slot);
-        let out = crate::widgets::render_spec(&spec, &prev, &prev_focus, panel_width);
+        let out = super::widget_runtime::render_floating_spec(
+            focus_marker,
+            &spec,
+            &prev,
+            &prev_focus,
+            panel_width,
+        );
         let focus_cursor = out.focus_cursor;
         let entries = out.entries;
         let embeds = out.embeds;
@@ -4399,7 +4715,14 @@ impl Editor {
             .map(|s| s.to_string())
             .unwrap_or_default();
         let panel_width = self.floating_panel_inner_width(slot);
-        let out = crate::widgets::render_spec(&spec, &prev, &prev_focus, panel_width);
+        let focus_marker = self.panel(slot).map(|f| f.focus_marker).unwrap_or(false);
+        let out = super::widget_runtime::render_floating_spec(
+            focus_marker,
+            &spec,
+            &prev,
+            &prev_focus,
+            panel_width,
+        );
         let focus_cursor = out.focus_cursor;
         let entries = out.entries;
         let embeds = out.embeds;
@@ -5132,6 +5455,7 @@ impl Window {
                 modified: state.buffer.is_modified(),
                 length: state.buffer.len(),
                 is_virtual,
+                editing_disabled: state.editing_disabled,
                 view_mode: view_mode.to_string(),
                 is_composing_in_any_split,
                 compose_width,
@@ -5231,6 +5555,17 @@ impl Window {
                         line: line_of(primary_position),
                     });
 
+                    // Mirror the editor's cached primary cursor line number so
+                    // `getCursorLine()` returns a meaningful value without the
+                    // plugin runtime having to scan the buffer. Falls back to
+                    // 0 if the active buffer state isn't available.
+                    snapshot.primary_cursor_line = Some(
+                        buffers_mut
+                            .get(&active_buf_id)
+                            .map(|s| s.primary_cursor_line_number.value() as u32)
+                            .unwrap_or(0),
+                    );
+
                     snapshot.all_cursors = active_cursors
                         .iter()
                         .map(|(_, cursor)| CursorInfo {
@@ -5265,6 +5600,7 @@ impl Window {
                     });
                 } else {
                     snapshot.primary_cursor = None;
+                    snapshot.primary_cursor_line = None;
                     snapshot.all_cursors.clear();
                     snapshot.viewport = None;
                     snapshot.selected_text = None;

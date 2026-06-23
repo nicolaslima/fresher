@@ -1,4 +1,4 @@
-//! E2E coverage for the Orchestrator "New Session" form's path-
+//! E2E coverage for the Orchestrator "New Workspace" form's path-
 //! completion popup behaviour:
 //!
 //! 1. The dropdown renders inside a bordered box (it used to be bare
@@ -77,7 +77,7 @@ fn wait_for_new_session_command(harness: &mut EditorTestHarness) {
             let reg = h.editor().command_registry().read().unwrap();
             reg.get_all()
                 .iter()
-                .any(|c| c.get_localized_name() == "Orchestrator: New Session")
+                .any(|c| c.get_localized_name() == "Orchestrator: New Workspace")
         })
         .unwrap();
 }
@@ -87,15 +87,18 @@ fn open_new_session_form(harness: &mut EditorTestHarness) {
         .send_key(KeyCode::Char('p'), KeyModifiers::CONTROL)
         .unwrap();
     harness.wait_for_prompt().unwrap();
-    harness.type_text("Orchestrator: New Session").unwrap();
+    harness.type_text("Orchestrator: New Workspace").unwrap();
     harness
-        .wait_until(|h| h.screen_to_string().contains("Orchestrator: New Session"))
+        .wait_until(|h| h.screen_to_string().contains("Orchestrator: New Workspace"))
         .unwrap();
     harness
         .send_key(KeyCode::Enter, KeyModifiers::NONE)
         .unwrap();
     harness
-        .wait_until(|h| h.screen_to_string().contains("ORCHESTRATOR :: New Session"))
+        .wait_until(|h| {
+            h.screen_to_string()
+                .contains("ORCHESTRATOR :: New Workspace")
+        })
         .unwrap();
 }
 
@@ -182,12 +185,15 @@ fn completion_popup_renders_with_dim_separator() {
     );
 }
 
-/// Tab accepts the highlighted completion: the Project Path field
-/// must contain the first suggestion (`<workspace>/alpha_dir/`)
-/// after Tab is pressed with the dropdown open. Pins the
-/// already-working behaviour as a regression guard.
+/// Tab on an *un-engaged* popup (one the user hasn't stepped into with
+/// ↑/↓, so no row is highlighted) does NOT accept — it moves focus to
+/// the next field, closing the popup and leaving the typed text intact.
+/// (Accepting is `↓`-then-Tab/Enter, or a click — see
+/// `down_then_tab_accepts_completion`.) Before the focus-model fix, Tab
+/// always fired the completion's accept, so the number of Tabs to reach
+/// a button was unpredictable.
 #[test]
-fn tab_accepts_highlighted_completion() {
+fn tab_advances_focus_without_accepting_completion() {
     let (_temp, workspace) = set_up_workspace();
     let mut harness = EditorTestHarness::with_working_dir(160, 50, workspace.clone()).unwrap();
     harness.tick_and_render().unwrap();
@@ -196,14 +202,101 @@ fn tab_accepts_highlighted_completion() {
     open_new_session_form(&mut harness);
     let typed = type_alpha_prefix_and_wait(&mut harness, &workspace);
 
-    // Precondition: typed text intact before Tab.
-    assert_eq!(project_path_field_value(&harness.screen_to_string()), typed,);
-
-    // First item (`alpha_dir/`, sorted before `alpha_two/`) is
-    // highlighted by default — setCompletionItems resets
-    // selectedIndex to 0.
-    let expected = format!("{}/alpha_dir/", workspace.display());
     harness.send_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+    // Popup closes (Tab moved focus); the typed text is untouched —
+    // Tab doesn't accept `alpha_dir/` because the user never stepped
+    // into the dropdown.
+    harness
+        .wait_until(|h| !h.screen_to_string().contains("alpha_two/"))
+        .unwrap();
+    assert_eq!(
+        project_path_field_value(&harness.screen_to_string()),
+        typed,
+        "Tab must leave the typed text intact (it advances focus, it does not accept). \
+         Screen:\n{}",
+        harness.screen_to_string(),
+    );
+    // Focus left the Project Path field: exactly one `▸` marker is on
+    // screen, and it's no longer on the path line.
+    let screen = harness.screen_to_string();
+    assert_eq!(
+        screen.matches('▸').count(),
+        1,
+        "exactly one control is focused at a time. Screen:\n{}",
+        screen,
+    );
+    let path_line = screen
+        .lines()
+        .find(|l| l.contains(&typed))
+        .expect("project path line present");
+    assert!(
+        !path_line.contains('▸'),
+        "Tab moved focus off Project Path, so its `▸` marker is gone. Line: {:?}",
+        path_line,
+    );
+}
+
+/// `↓` steps into the open dropdown (highlighting a row) and then Tab
+/// applies that highlighted candidate into the field — the "accept if
+/// engaged" half of Tab's behaviour. Focus stays on the field (the
+/// accepted value is left visible/editable), unlike an un-engaged Tab
+/// which advances. Mirrors `down_then_enter_accepts_completion`.
+#[test]
+fn down_then_tab_accepts_completion() {
+    let (_temp, workspace) = set_up_workspace();
+    let mut harness = EditorTestHarness::with_working_dir(160, 50, workspace.clone()).unwrap();
+    harness.tick_and_render().unwrap();
+    wait_for_new_session_command(&mut harness);
+
+    open_new_session_form(&mut harness);
+    type_alpha_prefix_and_wait(&mut harness, &workspace);
+
+    // Step into the dropdown (↓ highlights the top row), then Tab
+    // applies it.
+    harness.send_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+    harness.send_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+
+    let expected = format!("{}/alpha_dir/", workspace.display());
+    harness
+        .wait_until(|h| project_path_field_value(&h.screen_to_string()) == expected)
+        .unwrap();
+
+    // Tab-accept keeps focus on the Project Path field (it didn't
+    // advance): the `▸` marker is still on the path line.
+    let screen = harness.screen_to_string();
+    let path_line = screen
+        .lines()
+        .find(|l| l.contains("alpha_dir/"))
+        .expect("project path line present");
+    assert!(
+        path_line.contains('▸'),
+        "Tab-accept should leave focus on the Project Path field. Line: {:?}\nScreen:\n{}",
+        path_line,
+        screen,
+    );
+}
+
+/// `↓` steps into the open dropdown (highlighting a row) and then
+/// Enter accepts the highlighted candidate into the field. Together
+/// with `down_then_tab_accepts_completion`, the keyboard accept paths
+/// are `↓`-then-Enter and `↓`-then-Tab (plus a click).
+#[test]
+fn down_then_enter_accepts_completion() {
+    let (_temp, workspace) = set_up_workspace();
+    let mut harness = EditorTestHarness::with_working_dir(160, 50, workspace.clone()).unwrap();
+    harness.tick_and_render().unwrap();
+    wait_for_new_session_command(&mut harness);
+
+    open_new_session_form(&mut harness);
+    type_alpha_prefix_and_wait(&mut harness, &workspace);
+
+    // Step into the dropdown, then accept.
+    harness.send_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+
+    let expected = format!("{}/alpha_dir/", workspace.display());
     harness
         .wait_until(|h| project_path_field_value(&h.screen_to_string()) == expected)
         .unwrap();
@@ -323,10 +416,13 @@ fn completion_popup_scrolls_with_down_arrow() {
         "precondition: `alpha_09/` must be off-screen before scrolling",
     );
 
-    // Press Down enough times to walk selection to the last
-    // candidate. Auto-scroll should snap the window so
-    // `alpha_09/` is visible at the bottom.
-    for _ in 0..9 {
+    // Press Down enough times to walk selection to the last candidate.
+    // The first `↓` only *steps into* the dropdown (highlighting the top
+    // row without moving), so reaching the 10th candidate (index 9) from
+    // the top takes one enter-press plus nine moves = ten presses.
+    // Auto-scroll should snap the window so `alpha_09/` is visible at the
+    // bottom.
+    for _ in 0..10 {
         harness.send_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
     }
     harness
@@ -386,9 +482,17 @@ fn selection_highlight_does_not_overlap_right_border() {
     open_new_session_form(&mut harness);
     type_many_alphas_prefix_and_wait(&mut harness, &workspace);
 
-    // `alpha_00/` is the first candidate, selected by default
-    // (the host resets `selectedIndex` to 0 whenever the
-    // candidate list updates).
+    // A freshly surfaced popup paints no highlighted row — Enter still
+    // acts on the form. The first `↓` steps into the dropdown and
+    // highlights the top row (`alpha_00/`, index 0) without moving the
+    // selection off it, so we get a selected row to check the border
+    // against.
+    harness.send_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+    harness.tick_and_render().unwrap();
+
+    // `alpha_00/` is the first candidate, now selected after the `↓`
+    // stepped into the dropdown (the host keeps `selectedIndex` at 0
+    // when first entering the list).
     let (_text_col, row) = harness
         .find_text_on_screen("alpha_00/")
         .expect("`alpha_00/` should be visible as the first candidate row");
@@ -510,12 +614,20 @@ fn completion_candidates_left_aligned_with_input_value() {
         .position(|l| l.contains("alpha_dir/") && l.contains(&workspace_str))
         .expect("popup row with `alpha_dir/` should be on screen");
 
-    let input_col = lines[input_row]
-        .find(&workspace_str)
-        .expect("input row should contain the workspace path");
-    let popup_col = lines[popup_row]
-        .find(&workspace_str)
-        .expect("popup row should contain the workspace path");
+    // Compare *display* columns, not byte offsets: the focus-marker
+    // gutter puts a multibyte `▸` (3 bytes, 1 column) ahead of the input
+    // value, so a raw `find()` byte offset would diverge from the popup
+    // row's even when the two are visually aligned. Counting chars up to
+    // the match gives the column (every glyph in the leading chrome —
+    // `│`, `▸`, spaces, `[` — is one display column wide).
+    let display_col = |line: &str| -> usize {
+        let b = line
+            .find(&workspace_str)
+            .expect("row should contain the workspace path");
+        line[..b].chars().count()
+    };
+    let input_col = display_col(lines[input_row]);
+    let popup_col = display_col(lines[popup_row]);
 
     assert_eq!(
         input_col, popup_col,
@@ -575,7 +687,7 @@ fn enter_advance_after_popup_dismiss_moves_plugin_focus_mirror() {
 
     // Now type a marker character. If the plugin's focus
     // mirror correctly advanced past Project Path, this char
-    // lands somewhere else (Session Name's input replaces the
+    // lands somewhere else (Workspace Name's input replaces the
     // placeholder, etc.) and the Project Path value stays at
     // `typed`. If the plugin's mirror is stuck on
     // project_path, the marker extends it.
@@ -686,7 +798,10 @@ fn bracketed_paste_routes_to_focused_dialog_field() {
     // the now-revealed buffer.
     harness.send_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
     harness
-        .wait_until(|h| !h.screen_to_string().contains("ORCHESTRATOR :: New Session"))
+        .wait_until(|h| {
+            !h.screen_to_string()
+                .contains("ORCHESTRATOR :: New Workspace")
+        })
         .unwrap();
     assert!(
         !harness.screen_to_string().contains("PASTEDMARKER"),
@@ -737,11 +852,259 @@ fn bracketed_paste_ignored_when_non_text_widget_focused() {
     // the hidden buffer; revealing it after Esc surfaces the marker.
     harness.send_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
     harness
-        .wait_until(|h| !h.screen_to_string().contains("ORCHESTRATOR :: New Session"))
+        .wait_until(|h| {
+            !h.screen_to_string()
+                .contains("ORCHESTRATOR :: New Workspace")
+        })
         .unwrap();
     assert!(
         !harness.screen_to_string().contains("IGNORED_PASTE"),
         "an ignored paste must not leak into the buffer behind the dialog. Screen:\n{}",
         harness.screen_to_string(),
     );
+}
+
+// ===========================================================================
+// Focus model: visible `▸` marker, linear Tab, ←/→ within selectors,
+// scoped Esc, and the Ctrl+Enter submit shortcut.
+// ===========================================================================
+
+/// The single screen line carrying the `▸` focus marker (the focused
+/// control). Panics if zero or more than one marker is present — the
+/// invariant the focus model guarantees is "exactly one control
+/// focused at a time".
+fn focused_line(screen: &str) -> String {
+    let lines: Vec<&str> = screen.lines().filter(|l| l.contains('▸')).collect();
+    assert_eq!(
+        lines.len(),
+        1,
+        "exactly one `▸` focus marker must be on screen, found {}. Screen:\n{}",
+        lines.len(),
+        screen,
+    );
+    lines[0].to_string()
+}
+
+/// Open the form on a non-git workspace (so the worktree toggle and
+/// Branch field are absent — a predictable, minimal field set).
+fn open_form_on(workspace: &PathBuf) -> EditorTestHarness {
+    let mut harness = EditorTestHarness::with_working_dir(160, 50, workspace.clone()).unwrap();
+    harness.tick_and_render().unwrap();
+    wait_for_new_session_command(&mut harness);
+    open_new_session_form(&mut harness);
+    harness
+}
+
+/// Tab moves linearly between *fields* — one stop per radio group, not
+/// one per option. Walking a full cycle lands the marker on the active
+/// "Run in:" tab exactly once and the active "Agent:" preset exactly
+/// once (never on an inactive option), and reaches `[ Create Workspace ]`.
+#[test]
+fn tab_is_linear_one_stop_per_radio_group() {
+    let (_temp, workspace) = set_up_workspace();
+    let mut harness = open_form_on(&workspace);
+
+    // Advance to the single "Run in:" stop — the anchor for one cycle.
+    // (The form opens focused on Project Path, so the "Run in:" tab is a
+    // few stops away.)
+    let mut guard = 0;
+    while !focused_line(&harness.screen_to_string()).contains("Run in:") {
+        harness.send_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        harness.tick_and_render().unwrap();
+        guard += 1;
+        assert!(
+            guard < 20,
+            "Tab never reached the 'Run in:' stop. Screen:\n{}",
+            harness.screen_to_string(),
+        );
+    }
+
+    // Walk exactly one full cycle: collect the focused line at each stop
+    // starting from the "Run in:" anchor, tabbing until the marker lands
+    // back on a "Run in:" line. Counting over a fixed number of presses
+    // would over-count once the press count exceeds the cycle length;
+    // bounding on "back to the anchor" makes the assertions independent
+    // of how many fields the active backend has.
+    let mut cycle_lines = vec![focused_line(&harness.screen_to_string())];
+    loop {
+        harness.send_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        harness.tick_and_render().unwrap();
+        let line = focused_line(&harness.screen_to_string());
+        if line.contains("Run in:") {
+            break; // back to the anchor — one full cycle walked
+        }
+        cycle_lines.push(line);
+        assert!(
+            cycle_lines.len() < 20,
+            "focus cycle never returned to the 'Run in:' anchor. Screen:\n{}",
+            harness.screen_to_string(),
+        );
+    }
+
+    let mut run_in_stops = 0;
+    let mut agent_stops = 0;
+    let mut saw_create = false;
+    let mut saw_inactive_option = false;
+    for line in &cycle_lines {
+        if line.contains("Run in:") {
+            run_in_stops += 1;
+            // The marker must precede the *active* backend (Local), not
+            // an inactive option.
+            if line.contains("▸ [ SSH ]")
+                || line.contains("▸ [ Kubernetes ]")
+                || line.contains("▸ [ Devcontainer ]")
+            {
+                saw_inactive_option = true;
+            }
+        }
+        if line.contains("Agent:") {
+            agent_stops += 1;
+            if line.contains("▸ [ claude")
+                || line.contains("▸ [ aider")
+                || line.contains("▸ [ custom")
+            {
+                saw_inactive_option = true;
+            }
+        }
+        if line.contains("Create Workspace") {
+            saw_create = true;
+        }
+    }
+
+    assert!(
+        !saw_inactive_option,
+        "Tab must never land on an inactive radio option (←/→ changes the option). \
+         Screen:\n{}",
+        harness.screen_to_string(),
+    );
+    assert_eq!(
+        run_in_stops, 1,
+        "the 'Run in:' group is a single Tab stop per cycle (got {run_in_stops})",
+    );
+    assert_eq!(
+        agent_stops, 1,
+        "the 'Agent:' group is a single Tab stop per cycle (got {agent_stops})",
+    );
+    assert!(saw_create, "Tab must reach the [ Create Workspace ] button");
+}
+
+/// ←/→ changes the option *within* the "Run in:" selector (and swaps
+/// the body), while Tab leaves the option alone. This is the split the
+/// help line documents: Tab between fields, ←/→ within a group.
+#[test]
+fn arrows_switch_run_in_selector_option() {
+    let (_temp, workspace) = set_up_workspace();
+    let mut harness = open_form_on(&workspace);
+
+    // Shift+Tab from the initial Project Path focus wraps to the active
+    // "Run in:" tab (the first stop in the cycle).
+    harness
+        .send_key(KeyCode::BackTab, KeyModifiers::NONE)
+        .unwrap();
+    harness.tick_and_render().unwrap();
+    assert!(
+        focused_line(&harness.screen_to_string()).contains("Run in:"),
+        "Shift+Tab should land focus on the Run in selector. Screen:\n{}",
+        harness.screen_to_string(),
+    );
+
+    // → moves to the next option (SSH) and the body swaps to SSH fields.
+    harness
+        .send_key(KeyCode::Right, KeyModifiers::NONE)
+        .unwrap();
+    harness
+        .wait_until(|h| h.screen_to_string().contains("Host  ("))
+        .unwrap();
+    assert!(
+        focused_line(&harness.screen_to_string()).contains("▸ [ SSH ]"),
+        "→ should move the focus marker onto the SSH option. Screen:\n{}",
+        harness.screen_to_string(),
+    );
+
+    // ← moves back to Local and restores the local body (Project Path).
+    harness.send_key(KeyCode::Left, KeyModifiers::NONE).unwrap();
+    harness
+        .wait_until(|h| h.screen_to_string().contains("Project Path"))
+        .unwrap();
+    assert!(
+        focused_line(&harness.screen_to_string()).contains("▸ [ Local ]"),
+        "← should move the focus marker back onto the Local option. Screen:\n{}",
+        harness.screen_to_string(),
+    );
+}
+
+/// Esc is scoped: the first Esc closes an open completion dropdown
+/// (the form stays open with its input intact), and a second Esc
+/// cancels the dialog.
+#[test]
+fn esc_closes_dropdown_first_then_cancels_dialog() {
+    let (_temp, workspace) = set_up_workspace();
+    let mut harness = open_form_on(&workspace);
+    let typed = type_alpha_prefix_and_wait(&mut harness, &workspace);
+
+    // First Esc: dropdown closes, form stays open, input preserved.
+    harness.send_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+    harness
+        .wait_until(|h| !h.screen_to_string().contains("alpha_two/"))
+        .unwrap();
+    let screen = harness.screen_to_string();
+    assert!(
+        screen.contains("ORCHESTRATOR :: New Workspace"),
+        "first Esc must NOT cancel the dialog. Screen:\n{}",
+        screen,
+    );
+    assert_eq!(
+        project_path_field_value(&screen),
+        typed,
+        "first Esc must preserve the typed input. Screen:\n{}",
+        screen,
+    );
+
+    // Second Esc: dialog cancels.
+    harness.send_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+    harness
+        .wait_until(|h| {
+            !h.screen_to_string()
+                .contains("ORCHESTRATOR :: New Workspace")
+        })
+        .unwrap();
+}
+
+/// Ctrl+Enter submits the form from anywhere — here from a text field,
+/// where a bare Enter would only advance focus. The form leaves its
+/// editable state (the "Run in:" selector row disappears as the dialog
+/// switches to the connecting/creating view or closes outright).
+#[test]
+#[cfg_attr(target_os = "windows", ignore)]
+fn ctrl_enter_submits_from_a_text_field() {
+    use portable_pty::{native_pty_system, PtySize};
+    let pty_ok = native_pty_system()
+        .openpty(PtySize {
+            rows: 1,
+            cols: 1,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .is_ok();
+    if !pty_ok {
+        eprintln!("Skipping ctrl_enter_submits test: PTY not available");
+        return;
+    }
+
+    let (_temp, workspace) = set_up_workspace();
+    let mut harness = open_form_on(&workspace);
+
+    // Focus is on the Project Path text field. A bare Enter here would
+    // advance focus (and keep the editable "Run in:" row). Ctrl+Enter
+    // must instead submit — the editable selector row goes away.
+    assert!(
+        harness.screen_to_string().contains("←/→ switch type"),
+        "precondition: the editable Run-in selector is showing",
+    );
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::CONTROL)
+        .unwrap();
+    harness
+        .wait_until(|h| !h.screen_to_string().contains("←/→ switch type"))
+        .unwrap();
 }

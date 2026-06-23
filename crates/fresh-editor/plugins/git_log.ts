@@ -55,6 +55,12 @@ interface GitLogState {
   commits: GitCommit[];
   selectedIndex: number;
   /**
+   * When set, the log is scoped to a single file's history
+   * (`git log -- <pathFilter>`). `null` means the full repository log.
+   * Drives both the initial fetch and `git_log_refresh`.
+   */
+  pathFilter: string | null;
+  /**
    * Per-commit cache: sha → file-backed buffer id. Each visited
    * commit gets its own buffer pointing at `<dataDir>/git-show/<sha>.diff`,
    * which a background `git show --patch` writes into. Returning to a
@@ -62,7 +68,12 @@ interface GitLogState {
    * git invocation, scroll position preserved.
    */
   commitBuffers: Map<string, number>;
-  /** sha → in-flight spawnProcess handle, for kill-on-supersession. */
+  /**
+   * sha → in-flight `git show` handle. Tracked so the view can kill any
+   * still-running spawns when it closes (`git_log_cleanup`), and so a
+   * revisit while a commit is still streaming reuses the buffer instead
+   * of starting a second spawn for the same sha.
+   */
   inFlightSpawns: Map<string, ProcessHandle<SpawnResult>>;
   /**
    * Debounce token for List `select` events. Rapid selection moves
@@ -84,6 +95,7 @@ const state: GitLogState = {
   logPanel: null,
   commits: [],
   selectedIndex: 0,
+  pathFilter: null,
   commitBuffers: new Map(),
   inFlightSpawns: new Map(),
   pendingSelectId: 0,
@@ -303,16 +315,39 @@ function cachePathForHash(hash: string): string {
   return `${editor.getDataDir()}/git-show/${hash}.diff`;
 }
 
+/**
+ * Path of the per-SHA completion marker. Written only after `git show`
+ * exits 0, so its existence is a durable "this diff is fully written"
+ * signal that survives the editor exiting (or git being killed) mid-
+ * stream. Commits are immutable, so a complete diff stays valid forever
+ * — the marker is never removed.
+ */
+function donePathForHash(hash: string): string {
+  return `${cachePathForHash(hash)}.done`;
+}
+
+/**
+ * Is `hash`'s cached diff known-complete? Both the diff and its
+ * completion marker must exist. A diff present *without* the marker was
+ * interrupted (external kill, editor exit, crash) and must be
+ * regenerated rather than displayed partially.
+ */
+function isCommitDiffComplete(hash: string): boolean {
+  return (
+    editor.fileExists(cachePathForHash(hash)) &&
+    editor.fileExists(donePathForHash(hash))
+  );
+}
+
 /** Polling interval while git is still writing. ~5 fps is plenty. */
 const STREAM_POLL_MS = 200;
 
 /**
  * Start a `git show --patch` for `hash`, piping stdout straight into the
- * cache file. Returns the handle so a later commit switch can `.kill()`
- * the still-running spawn.
- *
- * Caller has already verified the cache file doesn't yet exist (or wants
- * to overwrite it).
+ * cache file (the host opens it with `File::create`, which truncates any
+ * existing partial content — so this safely regenerates an interrupted
+ * diff). Returns the handle; it's stashed in `inFlightSpawns` so the
+ * view can `.kill()` it on close.
  */
 function spawnGitShow(hash: string, cwd: string): ProcessHandle<SpawnResult> {
   // `--stat --patch` matches what the previous plugin used. The stat
@@ -334,22 +369,28 @@ function spawnGitShow(hash: string, cwd: string): ProcessHandle<SpawnResult> {
 
 /**
  * Poll `editor.refreshBufferFromDisk` until the spawn handle resolves,
- * then do one final catch-up refresh. Returns immediately if the
- * commit is no longer in flight (e.g. user moved on, kill() fired).
+ * doing one final catch-up refresh on exit. On a clean exit (code 0)
+ * write the durable completion marker so future visits — this session
+ * or after a restart — can trust the cached diff. We do NOT kill spawns
+ * on navigation, so every spawn runs to completion and the buffer
+ * always ends up fully populated; the only early-out is the view
+ * closing mid-stream, which leaves no marker (the partial diff is
+ * regenerated next time).
  */
 async function pollUntilSpawnDone(
   hash: string,
   bufferId: number,
   handle: ProcessHandle<SpawnResult>,
 ): Promise<void> {
-  // Wrap the handle's settlement in a non-rejecting marker promise so
-  // a fast subscription loop can `await` it (or race it against a
-  // delay) without worrying about whether the spawn errored. The
-  // ProcessHandle is a thenable, not a real Promise, so adapt via
-  // Promise.resolve().
+  // Wrap the handle's settlement so the poll loop can observe both that
+  // it finished and whether it exited cleanly. The ProcessHandle is a
+  // thenable, not a real Promise, so adapt via Promise.resolve(); a
+  // rejection (spawn error / killed) leaves `cleanExit` false.
   let done = false;
+  let cleanExit = false;
   void Promise.resolve(handle).then(
-    () => {
+    (r) => {
+      cleanExit = r.exit_code === 0;
       done = true;
     },
     () => {
@@ -359,8 +400,7 @@ async function pollUntilSpawnDone(
 
   while (!done) {
     await editor.delay(STREAM_POLL_MS);
-    if (!state.isOpen) return; // group closed mid-stream
-    if (state.inFlightSpawns.get(hash) !== handle) return; // superseded
+    if (!state.isOpen) return; // group closed mid-stream — no marker
     await editor.refreshBufferFromDisk(bufferId);
   }
   // Final catch-up so any bytes written between the last poll and
@@ -370,6 +410,14 @@ async function pollUntilSpawnDone(
   if (state.inFlightSpawns.get(hash) === handle) {
     state.inFlightSpawns.delete(hash);
   }
+  // Only a clean exit means the diff is fully written. A non-zero exit
+  // or rejection (killed, spawn error) leaves the diff partial and
+  // unmarked, so `ensureCommitBuffer` regenerates it on the next visit.
+  if (!cleanExit) return;
+  // Durable completion marker: an empty sidecar file whose existence
+  // says "complete". Written after the bytes are on disk so a reader
+  // that sees the marker also sees the full diff.
+  editor.writeFile(donePathForHash(hash), "");
   // Apply diff coloring once the buffer is complete. Doing this
   // pre-completion would either churn (re-walk on every refresh) or
   // double-overlay newly-extended lines; on completion we walk once.
@@ -457,22 +505,41 @@ async function applyDiffHighlights(bufferId: number): Promise<void> {
 }
 
 /**
- * Get (or create) the file-backed buffer that displays `commit`.
- * On first call for a hash: ensure cache file exists, kick off
- * `git show` if it doesn't, openFileStreaming, start the poll loop.
- * Returns the buffer id on success or null on failure.
+ * Get (or create) the file-backed buffer that displays `commit`'s diff.
+ * Reuses a cached buffer when it's complete or still streaming; opens a
+ * complete cache file zero-git; otherwise streams `git show` into the
+ * cache file and polls it. A diff is "complete" only if its durable
+ * completion marker exists (see `isCommitDiffComplete`), so an interrupted
+ * diff (editor exit / external kill) is regenerated rather than shown
+ * partially. Returns the buffer id on success or null on failure.
  */
 async function ensureCommitBuffer(commit: GitCommit, cwd: string): Promise<number | null> {
   const hash = commit.hash;
-  const existing = state.commitBuffers.get(hash);
-  if (existing !== undefined) return existing;
-
   const path = cachePathForHash(hash);
-  const cacheHit = editor.fileExists(path);
+  const existing = state.commitBuffers.get(hash);
 
-  if (!cacheHit) {
-    // Cache miss: spawn git, polling the file as it grows. The handle
-    // is stashed so a fast-scrolling user can supersede us via kill().
+  if (existing !== undefined) {
+    // We already have a buffer for this commit this session. Reuse it
+    // if it's still streaming (the in-flight poll will finish it) or its
+    // diff is marked complete. Otherwise the stream ended without a
+    // clean exit (e.g. git was killed externally) and left the buffer
+    // partial — regenerate into the same buffer id so the panel retarget
+    // and scroll handling are unaffected.
+    if (state.inFlightSpawns.has(hash) || isCommitDiffComplete(hash)) {
+      return existing;
+    }
+    const handle = spawnGitShow(hash, cwd);
+    state.inFlightSpawns.set(hash, handle);
+    void pollUntilSpawnDone(hash, existing, handle);
+    return existing;
+  }
+
+  // First time this session for `hash`. A cache hit is only trustworthy
+  // when the completion marker is present; a diff left without one (the
+  // editor exited or git was killed mid-stream in a previous run) is
+  // regenerated. `openFileStreaming` opens the file either way — for the
+  // regenerate path the spawn truncates and rewrites it underneath.
+  if (!isCommitDiffComplete(hash)) {
     const handle = spawnGitShow(hash, cwd);
     state.inFlightSpawns.set(hash, handle);
     const bufferId = await editor.openFileStreaming(path);
@@ -487,7 +554,7 @@ async function ensureCommitBuffer(commit: GitCommit, cwd: string): Promise<numbe
     return bufferId;
   }
 
-  // Cache hit: just open the existing file. No git spawned.
+  // Cache hit with a valid completion marker: just open it. No git.
   const bufferId = await editor.openFileStreaming(path);
   if (bufferId === null) return null;
   state.commitBuffers.set(hash, bufferId);
@@ -495,20 +562,18 @@ async function ensureCommitBuffer(commit: GitCommit, cwd: string): Promise<numbe
 }
 
 /**
- * Show `commit` in the detail panel. Cancels any superseded in-flight
- * spawn for *other* commits (the user has navigated past them) and
- * retargets the panel at the chosen commit's buffer.
+ * Show `commit` in the detail panel: ensure its diff buffer exists
+ * (streaming it in if needed) and retarget the panel at it.
+ *
+ * We deliberately do NOT kill in-flight `git show` spawns for commits
+ * the user navigated past. Killing was the source of a bug where a
+ * superseded stream left its buffer empty forever; letting each spawn
+ * finish guarantees every cached buffer ends up complete (and writes
+ * its durable completion marker). Burst navigation is already collapsed
+ * by the `SELECT_DEBOUNCE_MS` debounce, so in practice only commits the
+ * user pauses on ever spawn git.
  */
 async function showCommitInDetail(commit: GitCommit, cwd: string): Promise<void> {
-  // Cancel anything still streaming for a commit that isn't this one —
-  // the user has moved on; no point keeping git running.
-  for (const [hash, handle] of state.inFlightSpawns) {
-    if (hash !== commit.hash) {
-      handle.kill?.();
-      state.inFlightSpawns.delete(hash);
-    }
-  }
-
   const bufferId = await ensureCommitBuffer(commit, cwd);
   if (bufferId === null) {
     editor.setStatus(
@@ -552,28 +617,49 @@ function selectedCommit(): GitCommit | null {
 // Commands
 // =============================================================================
 
-async function show_git_log(): Promise<void> {
+/**
+ * Open the magit-style log view. `pathFilter` of `null` shows the full
+ * repository history; a path scopes it to that file's commits. Shared by
+ * the "Git Log" and "Git Log (Current File)" commands.
+ */
+async function openGitLog(pathFilter: string | null): Promise<void> {
   if (state.isOpen) {
-    // Already open — pull the existing tab to the front instead of
-    // bailing out with a status message.
-    if (state.groupId !== null) {
-      editor.focusBufferGroupPanel(state.groupId, "log");
+    // Already open. If the requested scope differs (e.g. switching from
+    // the full-repo log to a single file, or vice versa), the group's
+    // tab title and contents need rebuilding — close it first so we
+    // re-create with the right title. Otherwise just refocus.
+    if (pathFilter !== state.pathFilter) {
+      git_log_close();
+    } else {
+      if (state.groupId !== null) {
+        editor.focusBufferGroupPanel(state.groupId, "log");
+      }
+      return;
     }
-    return;
   }
+  state.pathFilter = pathFilter;
   editor.setStatus(editor.t("status.loading"));
 
-  state.commits = await fetchGitLog(editor);
+  state.commits = await fetchGitLog(editor, {
+    pathFilter: pathFilter ?? undefined,
+  });
   if (state.commits.length === 0) {
     editor.setStatus(editor.t("status.no_commits"));
     return;
   }
 
+  // The tab title carries the file's basename when scoped so the user
+  // can tell a file-history tab apart from the full-repo one.
+  const title =
+    pathFilter !== null
+      ? `*Git Log: ${editor.pathBasename(pathFilter)}*`
+      : "*Git Log*";
+
   // `createBufferGroup` is not currently included in the generated
   // `EditorAPI` type (it's a runtime-only binding, same as in audit_mode),
   // so we cast to `any` to keep the type checker happy.
   const group = await (editor as any).createBufferGroup(
-    "*Git Log*",
+    title,
     "git-log",
     GROUP_LAYOUT
   );
@@ -627,7 +713,30 @@ async function show_git_log(): Promise<void> {
     editor.t("status.log_ready", { count: String(state.commits.length) })
   );
 }
+
+/** Command: show the full-repository log. */
+async function show_git_log(): Promise<void> {
+  await openGitLog(null);
+}
 registerHandler("show_git_log", show_git_log);
+
+/**
+ * Command: show the log scoped to the focused buffer's file. Available
+ * whenever a buffer is focused (see the `git-log-buffer-focused` context
+ * wired up at the bottom of the file). Falls back to a status message
+ * when the active buffer has no on-disk path (e.g. an unsaved scratch
+ * buffer).
+ */
+async function show_git_log_current_file(): Promise<void> {
+  const bufferId = editor.getActiveBufferId();
+  const filePath = bufferId ? editor.getBufferPath(bufferId) : "";
+  if (!filePath || filePath === "") {
+    editor.setStatus(editor.t("status.no_file"));
+    return;
+  }
+  await openGitLog(filePath);
+}
+registerHandler("show_git_log_current_file", show_git_log_current_file);
 
 /** Reset all state + unsubscribe. Idempotent; safe to call from either
  * path (user-initiated close or externally-closed group via the tab's
@@ -667,6 +776,7 @@ function git_log_cleanup(): void {
   state.toolbarBufferId = null;
   state.commits = [];
   state.selectedIndex = 0;
+  state.pathFilter = null;
 }
 
 function git_log_close(): void {
@@ -709,7 +819,9 @@ registerHandler("on_git_log_buffer_closed", on_git_log_buffer_closed);
 async function git_log_refresh(): Promise<void> {
   if (!state.isOpen) return;
   editor.setStatus(editor.t("status.refreshing"));
-  state.commits = await fetchGitLog(editor);
+  state.commits = await fetchGitLog(editor, {
+    pathFilter: state.pathFilter ?? undefined,
+  });
   // The on-disk cache files are keyed by SHA and commits are
   // immutable, so they remain valid — but our in-memory buffer ids
   // for commits no longer in the visible list are stale; clear them.
@@ -1026,6 +1138,12 @@ async function git_log_detail_open_file(): Promise<void> {
 
   // `*<hash>:<path>*` matches the virtual-name convention the host uses
   // to detect syntax from the trailing filename's extension.
+  //
+  // Pass `initialCursorLine` (0-indexed) so the host lands the cursor on
+  // the target line before the buffer becomes active. Without this, a
+  // follow-up setBufferCursor would race against user input and could
+  // be silently clobbered by any keypress the moment focus lands on the
+  // new buffer.
   const name = `*${commit.shortHash}:${file}*`;
   const view = await editor.createVirtualBuffer({
     name,
@@ -1034,10 +1152,9 @@ async function git_log_detail_open_file(): Promise<void> {
     editingDisabled: true,
     showLineNumbers: true,
     entries,
+    initialCursorLine: Math.max(0, line - 1),
   });
   if (view) {
-    const byte = await editor.getLineStartPosition(Math.max(0, line - 1));
-    if (byte !== null) editor.setBufferCursor(view.bufferId, byte);
     editor.setStatus(
       editor.t("status.file_view_ready", {
         file,
@@ -1138,6 +1255,28 @@ editor.registerCommand(
   "%cmd.git_log_desc",
   "show_git_log",
   null
+);
+
+// The "current file" command is gated on a plugin-defined context that is
+// active whenever a buffer is focused, so it only surfaces in the command
+// palette when there's a file to scope the log to. The context is kept in
+// sync with focus changes via the buffer_activated / buffer_deactivated
+// hooks below.
+const BUFFER_FOCUSED_CTX = "git-log-buffer-focused";
+
+function updateBufferFocusedContext(): void {
+  editor.setContext(BUFFER_FOCUSED_CTX, editor.getActiveBufferId() !== 0);
+}
+editor.on("buffer_activated", updateBufferFocusedContext);
+editor.on("buffer_deactivated", updateBufferFocusedContext);
+// Seed the context from the buffer that's already focused at load time.
+updateBufferFocusedContext();
+
+editor.registerCommand(
+  "%cmd.git_log_current_file",
+  "%cmd.git_log_current_file_desc",
+  "show_git_log_current_file",
+  BUFFER_FOCUSED_CTX
 );
 editor.registerCommand(
   "%cmd.git_log_close",

@@ -421,6 +421,10 @@ type BufferInfo = {
 	*/
 	is_virtual: boolean;
 	/**
+	* Whether editing is disabled for this buffer.
+	*/
+	editing_disabled: boolean;
+	/**
 	* Current view mode of the active split: "source" or "compose"
 	*/
 	view_mode: string;
@@ -573,6 +577,13 @@ type ActionPopupOptions = {
 	* Action buttons to display
 	*/
 	actions: Array<TsActionPopupAction>;
+	/**
+	* Optional buffer to scope the popup to. When set, the popup only
+	* renders while that buffer is active (and is dismissed when the buffer
+	* closes), rather than floating over every buffer. Omit for global
+	* notifications like install help raised from a status-bar click.
+	*/
+	buffer_id?: number;
 };
 type TsLspMenuItem = {
 	/**
@@ -603,15 +614,39 @@ type FileExplorerDecoration = {
 	*/
 	priority: number;
 };
-type FileExplorerTooltip = {
+type FileExplorerSlotEntry = {
 	/**
-	* Tooltip title shown in the popup border.
+	* File or directory path to override.
 	*/
-	title: string;
+	path: string;
 	/**
-	* Body lines shown inside the popup.
+	* Optional leading-slot override.
 	*/
-	lines: Array<string>;
+	leading: FileExplorerLeadingSlot | null;
+	/**
+	* Explicitly suppress the compatibility leading slot for this path.
+	*/
+	suppressLeading: boolean;
+	/**
+	* Optional trailing-slot override.
+	*/
+	trailing: FileExplorerTrailingSlot | null;
+	/**
+	* Explicitly suppress the compatibility trailing slot for this path.
+	*/
+	suppressTrailing: boolean;
+	/**
+	* Optional filename colour override.
+	*/
+	nameColor: OverlayColorSpec | null;
+	/**
+	* Explicitly suppress compatibility filename colouring for this path.
+	*/
+	suppressNameColor: boolean;
+	/**
+	* Priority for display when multiple overrides exist (higher wins).
+	*/
+	priority: number;
 };
 type FileExplorerLeadingSlot = {
 	/**
@@ -625,7 +660,7 @@ type FileExplorerLeadingSlot = {
 	/**
 	* Minimum display width reserved for the leading slot.
 	*/
-	minWidth?: number;
+	minWidth: number;
 };
 type FileExplorerTrailingSlot = {
 	/**
@@ -639,41 +674,17 @@ type FileExplorerTrailingSlot = {
 	/**
 	* Optional tooltip shown when hovering the trailing slot.
 	*/
-	tooltip?: FileExplorerTooltip | null;
+	tooltip: FileExplorerTooltip | null;
 };
-type FileExplorerSlotEntry = {
+type FileExplorerTooltip = {
 	/**
-	* File or directory path to override.
+	* Tooltip title shown in the popup border.
 	*/
-	path: string;
+	title: string;
 	/**
-	* Optional leading-slot override.
+	* Body lines shown inside the popup.
 	*/
-	leading?: FileExplorerLeadingSlot | null;
-	/**
-	* Explicitly suppress the compatibility leading slot for this path.
-	*/
-	suppressLeading?: boolean;
-	/**
-	* Optional trailing-slot override.
-	*/
-	trailing?: FileExplorerTrailingSlot | null;
-	/**
-	* Explicitly suppress the compatibility trailing slot for this path.
-	*/
-	suppressTrailing?: boolean;
-	/**
-	* Optional filename colour override.
-	*/
-	nameColor?: OverlayColorSpec | null;
-	/**
-	* Explicitly suppress compatibility filename colouring for this path.
-	*/
-	suppressNameColor?: boolean;
-	/**
-	* Priority for display when multiple overrides exist (higher wins).
-	*/
-	priority?: number;
+	lines: Array<string>;
 };
 type FormatterPackConfig = {
 	/**
@@ -1044,6 +1055,16 @@ type WidgetSpec = {
 	* row doesn't reshuffle when the disabled flag flips.
 	*/
 	disabled: boolean;
+	/**
+	* When false, the button is dropped from the Tab cycle (but
+	* still renders and stays clickable). Used for radio-style
+	* groups — a row of buttons where only the *active* option
+	* should be a Tab stop and ←/→ moves the selection within
+	* the group, so Tab advances one stop per group rather than
+	* one stop per option. Defaults to true (ordinary buttons
+	* are tabbable).
+	*/
+	focusable: boolean;
 } | {
 	"kind": "spacer";
 	cols: number;
@@ -1451,6 +1472,11 @@ type CreateVirtualBufferInExistingSplitOptions = {
 	* Initial content entries with optional properties
 	*/
 	entries?: Array<TextPropertyEntry>;
+	/**
+	* Initial cursor line (0-indexed); see `initialCursorLine` on
+	* `CreateVirtualBufferOptions`.
+	*/
+	initialCursorLine?: number;
 };
 type CreateVirtualBufferInSplitOptions = {
 	/**
@@ -1542,6 +1568,15 @@ type CreateVirtualBufferOptions = {
 	* Initial content entries with optional properties
 	*/
 	entries?: Array<TextPropertyEntry>;
+	/**
+	* Initial cursor line (0-indexed). Applied to the new buffer *before*
+	* it becomes the active buffer, so plugins that want to land the
+	* cursor on a specific line don't have to chase a race against user
+	* input between "buffer becomes active" and a follow-up
+	* `setBufferCursor`. Using a line index keeps the UTF-8 byte math
+	* on the host side.
+	*/
+	initialCursorLine?: number;
 };
 type GrepMatch = {
 	/**
@@ -2099,6 +2134,13 @@ interface EditorAPI {
 	*/
 	envActive(): boolean;
 	/**
+	* The environment core detected in the workspace, as a JSON string
+	* (`{name, kind, snippet}`) or empty when none. Exposed as
+	* `editor.detectedEnv()`. Detection lives only in core; the env-manager
+	* plugin consumes this result instead of probing the filesystem itself.
+	*/
+	detectedEnv(): string;
+	/**
 	* Join path components (variadic - accepts multiple string arguments)
 	* Always uses forward slashes for cross-platform consistency (like Node.js path.posix.join)
 	* 
@@ -2502,6 +2544,21 @@ interface EditorAPI {
 	*/
 	clearConcealsInRange(bufferId: number, start: number, end: number): boolean;
 	/**
+	* Display width of a single Unicode code point, in terminal columns
+	* (0 for control/zero-width, 2 for CJK/fullwidth and most emoji, else 1).
+	*
+	* Backed by the editor's own width logic (`fresh_core::display_width`), so
+	* plugins measure width exactly as the editor lays out cells — no
+	* per-plugin width tables. An invalid code point returns 0.
+	*/
+	charWidth(codePoint: number): number;
+	/**
+	* Display width of a string, in terminal columns (the sum of its
+	* characters' widths). Prefer this over per-character `charWidth` calls
+	* when measuring whole cells — one boundary crossing instead of many.
+	*/
+	stringWidth(text: string): number;
+	/**
 	* Add a collapsed fold range. Hides bytes [start, end) from
 	* rendering — the line containing `start - 1` (the fold "header")
 	* stays visible, while subsequent lines covered by the range are
@@ -2567,10 +2624,9 @@ interface EditorAPI {
 	*/
 	clearFileExplorerDecorations(namespace: string): boolean;
 	/**
-	* Set file explorer slot overrides for a namespace. Any omitted fields
-	* fall back to the editor's default file-explorer providers.
+	* Set file explorer slot overrides for a namespace
 	*/
-	setFileExplorerSlots(namespace: string, slots: FileExplorerSlotEntry[]): boolean;
+	setFileExplorerSlots(namespace: string, slots: Record<string, unknown>[]): boolean;
 	/**
 	* Clear file explorer slot overrides for a namespace
 	*/
@@ -3075,7 +3131,7 @@ interface EditorAPI {
 	* Mount a declarative widget panel as a centered floating
 	* overlay (not bound to any virtual buffer).
 	*/
-	mountFloatingWidget(panelId: number, specObj: unknown, widthPct: number, heightPct: number, asDock?: boolean): boolean;
+	mountFloatingWidget(panelId: number, specObj: unknown, widthPct: number, heightPct: number, asDock?: boolean, focusMarker?: boolean): boolean;
 	/**
 	* Replace the spec of the currently-mounted floating widget panel.
 	*/
@@ -3364,6 +3420,9 @@ interface HookEventMap {
 	authority_changed: {
 		label: string;
 	};
+	trust_changed: {
+		level: "trusted" | "restricted" | "blocked";
+	};
 	// ── buffer lifecycle ─────────────────────────────────────────────────────
 	buffer_activated: {
 		buffer_id: number;
@@ -3529,6 +3588,14 @@ interface HookEventMap {
 		count: number;
 	};
 	lsp_references: {
+		symbol: string;
+		locations: {
+			file: string;
+			line: number;
+			column: number;
+		}[];
+	};
+	lsp_implementation: {
 		symbol: string;
 		locations: {
 			file: string;

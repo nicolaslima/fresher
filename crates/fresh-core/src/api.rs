@@ -450,6 +450,9 @@ pub struct BufferInfo {
     pub length: usize,
     /// Whether this is a virtual buffer (not backed by a file)
     pub is_virtual: bool,
+    /// Whether editing is disabled for this buffer.
+    #[serde(default)]
+    pub editing_disabled: bool,
     /// Current view mode of the active split: "source" or "compose"
     pub view_mode: String,
     /// True if any split showing this buffer has compose mode enabled.
@@ -1051,6 +1054,13 @@ pub struct EditorStateSnapshot {
     pub buffer_saved_diffs: HashMap<BufferId, BufferSavedDiff>,
     /// Primary cursor position for the active buffer
     pub primary_cursor: Option<CursorInfo>,
+    /// Primary cursor's line number (0-indexed) for the active buffer.
+    /// Mirrors the editor's `primary_cursor_line_number` cache so plugins
+    /// can read "what line is the cursor on" without scanning the buffer.
+    /// `None` when there is no active view state (e.g. before the first
+    /// buffer is loaded).
+    #[serde(default)]
+    pub primary_cursor_line: Option<u32>,
     /// All cursor positions for the active buffer
     pub all_cursors: Vec<CursorInfo>,
     /// Viewport information for the active buffer
@@ -1106,6 +1116,13 @@ pub struct EditorStateSnapshot {
     /// after the restart that activation triggers.
     #[serde(default)]
     pub env_active: bool,
+    /// The environment core detected in the workspace, as a JSON string
+    /// (`{"name","kind","snippet"}`) or empty when none is detected. The
+    /// env-manager plugin reads this via `editor.detectedEnv()` instead of
+    /// probing the filesystem itself — detection lives only in core (see
+    /// `workspace_trust::detect_env`).
+    #[serde(default)]
+    pub detected_env: String,
     /// LSP diagnostics per file URI.
     /// Maps file URI string to Vec of diagnostics for that file.
     ///
@@ -1233,6 +1250,7 @@ impl EditorStateSnapshot {
             buffers: HashMap::new(),
             buffer_saved_diffs: HashMap::new(),
             primary_cursor: None,
+            primary_cursor_line: None,
             all_cursors: Vec::new(),
             viewport: None,
             splits: Vec::new(),
@@ -1246,6 +1264,7 @@ impl EditorStateSnapshot {
             authority_label: String::new(),
             workspace_trust_level: String::new(),
             env_active: false,
+            detected_env: String::new(),
             diagnostics: Arc::new(HashMap::new()),
             folding_ranges: Arc::new(HashMap::new()),
             config: Arc::new(serde_json::Value::Null),
@@ -1503,6 +1522,15 @@ pub enum WidgetSpec {
         /// row doesn't reshuffle when the disabled flag flips.
         #[serde(default)]
         disabled: bool,
+        /// When false, the button is dropped from the Tab cycle (but
+        /// still renders and stays clickable). Used for radio-style
+        /// groups — a row of buttons where only the *active* option
+        /// should be a Tab stop and ←/→ moves the selection within
+        /// the group, so Tab advances one stop per group rather than
+        /// one stop per option. Defaults to true (ordinary buttons
+        /// are tabbable).
+        #[serde(default = "default_true")]
+        focusable: bool,
     },
     /// Horizontal whitespace eater. In a `Row`, produces `cols`
     /// spaces (or fills remaining width if `flex: true`); in a
@@ -2935,6 +2963,14 @@ pub enum PluginCommand {
         editing_disabled: bool,
         /// Whether this buffer should be hidden from tabs (for composite source buffers)
         hidden_from_tabs: bool,
+        /// Optional initial cursor line (0-indexed). Applied before the
+        /// new buffer becomes the active buffer, so plugins can land the
+        /// cursor atomically with creation rather than chasing a race
+        /// against user input via a follow-up `SetBufferCursor`. The host
+        /// resolves the line to a byte position using the buffer content
+        /// it has just set, which keeps the UTF-8 byte math on the host
+        /// side.
+        initial_cursor_line: Option<u32>,
         /// Optional request ID for async response
         request_id: Option<u64>,
     },
@@ -3073,6 +3109,9 @@ pub enum PluginCommand {
         editing_disabled: bool,
         /// Whether line wrapping is enabled for this split (None = use global setting)
         line_wrap: Option<bool>,
+        /// Optional initial cursor line (0-indexed); see the matching
+        /// field on `CreateVirtualBufferWithContent`.
+        initial_cursor_line: Option<u32>,
         /// Optional request ID for async response
         request_id: Option<u64>,
     },
@@ -3385,6 +3424,12 @@ pub enum PluginCommand {
         message: String,
         /// Action buttons to display
         actions: Vec<ActionPopupAction>,
+        /// When `Some`, the popup is scoped to that buffer: it renders only
+        /// while that buffer is active and is torn down when the buffer
+        /// closes, instead of floating over every buffer on the editor-level
+        /// stack. Use for popups raised in response to a specific buffer (an
+        /// `after_file_open` config offer) rather than global notifications.
+        buffer_id: Option<usize>,
     },
 
     /// Contribute (or replace, or clear) a set of menu rows for the
@@ -3870,6 +3915,13 @@ pub enum PluginCommand {
         /// (persists alongside a centered modal) rather than as a
         /// centered overlay.
         as_dock: bool,
+        /// When true, the panel reserves a two-column leading gutter on
+        /// every focusable control for the `▸ ` focus marker, so the
+        /// focused control is legible from a plain terminal capture and
+        /// the layout never shifts as focus moves. Opt-in (default
+        /// false) so existing panels render unchanged.
+        #[serde(default)]
+        focus_marker: bool,
     },
 
     /// Replace the spec of the currently-mounted floating widget
@@ -3903,14 +3955,6 @@ pub enum PluginCommand {
         op: String,
         arg: f64,
     },
-}
-
-impl PluginCommand {
-    /// Extract the enum variant name from the Debug representation.
-    pub fn debug_variant_name(&self) -> String {
-        let dbg = format!("{:?}", self);
-        dbg.split([' ', '{', '(']).next().unwrap_or("?").to_string()
-    }
 }
 
 // =============================================================================
@@ -4076,6 +4120,13 @@ pub struct ActionPopupOptions {
     pub message: String,
     /// Action buttons to display
     pub actions: Vec<ActionPopupAction>,
+    /// Optional buffer to scope the popup to. When set, the popup only
+    /// renders while that buffer is active (and is dismissed when the buffer
+    /// closes), rather than floating over every buffer. Omit for global
+    /// notifications like install help raised from a status-bar click.
+    #[serde(default)]
+    #[ts(optional)]
+    pub buffer_id: Option<usize>,
 }
 
 /// Syntax highlight span for a buffer range
@@ -4339,6 +4390,17 @@ pub struct CreateVirtualBufferOptions {
     #[serde(default)]
     #[ts(optional)]
     pub entries: Option<Vec<JsTextPropertyEntry>>,
+    /// Initial cursor line (0-indexed). Applied to the new buffer *before*
+    /// it becomes the active buffer, so plugins that want to land the
+    /// cursor on a specific line don't have to chase a race against user
+    /// input between "buffer becomes active" and a follow-up
+    /// `setBufferCursor`. Using a line index (rather than a byte offset)
+    /// keeps the byte-math on the host side where the buffer content is
+    /// already in UTF-8 bytes, avoiding the UTF-16-vs-UTF-8 mismatch a
+    /// plugin would otherwise have to navigate.
+    #[serde(default, rename = "initialCursorLine")]
+    #[ts(optional, rename = "initialCursorLine")]
+    pub initial_cursor_line: Option<u32>,
 }
 
 /// Options for createVirtualBufferInSplit
@@ -4440,6 +4502,12 @@ pub struct CreateVirtualBufferInExistingSplitOptions {
     #[serde(default)]
     #[ts(optional)]
     pub entries: Option<Vec<JsTextPropertyEntry>>,
+    /// Initial cursor line (0-indexed). Applied to the new buffer *before*
+    /// it becomes the active buffer; see the matching field on
+    /// `CreateVirtualBufferOptions` for the rationale.
+    #[serde(default, rename = "initialCursorLine")]
+    #[ts(optional, rename = "initialCursorLine")]
+    pub initial_cursor_line: Option<u32>,
 }
 
 /// Options for createTerminal
@@ -5172,6 +5240,7 @@ impl PluginApi {
             show_cursors: true,
             editing_disabled: false,
             hidden_from_tabs: false,
+            initial_cursor_line: None,
             request_id: None,
         })
     }
@@ -5588,6 +5657,7 @@ mod tests {
                 modified: true,
                 length: 100,
                 is_virtual: false,
+                editing_disabled: false,
                 view_mode: "source".to_string(),
                 is_composing_in_any_split: false,
                 compose_width: None,
@@ -5634,6 +5704,7 @@ mod tests {
                     modified: false,
                     length: 50,
                     is_virtual: false,
+                    editing_disabled: false,
                     view_mode: "source".to_string(),
                     is_composing_in_any_split: false,
                     compose_width: None,
@@ -5650,6 +5721,7 @@ mod tests {
                     modified: true,
                     length: 100,
                     is_virtual: false,
+                    editing_disabled: false,
                     view_mode: "source".to_string(),
                     is_composing_in_any_split: false,
                     compose_width: None,
@@ -5666,6 +5738,7 @@ mod tests {
                     modified: false,
                     length: 0,
                     is_virtual: true,
+                    editing_disabled: false,
                     view_mode: "source".to_string(),
                     is_composing_in_any_split: false,
                     compose_width: None,
@@ -6030,23 +6103,6 @@ mod tests {
         let tk = OverlayColorSpec::theme_key("ui.status_bar_bg");
         assert_eq!(tk.as_rgb(), None);
         assert_eq!(tk.as_theme_key(), Some("ui.status_bar_bg"));
-    }
-
-    /// `PluginCommand::debug_variant_name` returns the actual variant name
-    /// derived from the `Debug` impl, not an empty or hard-coded string.
-    #[test]
-    fn plugin_command_debug_variant_name_returns_real_variant() {
-        let c = PluginCommand::SetStatus {
-            message: "hi".into(),
-        };
-        assert_eq!(c.debug_variant_name(), "SetStatus");
-
-        let c2 = PluginCommand::InsertText {
-            buffer_id: BufferId(1),
-            position: 0,
-            text: String::new(),
-        };
-        assert_eq!(c2.debug_variant_name(), "InsertText");
     }
 
     // ── PluginApi dispatch / mutation tests ────────────────────────────────

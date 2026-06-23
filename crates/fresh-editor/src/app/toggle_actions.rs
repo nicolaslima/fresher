@@ -11,7 +11,6 @@ use rust_i18n::t;
 
 use crate::config::{Config, FileExplorerSide};
 use crate::config_io::{ConfigLayer, ConfigResolver};
-use crate::input::keybindings::KeybindingResolver;
 
 use super::Editor;
 
@@ -21,6 +20,11 @@ impl Editor {
     /// Line number visibility is stored per-split in `BufferViewState` so that
     /// different splits of the same buffer can independently show/hide line numbers
     /// (e.g., source mode shows them, compose mode hides them).
+    ///
+    /// The new value is also written to the global `editor.line_numbers`
+    /// preference and persisted to the user config layer, so the choice
+    /// survives a restart (issue #474). Per-split overrides (e.g. compose mode
+    /// forcing them off) still apply on top of this default.
     pub fn toggle_line_numbers(&mut self) {
         let active_split = self
             .windows
@@ -29,21 +33,123 @@ impl Editor {
             .map(|(mgr, _)| mgr)
             .expect("active window must have a populated split layout")
             .active_split();
-        if let Some(vs) = self
+        let Some(new_value) = self
             .windows
             .get_mut(&self.active_window)
             .and_then(|w| w.split_view_states_mut())
             .expect("active window must have a populated split layout")
             .get_mut(&active_split)
-        {
-            let currently_shown = vs.show_line_numbers;
-            vs.show_line_numbers = !currently_shown;
-            if currently_shown {
-                self.set_status_message(t!("toggle.line_numbers_hidden").to_string());
-            } else {
-                self.set_status_message(t!("toggle.line_numbers_shown").to_string());
-            }
-        }
+            .map(|vs| {
+                let new_value = !vs.show_line_numbers;
+                vs.show_line_numbers = new_value;
+                // The user is expressing a global intent on this view, so drop
+                // any per-buffer pin here — otherwise the override would revert
+                // this change on the next view-mode switch / restart.
+                vs.line_numbers_override = None;
+                new_value
+            })
+        else {
+            return;
+        };
+
+        // `editor.line_numbers` is a global preference, so persist the toggle
+        // to the user config layer (issue #474). Without this the change lives
+        // only in the per-split runtime state and is forgotten on next launch.
+        self.config_mut().editor.line_numbers = new_value;
+        self.persist_config_change("/editor/line_numbers", serde_json::Value::Bool(new_value));
+
+        let status = if new_value {
+            t!("toggle.line_numbers_shown")
+        } else {
+            t!("toggle.line_numbers_hidden")
+        };
+        self.set_status_message(status.to_string());
+    }
+
+    /// Toggle line numbers for the current buffer only.
+    ///
+    /// Unlike [`toggle_line_numbers`](Self::toggle_line_numbers), this does not
+    /// touch the global `editor.line_numbers` default and does not affect other
+    /// buffers. It records an explicit per-buffer override on the active buffer's
+    /// view state, which is persisted in the per-file workspace state so the
+    /// choice survives a restart (issue #474 follow-up).
+    pub fn toggle_line_numbers_current_buffer(&mut self) {
+        let active_split = self
+            .windows
+            .get(&self.active_window)
+            .and_then(|w| w.buffers.splits())
+            .map(|(mgr, _)| mgr)
+            .expect("active window must have a populated split layout")
+            .active_split();
+        let Some(new_value) = self
+            .windows
+            .get_mut(&self.active_window)
+            .and_then(|w| w.split_view_states_mut())
+            .expect("active window must have a populated split layout")
+            .get_mut(&active_split)
+            .map(|vs| {
+                // Deref reaches the active buffer's BufferViewState, so this
+                // scopes the override to the current buffer in this split only.
+                let new_value = !vs.show_line_numbers;
+                vs.show_line_numbers = new_value;
+                vs.line_numbers_override = Some(new_value);
+                new_value
+            })
+        else {
+            return;
+        };
+
+        let status = if new_value {
+            t!("toggle.line_numbers_shown")
+        } else {
+            t!("toggle.line_numbers_hidden")
+        };
+        self.set_status_message(status.to_string());
+    }
+
+    /// Toggle line wrap for the current buffer only.
+    ///
+    /// Per-buffer counterpart of [`Action::ToggleLineWrap`](crate::input::keybindings::Action::ToggleLineWrap):
+    /// it does not touch the global `editor.line_wrap` default and does not affect
+    /// other buffers. Records an explicit per-buffer override, persisted in the
+    /// per-file workspace state.
+    pub fn toggle_line_wrap_current_buffer(&mut self) {
+        let active_split = self
+            .windows
+            .get(&self.active_window)
+            .and_then(|w| w.buffers.splits())
+            .map(|(mgr, _)| mgr)
+            .expect("active window must have a populated split layout")
+            .active_split();
+        let buffer_id = self.active_buffer();
+        let wrap_column = self
+            .active_window()
+            .resolve_wrap_column_for_buffer(buffer_id);
+        let wrap_indent = self.config.editor.wrap_indent;
+        let Some(new_value) = self
+            .windows
+            .get_mut(&self.active_window)
+            .and_then(|w| w.split_view_states_mut())
+            .expect("active window must have a populated split layout")
+            .get_mut(&active_split)
+            .map(|vs| {
+                let new_value = !vs.viewport.line_wrap_enabled;
+                vs.viewport.line_wrap_enabled = new_value;
+                vs.viewport.wrap_indent = wrap_indent;
+                vs.viewport.wrap_column = wrap_column;
+                vs.line_wrap_override = Some(new_value);
+                new_value
+            })
+        else {
+            return;
+        };
+
+        let state = if new_value {
+            t!("view.state_enabled").to_string()
+        } else {
+            t!("view.state_disabled").to_string()
+        };
+        self.set_status_message(t!("view.line_wrap_state", state = state).to_string());
     }
 
     /// Kick off the full-screen wave animation: a crest of wave glyphs
@@ -178,7 +284,13 @@ impl Editor {
     pub fn toggle_vertical_scrollbar(&mut self) {
         let new_value = !self.config.editor.show_vertical_scrollbar;
         self.config_mut().editor.show_vertical_scrollbar = new_value;
-        let status = if self.config.editor.show_vertical_scrollbar {
+        // Persist to the user config layer so the choice survives restart
+        // (issue #474), matching the other global View-menu toggles.
+        self.persist_config_change(
+            "/editor/show_vertical_scrollbar",
+            serde_json::Value::Bool(new_value),
+        );
+        let status = if new_value {
             t!("toggle.vertical_scrollbar_shown")
         } else {
             t!("toggle.vertical_scrollbar_hidden")
@@ -190,7 +302,13 @@ impl Editor {
     pub fn toggle_horizontal_scrollbar(&mut self) {
         let new_value = !self.config.editor.show_horizontal_scrollbar;
         self.config_mut().editor.show_horizontal_scrollbar = new_value;
-        let status = if self.config.editor.show_horizontal_scrollbar {
+        // Persist to the user config layer so the choice survives restart
+        // (issue #474), matching the other global View-menu toggles.
+        self.persist_config_change(
+            "/editor/show_horizontal_scrollbar",
+            serde_json::Value::Bool(new_value),
+        );
+        let status = if new_value {
             t!("toggle.horizontal_scrollbar_shown")
         } else {
             t!("toggle.horizontal_scrollbar_hidden")
@@ -446,8 +564,12 @@ impl Editor {
             }
         }
 
-        // Always reload keybindings (complex types don't implement PartialEq)
-        *self.keybindings.write().unwrap() = KeybindingResolver::new(&self.config);
+        // Always reload keybindings (complex types don't implement PartialEq),
+        // keeping plugin-contributed bindings alive across the reload (#2307).
+        self.keybindings
+            .write()
+            .unwrap()
+            .reload_from_config(&self.config);
 
         // Update clipboard configuration
         self.clipboard.apply_config(&self.config.clipboard);

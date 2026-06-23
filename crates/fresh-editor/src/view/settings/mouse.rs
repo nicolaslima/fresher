@@ -234,7 +234,22 @@ impl Editor {
             return Ok(false);
         };
 
-        // Check if a dropdown is open and click is outside of it
+        self.dispatch_settings_hit(hit, row, is_double_click);
+        Ok(true)
+    }
+
+    /// Perform the action for a resolved `SettingsHit` — shared by the TUI mouse
+    /// hit-test above and the web `/settings` route, which sends the hit it
+    /// rendered natively. So a click does the same thing in both frontends.
+    /// `row` is used only by the scrollbar hits (TUI-only; the web never sends
+    /// them).
+    pub(crate) fn dispatch_settings_hit(
+        &mut self,
+        hit: SettingsHit,
+        row: u16,
+        is_double_click: bool,
+    ) {
+        // If a dropdown is open and the click is outside it, cancel and stop.
         if let Some(ref mut state) = self.settings_state {
             if state.is_dropdown_open() {
                 let is_click_on_open_dropdown = matches!(
@@ -244,7 +259,7 @@ impl Editor {
                 );
                 if !is_click_on_open_dropdown {
                     state.dropdown_cancel();
-                    return Ok(true);
+                    return;
                 }
             }
         }
@@ -276,6 +291,12 @@ impl Editor {
             SettingsHit::CategorySection(cat_idx, section_idx) => {
                 if let Some(ref mut state) = self.settings_state {
                     state.jump_to_section(cat_idx, section_idx);
+                    // Mouse clicks in the left tree should keep the tree as
+                    // the focused panel, just like clicking a top-level
+                    // category. `jump_to_section` is also used by search and
+                    // keyboard flows where moving focus to the settings body
+                    // is correct, so restore the mouse-specific focus here.
+                    state.focus.set(FocusPanel::Categories);
                 }
             }
             SettingsHit::CategoriesPanel | SettingsHit::CategoriesScrollbar => {
@@ -492,8 +513,45 @@ impl Editor {
                 // Clicking on search results panel background - no action needed
             }
         }
+    }
 
-        Ok(true)
+    /// Select an entry-dialog item by index and begin editing it — the
+    /// semantic equivalent of a TUI click on that row inside the add/edit
+    /// dialog (`handle_entry_dialog_item_click`, non-TextList path). Used by
+    /// the web `/settings` route so the entry dialog is clickable instead of
+    /// keyboard-only.
+    pub(crate) fn entry_dialog_select_item(&mut self, idx: usize) {
+        if let Some(state) = self.settings_state.as_mut() {
+            if let Some(dialog) = state.entry_dialog_mut() {
+                if idx >= dialog.items.len() || dialog.items[idx].read_only {
+                    return;
+                }
+                dialog.focus_on_buttons = false;
+                dialog.selected_item = idx;
+                dialog.update_focus_states();
+                if !dialog.editing_text {
+                    dialog.start_editing();
+                }
+            }
+        }
+    }
+
+    /// Activate an entry-dialog button by semantic name ("save" | "cancel" |
+    /// "delete"). Routing by name rather than index keeps the web and TUI in
+    /// agreement even though they lay the buttons out in a different order.
+    pub(crate) fn entry_dialog_activate_button(&mut self, kind: &str) {
+        let Some(state) = self.settings_state.as_mut() else {
+            return;
+        };
+        let has_delete = state
+            .entry_dialog()
+            .map(|d| !d.is_new && !d.no_delete)
+            .unwrap_or(false);
+        match kind {
+            "save" => state.save_entry_dialog(),
+            "delete" if has_delete => state.request_entry_delete_confirm(),
+            _ => state.close_entry_dialog(),
+        }
     }
 
     /// Whether the given screen coords sit inside the categories panel —
@@ -850,6 +908,38 @@ impl Editor {
                     return Ok(false);
                 }
                 let sub_row = click_y - content_y;
+
+                // Per-field action buttons ([Reset]/[Inherit]) rendered on the
+                // control's first row at the right edge (mirror of the renderer
+                // in `render_entry_items`). Resolve which one was clicked using
+                // `item`/`dialog` immutably first, then mutate — keeps the
+                // borrows disjoint.
+                let clicked_action = if sub_row == 0 {
+                    let buttons = dialog.field_action_buttons(idx);
+                    let right = layout.inner_x + layout.inner_width;
+                    super::entry_dialog::layout_field_action_buttons(&buttons, right)
+                        .into_iter()
+                        .find(|(_, x, w)| col >= *x && col < x.saturating_add(*w))
+                        .map(|(action, _, _)| action)
+                } else {
+                    None
+                };
+                if let Some(action) = clicked_action {
+                    match action {
+                        super::entry_dialog::FieldAction::Reset => {
+                            dialog.reset_field(idx);
+                        }
+                        super::entry_dialog::FieldAction::Inherit => {
+                            dialog.inherit_field(idx);
+                        }
+                    }
+                    dialog.focus_on_buttons = false;
+                    dialog.field_button_focus = None;
+                    dialog.selected_item = idx;
+                    dialog.update_focus_states();
+                    return Ok(true);
+                }
+
                 // TextList rows render as: label (sub_row 0), one row
                 // per committed item, then the trailing add-new row.
                 // Map the click to either remove (`[x]`), focus +
@@ -861,6 +951,7 @@ impl Editor {
                     return self.handle_text_list_click(idx, sub_row, col, layout);
                 }
                 dialog.focus_on_buttons = false;
+                dialog.field_button_focus = None;
                 dialog.selected_item = idx;
                 dialog.update_focus_states();
                 if !dialog.editing_text {
@@ -926,10 +1017,10 @@ impl Editor {
                 // Fallback: if the row text is shorter than the field
                 // (common — items rarely fill 30 chars), the user clicks
                 // the [x] which is right after `]`. Use a hand-rolled
-                // approximation: text_indent + field_width + 1 ≤ col.
+                // approximation: text_indent + field_width < col.
                 let text_indent = _layout.dialog_x + 2 + 3 /* focus indicator */ + 2 /* TextList indent */ + 1 /* `[` */;
                 let estimated_field_width = 28u16;
-                col >= text_indent + estimated_field_width + 1
+                col > text_indent + estimated_field_width
             };
 
         match (on_add_row, item_row_idx, in_trailing_button) {

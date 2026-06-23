@@ -9,7 +9,6 @@
 
 use crate::config::Config;
 use crate::config_io::{ConfigLayer, ConfigResolver};
-use crate::input::keybindings::KeybindingResolver;
 use crate::types::LspServerConfig;
 use anyhow::Result as AnyhowResult;
 use rust_i18n::t;
@@ -146,8 +145,11 @@ impl Editor {
         // Handle plugin enable/disable changes
         self.apply_plugin_config_changes(&old_plugins);
 
-        // Update keybindings
-        *self.keybindings.write().unwrap() = KeybindingResolver::new(&self.config);
+        // Update keybindings, keeping plugin-contributed bindings (#2307).
+        self.keybindings
+            .write()
+            .unwrap()
+            .reload_from_config(&self.config);
 
         // Update LSP configs
         let __active_id = self.active_window;
@@ -200,6 +202,12 @@ impl Editor {
             let patterns = explorer.ignore_patterns_mut();
             patterns.set_show_hidden(self.config.file_explorer.show_hidden);
             patterns.set_show_gitignored(self.config.file_explorer.show_gitignored);
+            // Apply configured custom ignore patterns (this wiring was missing, so the
+            // `custom_ignore_patterns` config field had no effect).
+            patterns.clear_custom_patterns();
+            for pattern in &self.config.file_explorer.custom_ignore_patterns {
+                patterns.add_custom_pattern(pattern.clone());
+            }
             explorer.set_compact_directories(self.config.file_explorer.compact_directories);
         }
 

@@ -209,6 +209,10 @@ impl Editor {
             crate::app::popup_actions::build_completion_popup_from_items(all_popup_items, 0);
         let accept_hint = self.completion_accept_key_hint();
         let focus_hint = self.popup_focus_key_hint();
+        let (popup_bg, popup_border_fg) = {
+            let theme = self.theme();
+            (theme.popup_bg, theme.popup_border_fg)
+        };
 
         {
             let buffer_id = self.active_buffer();
@@ -220,7 +224,8 @@ impl Editor {
                 .get_mut(&buffer_id)
                 .unwrap();
             // Convert PopupData to Popup and use show_or_replace to avoid stacking
-            let mut popup_obj = crate::state::convert_popup_data_to_popup(&popup_data);
+            let mut popup_obj =
+                crate::state::convert_popup_data_to_popup(&popup_data, popup_bg, popup_border_fg);
             popup_obj.accept_key_hint = accept_hint;
             popup_obj.resolver = crate::view::popup::PopupResolver::Completion;
             popup_obj.focus_key_hint = focus_hint;
@@ -683,6 +688,10 @@ impl Editor {
         let popup_data = crate::app::popup_actions::build_completion_popup_from_items(items, 0);
         let accept_hint = self.completion_accept_key_hint();
         let focus_hint = self.popup_focus_key_hint();
+        let (popup_bg, popup_border_fg) = {
+            let theme = self.theme();
+            (theme.popup_bg, theme.popup_border_fg)
+        };
 
         let buffer_id = self.active_buffer();
         let state = self
@@ -692,7 +701,8 @@ impl Editor {
             .expect("active window present")
             .get_mut(&buffer_id)
             .unwrap();
-        let mut popup_obj = crate::state::convert_popup_data_to_popup(&popup_data);
+        let mut popup_obj =
+            crate::state::convert_popup_data_to_popup(&popup_data, popup_bg, popup_border_fg);
         popup_obj.accept_key_hint = accept_hint;
         popup_obj.resolver = crate::view::popup::PopupResolver::Completion;
         popup_obj.focus_key_hint = focus_hint;
@@ -1412,6 +1422,59 @@ impl Editor {
             self.active_window_mut().next_lsp_request_id += 1;
             self.active_window_mut().pending_references_request = Some(request_id);
             self.active_window_mut().pending_references_symbol = symbol;
+        }
+
+        Ok(())
+    }
+
+    /// Request LSP go-to-implementation at current cursor position
+    pub(crate) fn request_implementation(&mut self) -> AnyhowResult<()> {
+        use crate::primitives::word_navigation::{find_word_end, find_word_start};
+
+        let cursor_pos = self.active_cursors().primary().position;
+        let (line, character, symbol) = {
+            let state = self.active_state();
+            let (line, character) = state.buffer.position_to_lsp_position(cursor_pos);
+            let word_start = find_word_start(&state.buffer, cursor_pos);
+            let word_end = find_word_end(&state.buffer, cursor_pos);
+            let symbol = String::from_utf8_lossy(&state.buffer.slice_bytes(word_start..word_end))
+                .into_owned();
+            (line, character, symbol)
+        };
+
+        let buffer_id = self.active_buffer();
+        let request_id = self.active_window_mut().next_lsp_request_id;
+
+        // Use helper to ensure didOpen is sent before the request
+        let sent = self
+            .with_lsp_for_buffer(
+                buffer_id,
+                LspFeature::Implementation,
+                |handle, uri, _language| {
+                    let result = handle.implementation(
+                        request_id,
+                        uri.as_uri().clone(),
+                        line as u32,
+                        character as u32,
+                    );
+                    if result.is_ok() {
+                        tracing::info!(
+                            "Requested go-to-implementation at {}:{}:{} (byte_pos={})",
+                            uri.as_str(),
+                            line,
+                            character,
+                            cursor_pos
+                        );
+                    }
+                    result.is_ok()
+                },
+            )
+            .unwrap_or(false);
+
+        if sent {
+            self.active_window_mut().next_lsp_request_id += 1;
+            self.active_window_mut().pending_implementation_request = Some(request_id);
+            self.active_window_mut().pending_implementation_symbol = symbol;
         }
 
         Ok(())
@@ -2149,6 +2212,80 @@ impl Editor {
 
         tracing::info!(
             "Fired lsp_references hook with {} locations for symbol '{}'",
+            count,
+            symbol
+        );
+
+        Ok(())
+    }
+
+    /// Handle go-to-implementation response from LSP
+    pub(crate) fn handle_implementation_response(
+        &mut self,
+        request_id: u64,
+        locations: Vec<lsp_types::Location>,
+    ) -> AnyhowResult<()> {
+        tracing::info!(
+            "handle_implementation_response: received {} locations for request_id={}",
+            locations.len(),
+            request_id
+        );
+
+        // Check if this response is for the current pending request
+        if self.active_window_mut().pending_implementation_request != Some(request_id) {
+            tracing::debug!("Ignoring stale implementation response: {}", request_id);
+            return Ok(());
+        }
+
+        self.active_window_mut().pending_implementation_request = None;
+        if locations.is_empty() {
+            self.set_status_message(t!("lsp.no_implementation").to_string());
+            return Ok(());
+        }
+
+        // Convert locations to hook args format. Each `loc.uri` is a
+        // wire-side URI from the LSP, so wrap it in [`LspUri`] and run
+        // it through the active authority's translation before handing
+        // a host-path string to the implementation hook — otherwise
+        // plugins try to open an in-container path on the host and fail.
+        let translation = self.authority().path_translation.clone();
+        let lsp_locations: Vec<crate::services::plugins::hooks::LspLocation> = locations
+            .iter()
+            .map(|loc| {
+                let wire = crate::app::types::LspUri::from_wire(loc.uri.clone());
+                let file = if loc.uri.scheme().map(|s| s.as_str()) == Some("file") {
+                    wire.to_host_path(translation.as_ref())
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| loc.uri.path().as_str().to_string())
+                } else {
+                    loc.uri.as_str().to_string()
+                };
+
+                crate::services::plugins::hooks::LspLocation {
+                    file,
+                    line: loc.range.start.line + 1, // LSP is 0-based, convert to 1-based
+                    column: loc.range.start.character + 1, // LSP is 0-based
+                }
+            })
+            .collect();
+
+        let count = lsp_locations.len();
+        let symbol = std::mem::take(&mut self.active_window_mut().pending_implementation_symbol);
+        self.set_status_message(
+            t!("lsp.found_implementations", count = count, symbol = &symbol).to_string(),
+        );
+
+        // Fire the lsp_implementation hook so plugins can display the results
+        self.plugin_manager.read().unwrap().run_hook(
+            "lsp_implementation",
+            crate::services::plugins::hooks::HookArgs::LspImplementation {
+                symbol: symbol.clone(),
+                locations: lsp_locations,
+            },
+        );
+
+        tracing::info!(
+            "Fired lsp_implementation hook with {} locations for symbol '{}'",
             count,
             symbol
         );

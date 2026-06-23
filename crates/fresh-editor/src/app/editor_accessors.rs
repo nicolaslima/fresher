@@ -745,6 +745,18 @@ impl Editor {
         &self.active_window().root
     }
 
+    /// Marker files/dirs that triggered the workspace-trust prompt (for the
+    /// semantic trust-dialog projection). See view/scene.rs.
+    pub(crate) fn workspace_trust_markers(&self) -> &[String] {
+        &self.workspace_trust_markers
+    }
+
+    /// Whether the workspace-trust prompt is cancellable (palette-invoked) vs a
+    /// mandatory startup gate.
+    pub(crate) fn workspace_trust_cancellable(&self) -> bool {
+        self.workspace_trust_prompt_cancellable
+    }
+
     /// The directory context this editor was constructed against (config_dir,
     /// data_dir, …). Exposed so e2e tests can wire trust stores and other
     /// per-project state to the same locations the editor reads from.
@@ -828,6 +840,19 @@ impl Editor {
     /// needs the active session should use `active_window()`.
     pub fn session(&self, id: fresh_core::WindowId) -> Option<&crate::app::window::Window> {
         self.windows.get(&id)
+    }
+
+    /// `(id, label)` for every remote session discovered at boot but not yet
+    /// connected — the authority-less `dormant_remote` descriptors that have no
+    /// `Window` (so they don't show up in [`Self::session`]). Diagnostic / test
+    /// accessor: a dive (`SetActiveWindow`) connects one and promotes it to a
+    /// real window. See `bring_dormant_remote_online`.
+    #[doc(hidden)]
+    pub fn dormant_remote_sessions_for_test(&self) -> Vec<(fresh_core::WindowId, String)> {
+        self.dormant_remote
+            .iter()
+            .map(|(id, d)| (*id, d.label.clone()))
+            .collect()
     }
 
     /// Active session's utility-dock panel-id → buffer-id map.
@@ -994,6 +1019,37 @@ impl Editor {
     /// hit-test rects here at the end of each frame.
     pub(crate) fn active_chrome_mut(&mut self) -> &mut crate::app::types::ChromeLayout {
         &mut self.active_window_mut().chrome_layout
+    }
+
+    // --- semantic accessors for the web/GUI chrome (read-only projections) ---
+
+    /// The menu-bar state (which menu is open, highlighted item, condition
+    /// context for `when`/checkbox evaluation).
+    pub(crate) fn menu_state(&self) -> &crate::view::ui::MenuState {
+        &self.menu_state
+    }
+
+    /// The keybinding accelerator for an action (e.g. "Ctrl+S"), if any.
+    pub(crate) fn accelerator_for(&self, action: &str) -> Option<String> {
+        self.keybindings.read().ok().and_then(|kb| {
+            kb.find_keybinding_for_action(action, crate::input::keybindings::KeyContext::Normal)
+        })
+    }
+
+    /// Display name for a buffer (tab label), if known.
+    pub(crate) fn buffer_display_name(&self, id: fresh_core::BufferId) -> Option<String> {
+        self.active_window()
+            .buffer_metadata
+            .get(&id)
+            .map(|m| m.display_name.clone())
+    }
+
+    /// Whether a buffer has unsaved changes (for the tab's modified dot).
+    pub(crate) fn buffer_is_modified(&self, id: fresh_core::BufferId) -> bool {
+        self.buffers()
+            .get(&id)
+            .map(|s| s.buffer.is_modified())
+            .unwrap_or(false)
     }
 
     /// Active window's utility-dock panel-id → buffer-id map.

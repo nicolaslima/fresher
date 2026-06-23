@@ -202,21 +202,24 @@ impl Editor {
             if let MouseEventKind::Down(MouseButton::Left) = mouse_event.kind {
                 if let Some((popup_rect, button_row_offset)) = self.theme_info_popup_rect() {
                     if in_rect(col, row, popup_rect) {
-                        // Check if click is on the button row (last content row before border)
-                        let actual_button_row = popup_rect.y + button_row_offset;
-                        if row == actual_button_row {
-                            let fg_key = self
-                                .active_window_mut()
-                                .theme_info_popup
-                                .as_ref()
-                                .and_then(|p| p.info.fg_key.clone());
-                            self.active_window_mut().theme_info_popup = None;
-                            if let Some(key) = fg_key {
-                                self.fire_theme_inspect_hook(key);
+                        // Check if click is on the button row (last content row
+                        // before border). `button_row_offset` is `None` when the
+                        // popup has no theme keys (no button to open).
+                        if let Some(offset) = button_row_offset {
+                            let actual_button_row = popup_rect.y + offset;
+                            if row == actual_button_row {
+                                let key =
+                                    self.active_window_mut().theme_info_popup.as_ref().and_then(
+                                        |p| p.info.fg_key.clone().or_else(|| p.info.bg_key.clone()),
+                                    );
+                                self.active_window_mut().theme_info_popup = None;
+                                if let Some(key) = key {
+                                    self.fire_theme_inspect_hook(key);
+                                }
+                                return Ok(true);
                             }
-                            return Ok(true);
                         }
-                        // Click inside popup but not button - ignore
+                        // Click inside popup but not on an actionable button - ignore
                         return Ok(true);
                     }
                 }
@@ -336,8 +339,10 @@ impl Editor {
                     self.update_terminal_link_hover(col, row, mouse_event.modifiers);
                 needs_render = needs_render || term_link_changed;
 
-                // Update theme info popup button highlight on hover
-                if let Some((popup_rect, button_row_offset)) = self.theme_info_popup_rect() {
+                // Update theme info popup button highlight on hover (only when
+                // the popup actually has a button — the keyless message variant
+                // returns `None` and never highlights).
+                if let Some((popup_rect, Some(button_row_offset))) = self.theme_info_popup_rect() {
                     let button_row = popup_rect.y + button_row_offset;
                     let new_highlighted = row == button_row
                         && col >= popup_rect.x
@@ -1278,44 +1283,13 @@ impl Editor {
             }
         }
 
-        // Check status bar indicators
+        // Check status bar indicators — one generic hit-test over every
+        // clickable segment recorded last frame (encoding, LSP, remote, …).
         if let Some((status_row, _status_x, _status_width)) = self.active_chrome().status_bar_area {
             if row == status_row {
-                let indicators = [
-                    (
-                        self.active_chrome().status_bar_line_ending_area,
-                        HoverTarget::StatusBarLineEndingIndicator,
-                    ),
-                    (
-                        self.active_chrome().status_bar_encoding_area,
-                        HoverTarget::StatusBarEncodingIndicator,
-                    ),
-                    (
-                        self.active_chrome().status_bar_language_area,
-                        HoverTarget::StatusBarLanguageIndicator,
-                    ),
-                    (
-                        self.active_chrome().status_bar_lsp_area,
-                        HoverTarget::StatusBarLspIndicator,
-                    ),
-                    (
-                        self.active_chrome().status_bar_remote_area,
-                        HoverTarget::StatusBarRemoteIndicator,
-                    ),
-                    (
-                        self.active_chrome().status_bar_trust_area,
-                        HoverTarget::StatusBarTrustIndicator,
-                    ),
-                    (
-                        self.active_chrome().status_bar_warning_area,
-                        HoverTarget::StatusBarWarningBadge,
-                    ),
-                ];
-                for (area, target) in indicators {
-                    if let Some((indicator_row, start, end)) = area {
-                        if row == indicator_row && col >= start && col < end {
-                            return Some(target);
-                        }
+                for (id, indicator_row, start, end) in &self.active_chrome().status_bar_clickable {
+                    if row == *indicator_row && col >= *start && col < *end {
+                        return Some(HoverTarget::StatusBarClickable(*id));
                     }
                 }
             }
@@ -2411,73 +2385,65 @@ impl Editor {
         Some(Ok(()))
     }
 
+    /// Map a click on a status-bar segment to its editor `Action`. This is the
+    /// single id→action table for the generic click rail; adding a clickable
+    /// element means adding one arm here (plus listing it in
+    /// `StatusBarRenderer::clickable_for_kind`).
+    ///
+    /// Most segments dismiss any open menu-style popup first (the #1941
+    /// follow-up: otherwise a stale popup overlaps the new prompt). The LSP,
+    /// remote, and read-only menus are the exceptions — each owns a toggle
+    /// (a second click closes it), so dismissing first would defeat the toggle;
+    /// they clear other popups themselves after their toggle check.
+    fn dispatch_status_bar_click(
+        &mut self,
+        id: crate::view::ui::status_bar::StatusBarClickable,
+    ) -> AnyhowResult<()> {
+        use crate::view::ui::status_bar::StatusBarClickable as C;
+        match id {
+            C::LineEnding => {
+                self.dismiss_menu_popups_for_prompt();
+                self.handle_action(Action::SetLineEnding)
+            }
+            C::Encoding => {
+                self.dismiss_menu_popups_for_prompt();
+                self.handle_action(Action::SetEncoding)
+            }
+            C::Language => {
+                self.dismiss_menu_popups_for_prompt();
+                self.handle_action(Action::SetLanguage)
+            }
+            // Owns its own toggle (second click closes the popup).
+            C::Lsp => self.handle_action(Action::ShowLspStatus),
+            // Owns its own toggle; clears other popups itself after the check.
+            C::RemoteIndicator => self.handle_action(Action::ShowRemoteIndicatorMenu),
+            C::WorkspaceTrust => {
+                // Opens the (cancellable) workspace-trust prompt.
+                self.dismiss_menu_popups_for_prompt();
+                self.handle_action(Action::WorkspaceTrustPrompt)
+            }
+            C::Warnings => {
+                self.dismiss_menu_popups_for_prompt();
+                self.handle_action(Action::ShowWarnings)
+            }
+            C::Messages => self.handle_action(Action::ShowStatusLog),
+            // Owns its own toggle (second click closes the read-only menu).
+            C::ReadOnly => self.handle_action(Action::ShowReadOnlyMenu),
+        }
+    }
+
     fn handle_click_status_bar(&mut self, col: u16, row: u16) -> Option<AnyhowResult<()>> {
         let (status_row, _status_x, _status_width) = self.active_chrome().status_bar_area?;
         if row != status_row {
             return None;
         }
-        // Helper: dismiss any open menu-style popup (LSP-Servers, plugin
-        // action popups, etc.) before opening a new modal UI. Without
-        // this, clicking a different status-bar indicator while a
-        // popup is up leaves the popup overlapping the new prompt or
-        // picker — the user-reported #1941 follow-up.
-        //
-        // Skipped for the LSP indicator itself: it has its own toggle
-        // semantics inside `show_lsp_status_popup` (second click closes
-        // the popup), which we don't want to undermine.
-        if let Some((r, s, e)) = self.active_chrome().status_bar_line_ending_area {
+        // Generic click rail: one hit-test over every clickable segment drawn
+        // last frame. The id→Action mapping (and each element's popup-dismiss
+        // nuance) lives in `dispatch_status_bar_click`.
+        let clickables = self.active_chrome().status_bar_clickable.clone();
+        for (id, r, s, e) in clickables {
             if row == r && col >= s && col < e {
-                self.dismiss_menu_popups_for_prompt();
-                return Some(self.handle_action(Action::SetLineEnding));
-            }
-        }
-        if let Some((r, s, e)) = self.active_chrome().status_bar_encoding_area {
-            if row == r && col >= s && col < e {
-                self.dismiss_menu_popups_for_prompt();
-                return Some(self.handle_action(Action::SetEncoding));
-            }
-        }
-        if let Some((r, s, e)) = self.active_chrome().status_bar_language_area {
-            if row == r && col >= s && col < e {
-                self.dismiss_menu_popups_for_prompt();
-                return Some(self.handle_action(Action::SetLanguage));
-            }
-        }
-        if let Some((r, s, e)) = self.active_chrome().status_bar_lsp_area {
-            if row == r && col >= s && col < e {
-                // Intentionally NOT calling `dismiss_menu_popups_for_prompt`
-                // here — `show_lsp_status_popup` owns the toggle.
-                return Some(self.handle_action(Action::ShowLspStatus));
-            }
-        }
-        if let Some((r, s, e)) = self.active_chrome().status_bar_remote_area {
-            if row == r && col >= s && col < e {
-                // Intentionally NOT calling `dismiss_menu_popups_for_prompt`
-                // here — `show_remote_indicator_popup` owns the toggle (a
-                // second click closes it). Dismissing first would close the
-                // popup, then the action would find nothing open and re-open
-                // it, so it could never be toggled shut. It clears any *other*
-                // menu popup itself, after its toggle check.
-                return Some(self.handle_action(Action::ShowRemoteIndicatorMenu));
-            }
-        }
-        if let Some((r, s, e)) = self.active_chrome().status_bar_trust_area {
-            if row == r && col >= s && col < e {
-                // Clicking the trust indicator opens the (cancellable)
-                // workspace-trust prompt so the user can change the decision.
-                self.dismiss_menu_popups_for_prompt();
-                return Some(self.handle_action(Action::WorkspaceTrustPrompt));
-            }
-        }
-        if let Some((r, s, e)) = self.active_chrome().status_bar_warning_area {
-            if row == r && col >= s && col < e {
-                self.dismiss_menu_popups_for_prompt();
-                return Some(self.handle_action(Action::ShowWarnings));
-            }
-        }
-        if let Some((r, s, e)) = self.active_chrome().status_bar_message_area {
-            if row == r && col >= s && col < e {
-                return Some(self.handle_action(Action::ShowStatusLog));
+                return Some(self.dispatch_status_bar_click(id));
             }
         }
         // Plugin-registered tokens. Walk the per-frame map produced by
@@ -3569,6 +3535,97 @@ impl Editor {
         }
 
         Ok(())
+    }
+
+    /// Handle keyboard input for the "+" new-tab popup menu.
+    ///
+    /// While the popup is open it owns the keyboard: Up/Down move the
+    /// highlight, Enter activates the highlighted item, Esc dismisses it,
+    /// and *every other key is swallowed* so nothing leaks into the buffer
+    /// underneath. Returns `Some` when a popup is open (the key is always
+    /// consumed in that case), `None` when there is no popup.
+    pub(super) fn handle_new_tab_menu_key(
+        &mut self,
+        code: crossterm::event::KeyCode,
+    ) -> Option<AnyhowResult<()>> {
+        use crossterm::event::KeyCode;
+
+        self.active_window().new_tab_menu.as_ref()?;
+
+        match code {
+            KeyCode::Up => {
+                if let Some(ref mut menu) = self.active_window_mut().new_tab_menu {
+                    menu.prev_item();
+                }
+            }
+            KeyCode::Down => {
+                if let Some(ref mut menu) = self.active_window_mut().new_tab_menu {
+                    menu.next_item();
+                }
+            }
+            KeyCode::Enter => {
+                let selected = self.active_window().new_tab_menu.as_ref().map(|menu| {
+                    (
+                        super::types::NewTabMenuItem::all()[menu.highlighted],
+                        menu.split_id,
+                    )
+                });
+                self.active_window_mut().new_tab_menu = None;
+                if let Some((item, split_id)) = selected {
+                    return Some(self.execute_new_tab_menu_action(item, split_id));
+                }
+            }
+            KeyCode::Esc => {
+                self.active_window_mut().new_tab_menu = None;
+            }
+            // Filter out everything else while the popup is focused.
+            _ => {}
+        }
+        Some(Ok(()))
+    }
+
+    /// Handle keyboard input for the tab right-click context menu.
+    ///
+    /// Modal like [`handle_new_tab_menu_key`]: Up/Down navigate, Enter
+    /// activates the highlighted item, Esc dismisses, and all other keys are
+    /// swallowed so they can't reach the buffer underneath.
+    pub(super) fn handle_tab_context_menu_key(
+        &mut self,
+        code: crossterm::event::KeyCode,
+    ) -> Option<AnyhowResult<()>> {
+        use crossterm::event::KeyCode;
+
+        self.active_window().tab_context_menu.as_ref()?;
+
+        match code {
+            KeyCode::Up => {
+                if let Some(ref mut menu) = self.active_window_mut().tab_context_menu {
+                    menu.prev_item();
+                }
+            }
+            KeyCode::Down => {
+                if let Some(ref mut menu) = self.active_window_mut().tab_context_menu {
+                    menu.next_item();
+                }
+            }
+            KeyCode::Enter => {
+                let selected = self
+                    .active_window()
+                    .tab_context_menu
+                    .as_ref()
+                    .map(|menu| (menu.highlighted_item(), menu.buffer_id, menu.split_id));
+                self.active_window_mut().tab_context_menu = None;
+                if let Some((item, buffer_id, split_id)) = selected {
+                    return Some(self.execute_tab_context_menu_action(item, buffer_id, split_id));
+                }
+            }
+            KeyCode::Esc => {
+                self.active_window_mut().tab_context_menu = None;
+            }
+            // Filter out everything else while the popup is focused.
+            _ => {}
+        }
+        Some(Ok(()))
     }
 
     /// Handle keyboard navigation for the file explorer context menu.

@@ -1986,6 +1986,158 @@ fn test_git_blame_close() {
     harness.assert_screen_not_contains("──");
 }
 
+/// Regression: after the blame buffer is closed by some path *other* than the
+/// plugin's own `q`/`git_blame_close` handler — e.g. the built-in "Close
+/// Buffer" command, or the split being torn down — `show_git_blame` must be
+/// able to reopen blame. The bug left `blameState.isOpen` stuck at `true`
+/// (and `bufferId` pointing at a dead buffer), so the next invocation
+/// early-returned with "Git blame already open" and the view could never be
+/// shown again. The fix resets the state from a `buffer_closed` hook.
+// TODO: Fix git blame tests on Windows - they fail due to git command output differences
+#[test]
+#[cfg_attr(target_os = "windows", ignore)]
+fn test_git_blame_reopen_after_external_close() {
+    let repo = GitTestRepo::new();
+    repo.setup_typical_project();
+    repo.setup_git_blame_plugin();
+
+    let original_dir = repo.change_to_repo_dir();
+    let _guard = DirGuard::new(original_dir);
+
+    let mut harness = EditorTestHarness::with_config_and_working_dir(
+        120,
+        40,
+        Config::default(),
+        repo.path.clone(),
+    )
+    .unwrap();
+
+    let file_path = repo.path.join("src/main.rs");
+    harness.open_file(&file_path).unwrap();
+    harness
+        .wait_until(|h| h.get_buffer_content().unwrap().contains("fn main"))
+        .unwrap();
+
+    // Open blame.
+    trigger_git_blame(&mut harness);
+    harness
+        .wait_until(|h| h.screen_to_string().contains("──"))
+        .unwrap();
+
+    // Close the blame buffer *externally* via the "Close Buffer" command.
+    // This does not go through `git_blame_close`, so it is the path that
+    // previously stranded `isOpen = true`.
+    harness
+        .send_key(KeyCode::Char('p'), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.wait_for_prompt().unwrap();
+    harness.type_text("Close Buffer").unwrap();
+    harness
+        .wait_until(|h| h.screen_to_string().contains("Close the current buffer"))
+        .unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.wait_for_prompt_closed().unwrap();
+
+    // Blame headers are gone.
+    harness
+        .wait_until(|h| !h.screen_to_string().contains("──"))
+        .unwrap();
+
+    // Make sure a real file buffer is focused again before reopening.
+    harness.open_file(&file_path).unwrap();
+    harness
+        .wait_until(|h| h.get_buffer_content().unwrap().contains("fn main"))
+        .unwrap();
+
+    // Reopen blame. With the bug, `show_git_blame` would early-return with
+    // "already open" and the "──" headers would never reappear, so this
+    // wait (inside `trigger_git_blame`) would time out.
+    trigger_git_blame(&mut harness);
+    harness
+        .wait_until(|h| h.screen_to_string().contains("──"))
+        .unwrap();
+
+    let screen = harness.screen_to_string();
+    assert!(
+        screen.contains("──"),
+        "Blame should reopen after an external close.\nScreen:\n{screen}"
+    );
+    assert!(
+        !screen.contains("already open"),
+        "Reopening blame must not report 'already open'.\nScreen:\n{screen}"
+    );
+}
+
+/// Multiple blame buffers can be open at once: blaming a second file must
+/// create its own blame view instead of reporting "already open". The old
+/// single-`blameState` model only allowed one blame buffer at a time.
+// TODO: Fix git blame tests on Windows - they fail due to git command output differences
+#[test]
+#[cfg_attr(target_os = "windows", ignore)]
+fn test_git_blame_multiple_files_open_simultaneously() {
+    let repo = GitTestRepo::new();
+    repo.setup_typical_project();
+    repo.setup_git_blame_plugin();
+
+    let original_dir = repo.change_to_repo_dir();
+    let _guard = DirGuard::new(original_dir);
+
+    let mut harness = EditorTestHarness::with_config_and_working_dir(
+        140,
+        40,
+        Config::default(),
+        repo.path.clone(),
+    )
+    .unwrap();
+
+    // Open two files in the same split.
+    harness.open_file(&repo.path.join("src/main.rs")).unwrap();
+    harness
+        .wait_until(|h| h.get_buffer_content().unwrap().contains("fn main"))
+        .unwrap();
+    harness.open_file(&repo.path.join("src/lib.rs")).unwrap();
+    harness
+        .wait_until(|h| h.get_buffer_content().unwrap().contains("struct Config"))
+        .unwrap();
+
+    // Blame lib.rs (the focused file).
+    trigger_git_blame(&mut harness);
+    harness
+        .wait_until(|h| {
+            let s = h.screen_to_string();
+            s.contains("──") && s.contains("blame:lib.rs")
+        })
+        .unwrap();
+
+    // Switch back to main.rs and blame it too.
+    harness.open_file(&repo.path.join("src/main.rs")).unwrap();
+    harness
+        .wait_until(|h| h.get_buffer_content().unwrap().contains("fn main"))
+        .unwrap();
+    trigger_git_blame(&mut harness);
+
+    // Both blame buffers should now exist as separate tabs — the second
+    // invocation must not have early-returned with "already open".
+    harness
+        .wait_until(|h| {
+            let s = h.screen_to_string();
+            s.contains("blame:lib.rs") && s.contains("blame:main.rs")
+        })
+        .unwrap();
+
+    let screen = harness.screen_to_string();
+    assert!(
+        screen.contains("blame:lib.rs") && screen.contains("blame:main.rs"),
+        "Both blame buffers should be open as separate tabs.\nScreen:\n{screen}"
+    );
+    assert!(
+        !screen.contains("already open"),
+        "Opening blame on a second file must not report 'already open'.\nScreen:\n{screen}"
+    );
+}
+
 /// Test git blame go back in history with 'b' key
 // TODO: Fix git blame tests on Windows - they fail due to git command output differences
 #[test]
@@ -2905,4 +3057,168 @@ fn parse_ln(screen: &str) -> Option<usize> {
     let rest = &screen[idx + 3..];
     let end = rest.find(',')?;
     rest[..end].trim().parse().ok()
+}
+
+/// Regression: activating Git Blame should land the cursor on the same line
+/// the user was on in the source buffer, not reset to the top of the doc.
+/// Issue #1957.
+// TODO: Fix git blame tests on Windows - they fail due to git command output differences
+#[test]
+#[cfg_attr(target_os = "windows", ignore)]
+fn test_git_blame_jumps_to_source_cursor_line() {
+    init_tracing_from_env();
+    let repo = GitTestRepo::new();
+
+    // Single-commit file with enough lines that "top" is clearly distinguishable
+    // from "middle". Cursor will be placed at line 15.
+    let mut content = String::new();
+    for i in 1..=30 {
+        content.push_str(&format!("Line {i}\n"));
+    }
+    repo.create_file("test.txt", &content);
+    repo.git_add(&["test.txt"]);
+    repo.git_commit("Initial commit");
+    repo.setup_git_blame_plugin();
+
+    let original_dir = repo.change_to_repo_dir();
+    let _guard = DirGuard::new(original_dir);
+
+    let mut harness = EditorTestHarness::with_config_and_working_dir(
+        120,
+        40,
+        Config::default(),
+        repo.path.clone(),
+    )
+    .unwrap();
+
+    let file_path = repo.path.join("test.txt");
+    harness.open_file(&file_path).unwrap();
+    harness
+        .wait_until(|h| h.get_buffer_content().unwrap().contains("Line 30"))
+        .unwrap();
+
+    // Move cursor from line 1 down to line 15.
+    for _ in 0..14 {
+        harness.send_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+    }
+    harness.process_async_and_render().unwrap();
+
+    // Sanity: status bar should now report line 15 in the source buffer.
+    harness
+        .wait_until(|h| parse_ln(&h.screen_to_string()) == Some(15))
+        .unwrap();
+
+    // Activate git blame.
+    trigger_git_blame(&mut harness);
+    harness
+        .wait_until(|h| h.screen_to_string().contains("──"))
+        .unwrap();
+
+    // The cursor in the blame view should land on the same line the user
+    // was on in the source buffer (line 15) — both visually (the cursor
+    // row renders "Line 15") and per the status bar's "Ln N" indicator.
+    // The status bar check is the strict assertion: before this fix it
+    // showed "Ln 1" regardless of the source line — the user-visible
+    // "off-by-one" (worst at source line 2, off by N-1 in general).
+    harness
+        .wait_until(|h| parse_ln(&h.screen_to_string()) == Some(15))
+        .unwrap();
+    let cursor_row = harness
+        .render_observing_cursor()
+        .ok()
+        .flatten()
+        .map(|(_, row)| row);
+    if let Some(row) = cursor_row {
+        let screen = harness.screen_to_string();
+        let row_text = screen.lines().nth(row as usize).unwrap_or("");
+        assert!(
+            row_text.contains("Line 15"),
+            "cursor row {row} should render 'Line 15', got: {row_text:?}",
+        );
+    }
+}
+
+/// Regression: activating Git Blame after navigating with Ctrl-G in a large
+/// file with multi-byte characters before the target line must land the
+/// cursor on the same source line.
+///
+/// Models the user-visible scenario from #1957 follow-up: large file
+/// (>5000 lines), multi-byte glyphs scattered before the target line, and
+/// the cursor moved via the Goto Line prompt (Ctrl-G) rather than arrow
+/// keys. The earlier test_git_blame_jumps_to_source_cursor_line covers
+/// arrow-key motion in a 30-line file; this one exercises the host-side
+/// line→byte resolution and the cursor-mount path the user actually hit.
+// TODO: Fix git blame tests on Windows - they fail due to git command output differences
+#[test]
+#[cfg_attr(target_os = "windows", ignore)]
+fn test_git_blame_jumps_to_cursor_line_with_multibyte_and_goto() {
+    init_tracing_from_env();
+    let repo = GitTestRepo::new();
+
+    // 5500 lines, with multi-byte glyphs (`█`, `│`) sprinkled in the first
+    // 200 lines — same pattern as crates/fresh-editor/src/config.rs.
+    let mut content = String::with_capacity(120_000);
+    for i in 1..=5500 {
+        if i % 4 == 0 && i <= 200 {
+            content.push_str(&format!("Line {i} █ │\n"));
+        } else {
+            content.push_str(&format!("Line {i}\n"));
+        }
+    }
+    repo.create_file("big.txt", &content);
+    repo.git_add(&["big.txt"]);
+    repo.git_commit("Initial commit");
+    repo.setup_git_blame_plugin();
+
+    let original_dir = repo.change_to_repo_dir();
+    let _guard = DirGuard::new(original_dir);
+
+    let mut harness = EditorTestHarness::with_config_and_working_dir(
+        140,
+        50,
+        Config::default(),
+        repo.path.clone(),
+    )
+    .unwrap();
+
+    let file_path = repo.path.join("big.txt");
+    harness.open_file(&file_path).unwrap();
+    harness
+        .wait_until(|h| h.get_buffer_content().unwrap().contains("Line 5500"))
+        .unwrap();
+
+    // Ctrl-G, type 5000, Enter — the exact key sequence from the user's repro.
+    harness
+        .send_key(KeyCode::Char('g'), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.wait_for_prompt().unwrap();
+    harness.type_text("5000").unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness
+        .wait_until(|h| parse_ln(&h.screen_to_string()) == Some(5000))
+        .unwrap();
+
+    // Inline trigger_git_blame's body — we can't wait for the "──" block
+    // header glyph since this single-commit file collapses to one block
+    // whose header lives at line 1, far off the viewport scrolled to
+    // line 5000. Wait on the status bar's `*blame:` indicator instead.
+    harness
+        .send_key(KeyCode::Char('p'), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.wait_for_prompt().unwrap();
+    harness.type_text("Git Blame").unwrap();
+    harness.wait_for_screen_contains("Git Blame").unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness
+        .wait_until(|h| h.screen_to_string().contains("*blame:big.txt*"))
+        .unwrap();
+
+    // Status bar must report Ln 5000 in the blame view, not Ln 1.
+    harness
+        .wait_until(|h| parse_ln(&h.screen_to_string()) == Some(5000))
+        .unwrap();
 }

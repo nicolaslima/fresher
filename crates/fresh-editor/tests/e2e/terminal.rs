@@ -43,6 +43,98 @@ macro_rules! harness_or_return {
     };
 }
 
+/// Locate the 0-based column of `needle` on the (0-based) tab row (row 1).
+fn tab_row_col_of(screen: &str, needle: char) -> Option<u16> {
+    screen
+        .lines()
+        .nth(1)?
+        .chars()
+        .position(|c| c == needle)
+        .map(|p| p as u16)
+}
+
+/// Locate the 0-based column where `needle` begins on the tab row (row 1).
+fn tab_row_col_of_str(screen: &str, needle: &str) -> Option<u16> {
+    let line = screen.lines().nth(1)?;
+    let byte_idx = line.find(needle)?;
+    Some(line[..byte_idx].chars().count() as u16)
+}
+
+/// Regression: with the keyboard focused on an *active terminal* buffer
+/// (terminal mode owns the keyboard), opening the tab bar's "+" popup must
+/// still hand the keyboard to the popup. Its navigation keys drive the menu
+/// instead of leaking into the terminal's PTY child.
+///
+/// Without the popup being registered as a terminal-blocking overlay,
+/// `dispatch_terminal_input` (which runs before the popup's key handler)
+/// would swallow the keys: Enter would reach the shell, the popup would stay
+/// open, and no new buffer would be created.
+#[test]
+fn plus_button_menu_grabs_keyboard_from_active_terminal() {
+    let mut harness = harness_or_return!(120, 30);
+
+    // Focus an active terminal buffer.
+    harness.editor_mut().open_terminal();
+    assert!(harness.editor().is_terminal_mode());
+    harness.render().unwrap();
+
+    // Open the tab bar's trailing "+" popup (a left-click on chrome that
+    // leaves the terminal the active, focused buffer).
+    let screen = harness.screen_to_string();
+    let plus_col = tab_row_col_of(&screen, '+').unwrap_or_else(|| {
+        panic!("expected a '+' new-tab button on the tab row. Screen:\n{screen}")
+    });
+    harness.mouse_click(plus_col, 1).unwrap();
+    harness.assert_screen_contains("New Terminal");
+    harness.assert_screen_contains("New File");
+
+    // Drive the popup from the keyboard: Down highlights "New File", Enter
+    // activates it. If the keys leaked into the terminal, the popup would
+    // stay open and no new file buffer would appear.
+    harness.send_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.render().unwrap();
+
+    let screen = harness.screen_to_string();
+    assert!(
+        !screen.contains("New Terminal"),
+        "popup should close once Enter selects an item. Screen:\n{screen}"
+    );
+    harness.assert_screen_contains("[No Name] 2");
+}
+
+/// Regression: the tab right-click context menu must likewise grab the
+/// keyboard from an active terminal. Opened over the terminal's own tab,
+/// Esc dismisses it — without the fix Esc would reach the PTY instead and
+/// the menu would stay open.
+#[test]
+fn tab_context_menu_grabs_keyboard_from_active_terminal() {
+    let mut harness = harness_or_return!(120, 30);
+
+    harness.editor_mut().open_terminal();
+    assert!(harness.editor().is_terminal_mode());
+    harness.render().unwrap();
+
+    // Right-click the terminal's own tab so the terminal stays the active
+    // buffer (and terminal mode keeps the keyboard).
+    let screen = harness.screen_to_string();
+    let term_col = tab_row_col_of_str(&screen, "Terminal").unwrap_or_else(|| {
+        panic!("expected the '*Terminal 0*' tab on the tab row. Screen:\n{screen}")
+    });
+    harness.mouse_right_click(term_col, 1).unwrap();
+    harness.assert_screen_contains("Close Others");
+
+    // Esc must dismiss the menu rather than leak into the terminal.
+    harness.send_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+    let screen = harness.screen_to_string();
+    assert!(
+        !screen.contains("Close Others"),
+        "Esc should dismiss the tab context menu opened over a terminal. Screen:\n{screen}"
+    );
+}
+
 /// Test opening a terminal creates a buffer and switches to it
 #[test]
 fn test_open_terminal() {
@@ -61,6 +153,81 @@ fn test_open_terminal() {
 
     // Status bar should show terminal opened message
     harness.assert_screen_contains("Terminal");
+}
+
+/// Running "Open Terminal to the Right" from the command palette creates a
+/// terminal in a new split beside the editor: both panes stay visible side
+/// by side, with the terminal to the right of the still-visible editor
+/// content. Drives the real palette flow (keyboard only) and asserts purely
+/// on rendered output.
+#[test]
+fn test_open_terminal_to_the_right_via_palette() {
+    let mut harness = harness_or_return!(120, 24);
+
+    // Distinctive content so the editor pane is locatable on screen.
+    harness.type_text("EDITORPANE").unwrap();
+    harness.render().unwrap();
+
+    // Ctrl+P opens the command palette already in command (">") mode.
+    harness
+        .send_key(KeyCode::Char('p'), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.render().unwrap();
+    harness.type_text("open terminal to the right").unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.render().unwrap();
+
+    // A terminal pane appeared alongside the still-visible editor content.
+    let (term_col, _term_row) = harness
+        .find_text_on_screen("*Terminal 0*")
+        .expect("terminal tab should be visible after running the command");
+    let (editor_col, _editor_row) = harness
+        .find_text_on_screen("EDITORPANE")
+        .expect("editor content should remain visible in its own pane");
+
+    // Vertical split → side by side: the terminal sits to the right of the
+    // editor content.
+    assert!(
+        term_col > editor_col,
+        "terminal pane should be to the right (term col {term_col} vs editor col {editor_col})"
+    );
+}
+
+/// Running "Open Terminal Below" from the command palette creates a terminal
+/// in a new split stacked under the editor: the editor content stays visible
+/// on top with the terminal below it. Keyboard-driven; asserts only on
+/// rendered output.
+#[test]
+fn test_open_terminal_below_via_palette() {
+    let mut harness = harness_or_return!(120, 24);
+
+    harness.type_text("EDITORPANE").unwrap();
+    harness.render().unwrap();
+
+    harness
+        .send_key(KeyCode::Char('p'), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.render().unwrap();
+    harness.type_text("open terminal below").unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.render().unwrap();
+
+    let (_term_col, term_row) = harness
+        .find_text_on_screen("*Terminal 0*")
+        .expect("terminal tab should be visible after running the command");
+    let (_editor_col, editor_row) = harness
+        .find_text_on_screen("EDITORPANE")
+        .expect("editor content should remain visible in its own pane");
+
+    // Horizontal split → stacked: the terminal sits below the editor content.
+    assert!(
+        term_row > editor_row,
+        "terminal pane should be below the editor (term row {term_row} vs editor row {editor_row})"
+    );
 }
 
 /// Test closing a terminal
@@ -3201,6 +3368,97 @@ fn test_bracket_paste_in_terminal_mode() {
         .send_terminal_input(b"\x04");
 }
 
+/// Regression test: when an alternate-screen program is *tracking the mouse*
+/// (mouse reporting enabled), wheel events must be forwarded to it as real
+/// mouse reports — never converted into arrow keys by alternate-scroll mode.
+///
+/// `alacritty_terminal` enables `ALTERNATE_SCROLL` by default, so without a
+/// `wants_mouse` guard in `send_terminal_mouse` every forwarded wheel event in
+/// the alternate screen would be rewritten as Up/Down arrows. For a full-screen
+/// program that scrolls its own viewport from wheel reports — e.g. Claude Code's
+/// "no-flicker" mode — that arrow translation instead leaks into its input and
+/// cycles prompt/message history rather than scrolling the viewport.
+#[test]
+#[cfg_attr(target_os = "windows", ignore)] // Uses Unix shell commands (printf/stty/cat)
+fn test_wheel_forwarded_as_mouse_report_when_mouse_tracked() {
+    let mut harness = harness_or_return!(80, 24);
+
+    harness.editor_mut().open_terminal();
+    harness.render().unwrap();
+    assert!(harness.editor().is_terminal_mode());
+
+    // Wait for the shell prompt to be ready.
+    harness
+        .editor_mut()
+        .active_window_mut()
+        .send_terminal_input(b"echo SHELL_READY\n");
+    harness
+        .wait_until(|h| h.screen_to_string().contains("SHELL_READY"))
+        .unwrap();
+
+    // Enter the alternate screen, enable SGR (1006) + click (1000) mouse
+    // reporting, print a readiness marker, then run `cat -v` on a raw, no-echo
+    // tty so any bytes we forward are echoed back verbatim (ESC shown as `^[`).
+    //
+    // The marker is assembled from two `printf` args (`CAT` + `_READY`) so the
+    // echoed *command line* contains "CAT _READY" (with a space) while the
+    // program's *output* is "CAT_READY" — the wait below then matches only the
+    // real output, never the command echo.
+    harness
+        .editor_mut()
+        .active_window_mut()
+        .send_terminal_input(
+            b"printf '\\033[?1049h\\033[?1006h\\033[?1000h%s%s\\n' CAT _READY; stty raw -echo; cat -v\n",
+        );
+
+    // Entering the alternate screen hides the main-screen command echo, so the
+    // only way "CAT_READY" appears on screen is as the program's output —
+    // printed right after the alt-screen + mouse-mode set sequences. Seeing it
+    // is an observable signal that the program is now on the alternate screen
+    // and tracking the mouse (no model accessors needed).
+    harness
+        .wait_until(|h| h.screen_to_string().contains("CAT_READY"))
+        .unwrap();
+
+    // Scroll the wheel up over the terminal content area.
+    harness.mouse_scroll_up(10, 10).unwrap();
+
+    // Send a plain sentinel after the wheel event. The PTY preserves order, so
+    // once `cat -v` has echoed the sentinel we know the wheel bytes were already
+    // echoed too — letting us assert deterministically (and fail fast rather
+    // than hang) regardless of whether they were a mouse report or arrow keys.
+    harness
+        .editor_mut()
+        .active_window_mut()
+        .send_terminal_input(b"ZZ_END");
+    harness
+        .wait_until(|h| h.screen_to_string().contains("ZZ_END"))
+        .unwrap();
+
+    // The program should have received an SGR wheel report (button 64), echoed
+    // by `cat -v` as `^[[<64;...M`. It must NOT have received Up-arrow keys
+    // (`^[[A`).
+    let screen = harness.screen_to_string();
+    assert!(
+        screen.contains("[<64;"),
+        "wheel should be forwarded as an SGR mouse report when the program \
+         tracks the mouse. Screen:\n{}",
+        screen
+    );
+    assert!(
+        !screen.contains("[A"),
+        "wheel must not be converted to Up-arrow keys while the program tracks \
+         the mouse — alternate-scroll must be suppressed. Screen:\n{}",
+        screen
+    );
+
+    // Clean up: Ctrl+D exits cat.
+    harness
+        .editor_mut()
+        .active_window_mut()
+        .send_terminal_input(b"\x04");
+}
+
 /// Test that arrow keys work in programs that enable application cursor keys (DECCKM).
 /// Programs like `less` and `git log` set DECCKM mode, which means arrow keys
 /// must be sent as SS3 sequences (\x1bOA) instead of CSI (\x1b[A).
@@ -3709,4 +3967,90 @@ fn test_send_selection_to_terminal_reaches_background_tab_terminal() {
         .unwrap();
     assert_eq!(harness.editor().active_buffer_id(), terminal_buffer);
     assert!(harness.editor().is_terminal_mode());
+}
+
+// --- Terminal-mode scrollbar visibility ---------------------------------
+
+/// In terminal mode the live PTY grid hides the vertical scrollbar and
+/// reclaims that column, so the terminal text uses the full split width.
+/// Exiting terminal mode (into the read-only scrollback view) brings the
+/// scrollbar back, and the content area shrinks by exactly that one column.
+#[test]
+#[cfg(not(windows))] // Uses Unix shell
+fn test_terminal_mode_hides_scrollbar_and_reclaims_width() {
+    let mut harness = harness_or_return!(80, 24);
+
+    // Opening a terminal enters terminal mode (live PTY grid).
+    harness.editor_mut().open_terminal();
+    harness.render().unwrap();
+    assert!(harness.editor().is_terminal_mode());
+
+    let terminal_buffer = harness.editor().active_buffer_id();
+
+    // While in terminal mode the split shows no scrollbar column.
+    let (live_content_width, live_scrollbar_width) = {
+        let (_, _, content_rect, scrollbar_rect, _, _) = harness
+            .editor()
+            .get_split_areas()
+            .iter()
+            .find(|(_, buf, _, _, _, _)| *buf == terminal_buffer)
+            .copied()
+            .expect("terminal split should be present");
+        (content_rect.width, scrollbar_rect.width)
+    };
+    assert_eq!(
+        live_scrollbar_width, 0,
+        "scrollbar column should be suppressed in terminal mode"
+    );
+
+    // The live PTY grid should span that reclaimed column too.
+    let live_pty_cols = {
+        let terminal_id = harness
+            .editor()
+            .active_window()
+            .get_terminal_id(terminal_buffer)
+            .unwrap();
+        harness
+            .editor()
+            .terminal_manager()
+            .get(terminal_id)
+            .unwrap()
+            .size()
+            .0
+    };
+
+    // Exit terminal mode: the buffer flips to the read-only scrollback view,
+    // which restores the scrollbar.
+    harness
+        .editor_mut()
+        .handle_terminal_key(KeyCode::Char(']'), KeyModifiers::CONTROL);
+    assert!(!harness.editor().is_terminal_mode());
+    harness.render().unwrap();
+
+    let (scrollback_content_width, scrollback_scrollbar_width) = {
+        let (_, _, content_rect, scrollbar_rect, _, _) = harness
+            .editor()
+            .get_split_areas()
+            .iter()
+            .find(|(_, buf, _, _, _, _)| *buf == terminal_buffer)
+            .copied()
+            .expect("terminal split should be present");
+        (content_rect.width, scrollbar_rect.width)
+    };
+    assert_eq!(
+        scrollback_scrollbar_width, 1,
+        "scrollbar column should reappear after exiting terminal mode"
+    );
+    assert_eq!(
+        live_content_width,
+        scrollback_content_width + 1,
+        "terminal-mode content should reclaim the scrollbar's column"
+    );
+
+    // The live PTY was sized to the wider, scrollbar-free content area: one
+    // column wider than the scrollback view reserves for its scrollbar.
+    assert_eq!(
+        live_pty_cols, scrollback_content_width,
+        "live PTY width should span the scrollbar column the scrollback view reserves"
+    );
 }

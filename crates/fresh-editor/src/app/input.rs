@@ -325,10 +325,19 @@ impl Editor {
             });
         }
         if self.is_prompting() {
+            // Find/replace prompts resolve in the narrower `SearchPrompt`
+            // context, which owns the match-mode toggles and otherwise falls
+            // through to `Prompt`. Every other prompt stays in `Prompt`, so
+            // the toggle keys (Alt+W etc.) never fire outside an actual search.
+            let key_context = if self.active_prompt_has_search_options() {
+                KeyContext::SearchPrompt
+            } else {
+                KeyContext::Prompt
+            };
             layers.push(Layer {
                 kind: LayerKind::Prompt,
                 owns_keyboard: true,
-                key_context: Some(KeyContext::Prompt),
+                key_context: Some(key_context),
                 blocks_terminal_input: true,
             });
         }
@@ -343,6 +352,31 @@ impl Editor {
                 kind: LayerKind::Popup,
                 owns_keyboard: self.popups_capture_keys(),
                 key_context: Some(KeyContext::Popup),
+                blocks_terminal_input: true,
+            });
+        }
+        // The tab-bar popups (the "+" new-tab menu and the tab right-click
+        // context menu) are modal chrome: while one is open it owns the
+        // keyboard via a custom dispatcher (`handle_new_tab_menu_key` /
+        // `handle_tab_context_menu_key`, run from `handle_key` ahead of
+        // `KeyContext` resolution), so they expose no `KeyContext` here.
+        // Like any covering overlay they block PTY routing — otherwise keys
+        // would leak into an active terminal buffer underneath instead of
+        // driving the menu. Ranked below `Popup` so the unfocused-popup
+        // `take_while` guard above is unaffected.
+        if self.active_window().new_tab_menu.is_some() {
+            layers.push(Layer {
+                kind: LayerKind::NewTabMenu,
+                owns_keyboard: true,
+                key_context: None,
+                blocks_terminal_input: true,
+            });
+        }
+        if self.active_window().tab_context_menu.is_some() {
+            layers.push(Layer {
+                kind: LayerKind::TabContextMenu,
+                owns_keyboard: true,
+                key_context: None,
                 blocks_terminal_input: true,
             });
         }
@@ -545,6 +579,17 @@ impl Editor {
             if let Some(result) = self.handle_file_explorer_context_menu_key(code, modifiers) {
                 return result;
             }
+        }
+
+        // The tab-bar popups (the "+" new-tab menu and the tab right-click
+        // context menu) are modal: while one is open it owns the keyboard so
+        // navigation/selection work and every other key is filtered out
+        // instead of leaking into the active buffer underneath.
+        if let Some(result) = self.handle_new_tab_menu_key(code) {
+            return result;
+        }
+        if let Some(result) = self.handle_tab_context_menu_key(code) {
+            return result;
         }
 
         // Determine the current context first
@@ -868,6 +913,7 @@ impl Editor {
             Action::LspCompletion
             | Action::LspGotoDefinition
             | Action::LspReferences
+            | Action::LspImplementation
             | Action::LspHover
             | Action::None => {
                 // Don't cancel for LSP actions or no-op
@@ -887,10 +933,13 @@ impl Editor {
     /// Handle an action (for normal mode and command execution).
     /// Used by the app module internally and by the GUI module for native menu dispatch.
     /// Change the current workspace's trust level, persist it, and report it.
-    /// When the level actually changes, the editor restarts so the new policy
-    /// applies to already-running tooling (a now-trusted project's LSP starts;
-    /// a now-restricted/blocked one is torn down). Already-correct selections
-    /// (e.g. confirming the current level) only persist the decision.
+    /// The new policy applies live at the next authority-routed spawn (the
+    /// guarding spawners read the level on every spawn) — there is NO editor
+    /// restart here, deliberately: a rebuild would reset every other
+    /// orchestrator session's buffers/layout (see the body). Trust-gated work
+    /// re-triggers via the `trust_changed` hook instead (e.g. env-manager
+    /// re-activates a now-trusted env). Already-correct selections (e.g.
+    /// confirming the current level) only persist the decision.
     pub(crate) fn set_workspace_trust_level(
         &mut self,
         level: crate::services::workspace_trust::TrustLevel,
@@ -917,6 +966,25 @@ impl Editor {
         }
         .to_string();
         self.active_window_mut().status_message = Some(msg);
+
+        // Refresh the plugin-visible state snapshot so `editor.workspaceTrustLevel()`
+        // reflects the new level, then notify plugins. The `trust_changed` hook
+        // lets trust-gated work re-trigger inline — env-manager re-activates a
+        // now-trusted env without a window switch — and it is the single signal
+        // every trust-change path (modal confirm, status pill, plugin action)
+        // funnels through, since they all route here. Deliberately a hook and a
+        // snapshot refresh, NOT a `request_restart`: a rebuild would reset every
+        // other session's buffers/layout (see the note above).
+        #[cfg(feature = "plugins")]
+        {
+            self.update_plugin_state_snapshot();
+            self.plugin_manager.read().unwrap().run_hook(
+                "trust_changed",
+                crate::services::plugins::hooks::HookArgs::TrustChanged {
+                    level: level.as_str().to_string(),
+                },
+            );
+        }
     }
 
     pub(crate) fn handle_action(&mut self, action: Action) -> AnyhowResult<()> {
@@ -1237,6 +1305,9 @@ impl Editor {
             Action::ShowRemoteIndicatorMenu => {
                 self.show_remote_indicator_popup();
             }
+            Action::ShowReadOnlyMenu => {
+                self.show_read_only_popup();
+            }
             Action::ClearWarnings => {
                 self.active_window_mut().clear_warnings();
             }
@@ -1377,6 +1448,9 @@ impl Editor {
                         view_state.viewport.line_wrap_enabled = effective_wrap;
                         view_state.viewport.wrap_indent = self.config.editor.wrap_indent;
                         view_state.viewport.wrap_column = wrap_column;
+                        // Global toggle expresses global intent; drop the
+                        // per-buffer pin so it doesn't revert this change.
+                        view_state.line_wrap_override = None;
                     }
                 }
 
@@ -1534,6 +1608,9 @@ impl Editor {
             }
             Action::LspReferences => {
                 self.request_references()?;
+            }
+            Action::LspImplementation => {
+                self.request_implementation()?;
             }
             Action::LspSignatureHelp => {
                 self.request_signature_help();
@@ -1703,6 +1780,8 @@ impl Editor {
             Action::ToggleVerticalScrollbar => self.toggle_vertical_scrollbar(),
             Action::ToggleHorizontalScrollbar => self.toggle_horizontal_scrollbar(),
             Action::ToggleLineNumbers => self.toggle_line_numbers(),
+            Action::ToggleLineNumbersCurrentBuffer => self.toggle_line_numbers_current_buffer(),
+            Action::ToggleLineWrapCurrentBuffer => self.toggle_line_wrap_current_buffer(),
             Action::TriggerWaveAnimation => self.trigger_wave_animation(),
             Action::ToggleScrollSync => self.active_window_mut().toggle_scroll_sync(),
             Action::ToggleMouseCapture => self.toggle_mouse_capture(),
@@ -1892,27 +1971,12 @@ impl Editor {
             }
 
             Action::SwitchKeybindingMap(map_name) => {
-                // Check if the map exists (either built-in or user-defined)
-                let is_builtin =
-                    matches!(map_name.as_str(), "default" | "emacs" | "vscode" | "macos");
-                let is_user_defined = self.config.keybinding_maps.contains_key(&map_name);
-
-                if is_builtin || is_user_defined {
-                    // Update the active keybinding map in config
-                    self.config_mut().active_keybinding_map = map_name.clone().into();
-
-                    // Reload the keybinding resolver with the new map
-                    *self.keybindings.write().unwrap() =
-                        crate::input::keybindings::KeybindingResolver::new(&self.config);
-
-                    self.set_status_message(
-                        t!("view.keybindings_switched", map = map_name).to_string(),
-                    );
-                } else {
-                    self.set_status_message(
-                        t!("view.keybindings_unknown", map = map_name).to_string(),
-                    );
-                }
+                // Delegate to the shared helper so the menu path persists the
+                // choice to the user config (issue #474), matching the
+                // command-palette path. This handler previously duplicated the
+                // switch logic but skipped persistence, so the keybinding style
+                // reset to the default on the next launch.
+                self.apply_keybinding_map(&map_name);
             }
 
             Action::SmartHome => {
@@ -1954,6 +2018,9 @@ impl Editor {
             Action::ListBookmarks => {
                 self.active_window_mut().list_bookmarks();
             }
+            Action::ToggleSearchCaseSensitive if !self.active_prompt_has_search_options() => {}
+            Action::ToggleSearchWholeWord if !self.active_prompt_has_search_options() => {}
+            Action::ToggleSearchRegex if !self.active_prompt_has_search_options() => {}
             Action::ToggleSearchCaseSensitive => {
                 self.active_window_mut().search_case_sensitive =
                     !self.active_window().search_case_sensitive;
@@ -2239,6 +2306,12 @@ impl Editor {
             }
             Action::OpenTerminal => {
                 self.open_terminal();
+            }
+            Action::OpenTerminalRight => {
+                self.open_terminal_split(crate::model::event::SplitDirection::Vertical);
+            }
+            Action::OpenTerminalBelow => {
+                self.open_terminal_split(crate::model::event::SplitDirection::Horizontal);
             }
             Action::CloseTerminal => {
                 self.close_terminal();

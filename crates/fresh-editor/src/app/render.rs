@@ -13,6 +13,9 @@ impl Editor {
         size: ratatui::layout::Rect,
         theme: &crate::view::theme::Theme,
         hover_target: Option<&crate::app::HoverTarget>,
+        // When false, compute + cache the popup area but draw no cells (the web
+        // renders popups natively from `popups_view`). TUI passes `true`.
+        draw: bool,
     ) {
         let Some(popup) = self.global_popups.top() else {
             return;
@@ -40,7 +43,9 @@ impl Editor {
             _ => 0,
         };
         let scroll_offset = popup.scroll_offset;
-        popup.render_with_hover(frame, popup_area, theme, hover_target);
+        if draw {
+            popup.render_with_hover(frame, popup_area, theme, hover_target);
+        }
         self.active_chrome_mut().global_popup_areas.push((
             top_idx,
             popup_area,
@@ -115,16 +120,7 @@ impl Editor {
         // rendering uses an up-to-date layout. See the
         // "Recompute layout if mid-render commands changed state"
         // block below.)
-        let mut show_search_options = self.active_window().prompt.as_ref().is_some_and(|p| {
-            matches!(
-                p.prompt_type,
-                PromptType::Search
-                    | PromptType::ReplaceSearch
-                    | PromptType::Replace { .. }
-                    | PromptType::QueryReplaceSearch
-                    | PromptType::QueryReplace { .. }
-            )
-        });
+        let mut show_search_options = self.active_prompt_has_search_options();
 
         // Hide status bar when suggestions popup or file browser
         // popup is shown — those popups float just above the prompt
@@ -263,6 +259,9 @@ impl Editor {
             // Theme-key runs the explorer records as it paints; applied to the
             // chrome cell map after the window borrow is released.
             let mut fe_runs: Vec<crate::app::types::ThemeRun> = Vec::new();
+            // Web renders the sidebar natively from `file_explorer_view`; skip
+            // its cell drawing (layout/viewport still applied).
+            let fe_draw = !self.suppress_chrome_cells;
             // Take one &mut on the active window; the explorer + buffers
             // come from disjoint sub-fields so they can coexist.
             let __win = self
@@ -309,6 +308,7 @@ impl Editor {
                     &self.config.file_explorer.tree_indicator_collapsed,
                     &self.config.file_explorer.tree_indicator_expanded,
                     Some(&mut crate::app::types::CellThemeRecorder::new(&mut fe_runs)),
+                    fe_draw,
                 );
             }
             // Note: if file_explorer is None but sync_in_progress is true,
@@ -496,11 +496,6 @@ impl Editor {
             let dispatched_any = {
                 let commands = self.plugin_manager.write().unwrap().process_commands();
                 let dispatched_any = !commands.is_empty();
-                if dispatched_any {
-                    let cmd_names: Vec<String> =
-                        commands.iter().map(|c| c.debug_variant_name()).collect();
-                    tracing::trace!(count = commands.len(), cmds = ?cmd_names, "process_commands during render");
-                }
                 for command in commands {
                     if let Err(e) = self.handle_plugin_command(command) {
                         tracing::error!("Error handling plugin command: {}", e);
@@ -540,16 +535,7 @@ impl Editor {
             // the next frame, where the layout is built consistently
             // from the start.
             if dispatched_any {
-                show_search_options = self.active_window().prompt.as_ref().is_some_and(|p| {
-                    matches!(
-                        p.prompt_type,
-                        PromptType::Search
-                            | PromptType::ReplaceSearch
-                            | PromptType::Replace { .. }
-                            | PromptType::QueryReplaceSearch
-                            | PromptType::QueryReplace { .. }
-                    )
-                });
+                show_search_options = self.active_prompt_has_search_options();
                 prompt_is_overlay = self
                     .active_window()
                     .prompt
@@ -659,6 +645,9 @@ impl Editor {
         let mut pending_hardware_cursor: Option<(u16, u16)> = None;
 
         let _content_span = tracing::info_span!("render_content").entered();
+        // Web renders the tab bar natively from `tab_bar_view`; skip painting it
+        // to cells (its TabLayout is still computed). Panes always draw.
+        let split_draw_tab_bar = !self.suppress_chrome_cells;
         // Take a single mutable borrow on the active window's splits and
         // split it into (&SplitManager, &mut HashMap<...>) — Rust can
         // destructure the tuple, but we can't make two separate
@@ -682,6 +671,7 @@ impl Editor {
         let __composite_view_states_mut = &mut __win.composite_view_states;
         let __cell_theme_map_mut = &mut __win.chrome_layout.cell_theme_map;
         let __tab_bar_visible = __win.tab_bar_visible;
+        let __terminal_mode = __win.terminal_mode;
         let (
             split_areas,
             tab_layouts,
@@ -725,6 +715,7 @@ impl Editor {
                     self.software_cursor_only,
                     self.config.editor.show_vertical_scrollbar,
                     self.config.editor.show_horizontal_scrollbar,
+                    __terminal_mode,
                     self.config.editor.diagnostics_inline_text,
                     self.config.editor.show_tilde,
                     self.config.editor.highlight_current_column,
@@ -732,6 +723,7 @@ impl Editor {
                     __cell_theme_map_mut,
                     size.width,
                     &mut pending_hardware_cursor,
+                    split_draw_tab_bar,
                 )
             })
             .expect("active window must have a populated split layout");
@@ -998,22 +990,17 @@ impl Editor {
                     (WarningLevel::None, 0)
                 };
 
-            // Compute status bar hover state for styling
-            use crate::view::ui::status_bar::StatusBarHover;
-            let status_bar_hover = match &self.active_window_mut().mouse_state.hover_target {
-                Some(HoverTarget::StatusBarLspIndicator) => StatusBarHover::LspIndicator,
-                Some(HoverTarget::StatusBarWarningBadge) => StatusBarHover::WarningBadge,
-                Some(HoverTarget::StatusBarLineEndingIndicator) => {
-                    StatusBarHover::LineEndingIndicator
-                }
-                Some(HoverTarget::StatusBarEncodingIndicator) => StatusBarHover::EncodingIndicator,
-                Some(HoverTarget::StatusBarLanguageIndicator) => StatusBarHover::LanguageIndicator,
-                Some(HoverTarget::StatusBarRemoteIndicator) => StatusBarHover::RemoteIndicator,
-                Some(HoverTarget::StatusBarTrustIndicator) => StatusBarHover::WorkspaceTrust,
-                _ => StatusBarHover::None,
+            // Which clickable status-bar segment (if any) the mouse is over —
+            // drives hover styling generically (one variant for the whole bar).
+            let status_bar_hovered = match &self.active_window_mut().mouse_state.hover_target {
+                Some(HoverTarget::StatusBarClickable(id)) => Some(*id),
+                _ => None,
             };
 
             let remote_connection = self.connection_display_string();
+            // Active window's last failed-reconnect error (drives a core
+            // FailedAttach indicator for a dormant remote workspace).
+            let remote_reconnect_error = self.active_window().remote_reconnect_error.clone();
 
             // Get session name for display (only in session mode)
             let session_name = self.session_name().map(|s| s.to_string());
@@ -1045,6 +1032,9 @@ impl Editor {
             // Theme-key runs the status bar records as it paints; applied to
             // the chrome's cell map after the window borrow is released.
             let mut status_bar_runs: Vec<crate::app::types::ThemeRun> = Vec::new();
+            // Web renders the status bar natively from `status_view`; skip painting
+            // it (the semantic segments + indicator rects are still captured).
+            let sb_draw = !self.suppress_chrome_cells;
             let __win = self
                 .windows
                 .get_mut(&__active_id)
@@ -1070,11 +1060,12 @@ impl Editor {
                         update_available: update_available.as_deref(),
                         warning_level,
                         general_warning_count,
-                        hover: status_bar_hover,
+                        hovered: status_bar_hovered,
                         remote_connection: remote_connection.as_deref(),
                         session_name: session_name.as_deref(),
                         read_only: is_read_only,
                         remote_state_override: self.remote_indicator_override.as_ref(),
+                        remote_reconnect_error: remote_reconnect_error.as_deref(),
                         is_synthetic_placeholder,
                         // Filled in by `render_status` from the user's
                         // status_bar config; the value here is just a
@@ -1092,6 +1083,7 @@ impl Editor {
                         &mut status_ctx,
                         &self.config.editor.status_bar,
                         Some(&mut sb_rec),
+                        sb_draw,
                     )
                 })
                 .expect("active buffer must be present");
@@ -1101,19 +1093,10 @@ impl Editor {
             let status_bar_area = main_chunks[status_bar_idx];
             self.active_chrome_mut().status_bar_area =
                 Some((status_bar_area.y, status_bar_area.x, status_bar_area.width));
-            self.active_chrome_mut().status_bar_lsp_area = status_bar_layout.lsp_indicator;
-            self.active_chrome_mut().status_bar_warning_area = status_bar_layout.warning_badge;
-            self.active_chrome_mut().status_bar_line_ending_area =
-                status_bar_layout.line_ending_indicator;
-            self.active_chrome_mut().status_bar_encoding_area =
-                status_bar_layout.encoding_indicator;
-            self.active_chrome_mut().status_bar_language_area =
-                status_bar_layout.language_indicator;
-            self.active_chrome_mut().status_bar_message_area = status_bar_layout.message_area;
-            self.active_chrome_mut().status_bar_remote_area = status_bar_layout.remote_indicator;
-            self.active_chrome_mut().status_bar_trust_area = status_bar_layout.trust_indicator;
+            self.active_chrome_mut().status_bar_clickable = status_bar_layout.clickable;
             self.active_chrome_mut().status_bar_plugin_token_areas =
                 status_bar_layout.plugin_token_areas;
+            self.active_chrome_mut().status_bar_segments = status_bar_layout.segments;
         }
 
         // Render search options bar when in search prompt
@@ -1383,9 +1366,12 @@ impl Editor {
         // Store popup areas for mouse hit testing
         self.active_chrome_mut().popup_areas = popup_info.clone();
 
-        // Now render popups
+        // Now render popups (cells only when this frontend draws chrome itself;
+        // the web renders them natively from `popups_view`, but the area cache
+        // above is always populated for hit-routing).
+        let draw_popups = !self.suppress_chrome_cells;
         let state = self.active_state_mut();
-        if state.popups.is_visible() {
+        if draw_popups && state.popups.is_visible() {
             for (popup_idx, popup) in state.popups.all().iter().enumerate() {
                 if let Some((_, popup_area, _, _, _, _, _)) = popup_info.get(popup_idx) {
                     popup.render_with_hover(
@@ -1422,7 +1408,14 @@ impl Editor {
         if !top_is_trust_modal {
             // Global popups render within the chrome area (right of a
             // left dock) so corner/centred popups don't overrun it.
-            self.render_top_global_popup(frame, chrome_area, &theme_clone, hover_target.as_ref());
+            let draw_global_popup = !self.suppress_chrome_cells;
+            self.render_top_global_popup(
+                frame,
+                chrome_area,
+                &theme_clone,
+                hover_target.as_ref(),
+                draw_global_popup,
+            );
         }
 
         // Render menu bar last so dropdown appears on top of all other content
@@ -1431,11 +1424,15 @@ impl Editor {
 
         // Render settings modal (before menu bar so menus can overlay)
         // Check visibility first to avoid borrow conflict with dimming
-        let settings_visible = self
-            .settings_state
-            .as_ref()
-            .map(|s| s.visible)
-            .unwrap_or(false);
+        // The web renders Settings natively from `settings_view`; paint cells
+        // only for the TUI.
+        let draw_settings = !self.suppress_chrome_cells;
+        let settings_visible = draw_settings
+            && self
+                .settings_state
+                .as_ref()
+                .map(|s| s.visible)
+                .unwrap_or(false);
         if settings_visible {
             // Dim the editor content behind the settings modal. Use the
             // chrome area (right of a left dock) so the modal sits beside
@@ -1443,7 +1440,10 @@ impl Editor {
             crate::view::dimming::apply_dimming(frame, chrome_area);
         }
         if let Some(ref mut settings_state) = self.settings_state {
-            if settings_state.visible {
+            if !draw_settings {
+                // keyboard-driven native render; skip cells (and the focus-state
+                // update tied to the cell layout pass).
+            } else if settings_state.visible {
                 settings_state.update_focus_states();
                 let settings_layout = crate::view::settings::render_settings(
                     frame,
@@ -1455,39 +1455,51 @@ impl Editor {
             }
         }
 
-        // Render calibration wizard if active
-        if let Some(ref wizard) = self.calibration_wizard {
-            // Dim the editor content behind the wizard modal
-            crate::view::dimming::apply_dimming(frame, chrome_area);
-            crate::view::calibration_wizard::render_calibration_wizard(
-                frame,
-                chrome_area,
-                wizard,
-                &*self.theme.read().unwrap(),
-            );
+        // Render calibration wizard if active. (Deprecated; the web has no native
+        // projection for it, so suppress its cells there rather than bleed.)
+        if !self.suppress_chrome_cells {
+            if let Some(ref wizard) = self.calibration_wizard {
+                // Dim the editor content behind the wizard modal
+                crate::view::dimming::apply_dimming(frame, chrome_area);
+                crate::view::calibration_wizard::render_calibration_wizard(
+                    frame,
+                    chrome_area,
+                    wizard,
+                    &*self.theme.read().unwrap(),
+                );
+            }
         }
 
-        // Render keybinding editor if active
-        if let Some(ref mut kb_editor) = self.keybinding_editor {
-            crate::view::dimming::apply_dimming(frame, chrome_area);
-            crate::view::keybinding_editor::render_keybinding_editor(
-                frame,
-                chrome_area,
-                kb_editor,
-                &*self.theme.read().unwrap(),
-            );
+        // Event-debug: the web renders it natively from `aux_modals_view`; paint
+        // cells only for the TUI.
+        let draw_aux = !self.suppress_chrome_cells;
+
+        // Keybinding editor: web renders it natively from `keybinding_editor_view`;
+        // paint cells only for the TUI.
+        if draw_aux {
+            if let Some(ref mut kb_editor) = self.keybinding_editor {
+                crate::view::dimming::apply_dimming(frame, chrome_area);
+                crate::view::keybinding_editor::render_keybinding_editor(
+                    frame,
+                    chrome_area,
+                    kb_editor,
+                    &*self.theme.read().unwrap(),
+                );
+            }
         }
 
         // Render event debug dialog if active
-        if let Some(ref debug) = self.active_window().event_debug {
-            // Dim the editor content behind the dialog modal
-            crate::view::dimming::apply_dimming(frame, chrome_area);
-            crate::view::event_debug::render_event_debug(
-                frame,
-                chrome_area,
-                debug,
-                &*self.theme.read().unwrap(),
-            );
+        if draw_aux {
+            if let Some(ref debug) = self.active_window().event_debug {
+                // Dim the editor content behind the dialog modal
+                crate::view::dimming::apply_dimming(frame, chrome_area);
+                crate::view::event_debug::render_event_debug(
+                    frame,
+                    chrome_area,
+                    debug,
+                    &*self.theme.read().unwrap(),
+                );
+            }
         }
 
         // The workspace-trust prompt is a blocking, top-most security modal.
@@ -1508,13 +1520,16 @@ impl Editor {
             );
             let hover_target = self.active_window().mouse_state.hover_target.clone();
             let menu_bar_mnemonics = self.config.editor.menu_bar_mnemonics;
-            let expanded = self.expanded_menus_cache.get().expect("just updated");
+            let draw_chrome = !self.suppress_chrome_cells;
+            // The single content source shared with the web `menu_view()`
+            // projection (uses the cache populated just above).
+            let all_menus = self.all_menus_expanded();
             let keybindings = self.keybindings.read().unwrap();
             let mut menu_runs: Vec<crate::app::types::ThemeRun> = Vec::new();
             let new_menu_layout = crate::view::ui::MenuRenderer::render(
                 frame,
                 menu_bar_area,
-                expanded,
+                &all_menus,
                 &self.menu_state,
                 &keybindings,
                 &*self.theme.read().unwrap(),
@@ -1523,6 +1538,7 @@ impl Editor {
                 Some(&mut crate::app::types::CellThemeRecorder::new(
                     &mut menu_runs,
                 )),
+                draw_chrome,
             );
             drop(keybindings);
             self.active_chrome_mut().menu_layout = Some(new_menu_layout);
@@ -1531,21 +1547,25 @@ impl Editor {
             self.active_chrome_mut().menu_layout = None;
         }
 
-        // Render tab context menu if open
-        let tab_ctx_menu = self.active_window().tab_context_menu.clone();
-        if let Some(menu) = tab_ctx_menu {
-            self.render_tab_context_menu(frame, &menu);
-        }
+        // Context menus: the web renders these natively from `context_menu_view`
+        // (no cell drawing); the TUI draws them as before.
+        if !self.suppress_chrome_cells {
+            // Render tab context menu if open
+            let tab_ctx_menu = self.active_window().tab_context_menu.clone();
+            if let Some(menu) = tab_ctx_menu {
+                self.render_tab_context_menu(frame, &menu);
+            }
 
-        let fe_ctx_menu = self.active_window().file_explorer_context_menu.clone();
-        if let Some(menu) = fe_ctx_menu {
-            self.render_file_explorer_context_menu(frame, &menu);
-        }
+            let fe_ctx_menu = self.active_window().file_explorer_context_menu.clone();
+            if let Some(menu) = fe_ctx_menu {
+                self.render_file_explorer_context_menu(frame, &menu);
+            }
 
-        // Render the "+" new-tab popup menu if open
-        let new_tab_menu = self.active_window().new_tab_menu.clone();
-        if let Some(menu) = new_tab_menu {
-            self.render_new_tab_menu(frame, &menu);
+            // Render the "+" new-tab popup menu if open
+            let new_tab_menu = self.active_window().new_tab_menu.clone();
+            if let Some(menu) = new_tab_menu {
+                self.render_new_tab_menu(frame, &menu);
+            }
         }
 
         // Chrome theme-key provenance (status bar, menu, tabs, file explorer,
@@ -1644,7 +1664,10 @@ impl Editor {
         // screen cell that may sit over the dock column, so draw it after
         // the dock — otherwise the dock paints over it and its "Open in
         // Theme Editor" button is hidden and unclickable.
-        self.render_theme_info_popup(frame);
+        // Web renders the theme-info popup natively from `aux_modals_view`.
+        if !self.suppress_chrome_cells {
+            self.render_theme_info_popup(frame);
+        }
 
         if self.floating_widget_panel.is_some() {
             // A `fullscreen` modal paints over the whole frame, covering the
@@ -1704,7 +1727,10 @@ impl Editor {
         // *entire* frame, centres in the full window (dock area included), and
         // renders on top of the dock rather than being overpainted by it.
         let trust_layout = if top_is_trust_modal {
-            crate::view::dimming::apply_dimming(frame, size);
+            let draw_trust = !self.suppress_chrome_cells;
+            if draw_trust {
+                crate::view::dimming::apply_dimming(frame, size);
+            }
             let selected = self
                 .global_popups
                 .top()
@@ -1739,6 +1765,7 @@ impl Editor {
                     &secondary_label,
                     self.workspace_trust_scroll,
                     &theme_clone,
+                    draw_trust,
                 ),
             )
         } else {
@@ -2151,6 +2178,7 @@ impl Editor {
             &*self.theme.read().unwrap(),
             self.active_window().mouse_state.hover_target.as_ref(),
             true,
+            !self.suppress_chrome_cells,
         );
         let chrome = self.active_chrome_mut();
         chrome.suggestions_area = new_suggestions_area;
@@ -2251,6 +2279,7 @@ impl Editor {
         // a window the host already removed. Early-return rather
         // than panic; the next plugin refresh re-emits the spec
         // without the dead embed.
+        let preview_draw_tab_bar = !self.suppress_chrome_cells;
         let Some(__win_for_preview) = self.windows.get_mut(&sid) else {
             return;
         };
@@ -2321,6 +2350,7 @@ impl Editor {
                     // active session's chrome is the source of truth.
                     false,
                     false,
+                    false, // terminal_mode — scrollbars are off in the preview anyway
                     self.config.editor.diagnostics_inline_text,
                     false, // hide tilde markers in the preview
                     self.config.editor.highlight_current_column,
@@ -2328,6 +2358,7 @@ impl Editor {
                     &mut scratch_cell_theme_map,
                     inner.width,
                     &mut scratch_pending_cursor,
+                    preview_draw_tab_bar,
                 );
                 preview_split_areas = result.0;
             });
@@ -2860,18 +2891,29 @@ impl Editor {
         };
         let prompt = prompt.clone();
 
+        // Layout-vs-draw seam: when a frontend renders this overlay itself
+        // (the web renders it natively from `PaletteView`), we still compute all
+        // geometry/caches below but paint NO cells — so there's nothing to bleed
+        // behind the native card. For the TUI `draw` is always true, so its path
+        // is unchanged (every guard below is a no-op).
+        let draw = !self.suppress_chrome_cells;
+
         // Dim everything outside the overlay rect so the user's
         // focus visibly belongs to the popup. Reuses the same RGB-
         // darkening pass the Settings modal uses (`view::dimming`)
         // — Modifier::DIM alone is barely visible on most terminals.
-        crate::view::dimming::apply_dimming_excluding(frame, frame.area(), Some(overlay_rect));
+        if draw {
+            crate::view::dimming::apply_dimming_excluding(frame, frame.area(), Some(overlay_rect));
+        }
 
         // Clear and frame. Plugin-owned prompts can publish their
         // own title via `editor.setPromptTitle(...)`; falls back to
         // " Live Grep " plus shortcut hints when unset (so a
         // Resume-replay prompt and freshly-opened plugin prompt look
         // similar even though they take different code paths).
-        frame.render_widget(Clear, overlay_rect);
+        if draw {
+            frame.render_widget(Clear, overlay_rect);
+        }
         let default_title: Vec<fresh_core::api::StyledText> = {
             // Mirrors `updateOverlayTitle` in live_grep.ts (kept in
             // sync deliberately so a Resume-replay overlay and a
@@ -2949,7 +2991,9 @@ impl Editor {
             .border_style(Style::default().fg(theme.popup_border_fg))
             .style(Style::default().bg(theme.suggestion_bg));
         let inner = block.inner(overlay_rect);
-        frame.render_widget(block, overlay_rect);
+        if draw {
+            frame.render_widget(block, overlay_rect);
+        }
 
         if inner.height == 0 || inner.width == 0 {
             return;
@@ -3086,7 +3130,9 @@ impl Editor {
             Span::styled(" ".repeat(status_gap), input_style),
             Span::styled(count_str, dim),
         ]);
-        frame.render_widget(Paragraph::new(line).style(input_style), input_row);
+        if draw {
+            frame.render_widget(Paragraph::new(line).style(input_style), input_row);
+        }
 
         // Cursor position on the input row — only when the input is focused.
         // When a toolbar control owns focus, the highlighted toggle is the
@@ -3095,7 +3141,7 @@ impl Editor {
         let cursor_x = (str_width(&prompt.message)
             + str_width(&prompt.input[..prompt.cursor_pos.min(prompt.input.len())]))
             as u16;
-        if input_focused && cursor_x < input_row.width {
+        if draw && input_focused && cursor_x < input_row.width {
             frame.set_cursor_position((input_row.x + cursor_x, input_row.y));
         }
 
@@ -3113,12 +3159,14 @@ impl Editor {
             // convert to display columns so the rect lines up with the glyphs.
             use crate::primitives::display_width::str_width;
             let band_y = inner.y + 1;
-            for (i, entry) in out.entries.iter().enumerate() {
-                let y = band_y + i as u16;
-                if y >= inner.y + inner.height {
-                    break;
+            if draw {
+                for (i, entry) in out.entries.iter().enumerate() {
+                    let y = band_y + i as u16;
+                    if y >= inner.y + inner.height {
+                        break;
+                    }
+                    paint_text_property_entry(frame, entry, inner.x, y, inner.width, &theme, None);
                 }
-                paint_text_property_entry(frame, entry, inner.x, y, inner.width, &theme, None);
             }
             for hit in &out.hits {
                 if hit.widget_key.is_empty() {
@@ -3141,7 +3189,7 @@ impl Editor {
                     .prompt_toolbar_hits
                     .push((hit.widget_key.clone(), rect));
             }
-        } else if !prompt.title.is_empty() && inner.height >= 2 {
+        } else if draw && !prompt.title.is_empty() && inner.height >= 2 {
             let toolbar = Rect {
                 x: inner.x,
                 y: inner.y + 1,
@@ -3156,7 +3204,7 @@ impl Editor {
         }
 
         // Separator row (full width), closing the header band.
-        if inner.height >= 2 + toolbar_h {
+        if draw && inner.height >= 2 + toolbar_h {
             let sep = Rect {
                 x: inner.x,
                 y: inner.y + 1 + toolbar_h,
@@ -3191,6 +3239,7 @@ impl Editor {
                 width: results_area.width.saturating_sub(scrollbar_w),
                 height: results_area.height,
             };
+            let draw_chrome = !self.suppress_chrome_cells;
             self.active_chrome_mut().suggestions_area = SuggestionsRenderer::render_with_hover(
                 frame,
                 list_area,
@@ -3198,6 +3247,7 @@ impl Editor {
                 &theme,
                 self.active_window_mut().mouse_state.hover_target.as_ref(),
                 false,
+                draw_chrome,
             );
             if self.active_chrome_mut().suggestions_area.is_some() {
                 self.active_chrome_mut().suggestions_outer_area = Some(list_area);
@@ -3224,12 +3274,14 @@ impl Editor {
                     inner_rows.max(1),
                     prompt.scroll_offset,
                 );
-                render_scrollbar(
-                    frame,
-                    scrollbar_rect,
-                    &state,
-                    &ScrollbarColors::from_theme(&theme),
-                );
+                if draw {
+                    render_scrollbar(
+                        frame,
+                        scrollbar_rect,
+                        &state,
+                        &ScrollbarColors::from_theme(&theme),
+                    );
+                }
                 // Cache the rect for mouse hit testing in
                 // `mouse_input.rs::handle_click_prompt_scrollbar`.
                 self.active_chrome_mut().suggestions_scrollbar_rect = Some(scrollbar_rect);
@@ -3245,7 +3297,7 @@ impl Editor {
         // primitive used by `setPromptTitle` and inline overlays,
         // so plugins can theme hotkey hints with `ui.help_key_fg`,
         // separators with `ui.popup_border_fg`, etc.
-        if footer_h == 1 && inner.height >= 1 {
+        if draw && footer_h == 1 && inner.height >= 1 {
             let footer_row = Rect {
                 x: inner.x,
                 y: inner.y + inner.height - 1,
@@ -3280,16 +3332,21 @@ impl Editor {
         // can hand out independent `&mut` references to the
         // renderer's internals without going back through `&mut self`.
         if let Some(preview_rect) = preview_area {
-            // Frame the preview area first (vertical separator) so
-            // the renderer fills the inner rect.
+            // Frame the preview area (vertical separator) so the renderer fills
+            // the inner rect. The frame is *chrome* — drawn only for the TUI;
+            // the web draws its own border in HTML. The buffer *content* below,
+            // however, is real rendered cells (like a pane interior), so it is
+            // drawn for both frontends and the web slices it from the buffer.
             use ratatui::widgets::{Block, Borders, Clear};
-            frame.render_widget(Clear, preview_rect);
             let block = Block::default()
                 .borders(Borders::LEFT)
                 .border_style(Style::default().fg(theme.popup_border_fg))
                 .style(Style::default().bg(theme.suggestion_bg));
             let inner = block.inner(preview_rect);
-            frame.render_widget(block, preview_rect);
+            if draw {
+                frame.render_widget(Clear, preview_rect);
+                frame.render_widget(block, preview_rect);
+            }
 
             // Primitive #1: if the active plugin asked us to
             // preview a specific (inactive) session in this
@@ -4157,12 +4214,18 @@ impl Editor {
             }
         };
 
+        // Web renders this panel natively from `widgets_view`; compute geometry
+        // (incl. `last_inner_rect` for click routing) but paint no cells. TUI
+        // passes draw=true so its rendering is unchanged.
+        let draw = !self.suppress_chrome_cells;
         // Only the centered modal dims the background; the dock and the
         // anchored context-menu popup paint over the editor without it.
-        if matches!(placement, super::PanelPlacement::Centered) {
+        if draw && matches!(placement, super::PanelPlacement::Centered) {
             crate::view::dimming::apply_dimming_excluding(frame, area, Some(overlay_rect));
         }
-        frame.render_widget(Clear, overlay_rect);
+        if draw {
+            frame.render_widget(Clear, overlay_rect);
+        }
         // The dock draws ONLY a right border (a thin draggable divider) —
         // no top/left/bottom — so it reclaims those rows/cols for content
         // and reads as a panel attached to the left edge. The centered
@@ -4187,9 +4250,20 @@ impl Editor {
             .border_style(ratatui::style::Style::default().fg(dock_border_fg))
             .style(ratatui::style::Style::default().bg(theme.suggestion_bg));
         let inner = block.inner(overlay_rect);
-        frame.render_widget(block, overlay_rect);
+        if draw {
+            frame.render_widget(block, overlay_rect);
+        }
 
         if inner.width == 0 || inner.height == 0 {
+            if let Some(fwp) = self.panel_mut(slot) {
+                fwp.last_inner_rect = Some(inner);
+            }
+            return;
+        }
+
+        // Web path: record the rect for native rendering / click routing, then
+        // stop before painting any content cells.
+        if !draw {
             if let Some(fwp) = self.panel_mut(slot) {
                 fwp.last_inner_rect = Some(inner);
             }

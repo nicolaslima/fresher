@@ -123,6 +123,20 @@ impl Editor {
                 PopupConfirmResult::EarlyReturn
             }
 
+            Some(PopupResolver::ReadOnly) => {
+                let action_key = self
+                    .active_state()
+                    .popups
+                    .top()
+                    .and_then(|p| p.selected_item())
+                    .and_then(|item| item.data.clone());
+                self.hide_popup();
+                if let Some(key) = action_key {
+                    self.handle_read_only_menu_action(&key);
+                }
+                PopupConfirmResult::EarlyReturn
+            }
+
             Some(PopupResolver::WorkspaceTrust) => {
                 // The trust prompt lives on the global stack; read its
                 // selection there (global-first, matching the resolver lookup).
@@ -363,6 +377,10 @@ impl Editor {
                 self.hide_popup();
             }
 
+            Some(PopupResolver::ReadOnly) => {
+                self.hide_popup();
+            }
+
             Some(PopupResolver::WorkspaceTrust) => {
                 // The trust prompt is a forced choice: there is no "undecided"
                 // outcome, so Escape does nothing. The user must pick Trust /
@@ -567,6 +585,10 @@ impl Editor {
 
         let popup_data = build_completion_popup_from_items(all_popup_items, selected);
         let accept_hint = self.completion_accept_key_hint();
+        let (popup_bg, popup_border_fg) = {
+            let theme = self.theme();
+            (theme.popup_bg, theme.popup_border_fg)
+        };
 
         // Close old popup and show new one
         self.hide_popup();
@@ -578,7 +600,8 @@ impl Editor {
             .expect("active window present")
             .get_mut(&buffer_id)
             .unwrap();
-        let mut popup_obj = crate::state::convert_popup_data_to_popup(&popup_data);
+        let mut popup_obj =
+            crate::state::convert_popup_data_to_popup(&popup_data, popup_bg, popup_border_fg);
         popup_obj.accept_key_hint = accept_hint;
         popup_obj.resolver = crate::view::popup::PopupResolver::Completion;
         state.popups.show_or_replace(popup_obj);

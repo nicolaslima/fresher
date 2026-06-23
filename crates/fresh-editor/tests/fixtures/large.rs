@@ -5298,6 +5298,7 @@ impl Editor {
                     modified: state.buffer.is_modified(),
                     length: state.buffer.len(),
                     is_virtual,
+                    editing_disabled: state.editing_disabled,
                     view_mode: view_mode.to_string(),
                     is_composing_in_any_split,
                     compose_width,
@@ -6162,6 +6163,7 @@ impl Editor {
                 show_cursors,
                 editing_disabled,
                 hidden_from_tabs,
+                initial_cursor_line: _,
                 request_id,
             } => {
                 let buffer_id = self.create_virtual_buffer(name.clone(), mode.clone(), read_only);

@@ -7,8 +7,10 @@
 //!
 //! - **Path-only env (`.venv`)**: auto-activate silently, status pill shows
 //!   `.venv ✓`, no popup, no trust modal.
-//! - **Shell env (`.envrc`)**: combined "Trust this folder and activate?"
-//!   popup. Pick first option → trust elevates, env activates.
+//! - **Shell env (`.envrc`)**: the *core* trust modal (the same single prompt
+//!   manifests get), with concrete framing naming `.envrc`. Picking "Trust"
+//!   elevates trust and env-manager activates direnv in response — driven by
+//!   the `trust_changed` hook, not a separate plugin "Trust & activate" popup.
 //! - **Project manifest (`Cargo.toml`)**: trust modal fires with concrete
 //!   framing that names the actual marker.
 //! - **Cancel the trust modal** (T19 — Ctrl+Q quit without picking): the
@@ -58,6 +60,19 @@ fn make_cargo_toml(root: &Path) {
         b"[package]\nname = \"demo\"\nversion = \"0.0.1\"\nedition = \"2021\"\n",
     )
     .expect("write Cargo.toml");
+}
+
+/// PTY availability guard — `create_window_with_terminal` spawns a real shell,
+/// which the CI sandbox occasionally can't allocate.
+fn pty_available() -> bool {
+    portable_pty::native_pty_system()
+        .openpty(portable_pty::PtySize {
+            rows: 1,
+            cols: 1,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .is_ok()
 }
 
 /// Boot the editor harness exactly like a real `fresh /path` launch does
@@ -138,29 +153,14 @@ fn boot_with_dir_context(
     harness
 }
 
-/// Run a palette command by typing its name and confirming. Used to drive
-/// `Env: Show Environment Status` to observe the env state — the status pill
-/// itself isn't in the default status-bar layout, but the palette's status
-/// message is.
-fn run_palette_command(harness: &mut EditorTestHarness, query: &str) {
-    harness
-        .send_key(KeyCode::Char('p'), KeyModifiers::CONTROL)
-        .unwrap();
-    harness.wait_for_prompt().unwrap();
-    harness.type_text(query).unwrap();
-    harness.render().unwrap();
-    harness
-        .send_key(KeyCode::Enter, KeyModifiers::NONE)
-        .unwrap();
-    harness.wait_for_prompt_closed().unwrap();
-    harness.render().unwrap();
-}
-
-/// `.venv` auto-activates on plugin load. The user-visible signal is the
-/// `"Environment active (.venv)"` message that `Env: Show Environment
-/// Status` writes to the status bar.
+/// A bare `.venv` is executable content: activating it runs the repo's Python,
+/// which auto-executes any `.pth`/`sitecustomize.py` shipped inside the venv (a
+/// documented malware-drop vector), and a virtualenv is a module-namespace
+/// boundary — NOT a security boundary. So a venv-only folder raises the single
+/// core trust modal like any other executable content; it must NOT silently
+/// auto-trust. Once trusted, the path-only env activates with no second prompt.
 #[test]
-fn test_venv_silently_auto_activates() {
+fn test_venv_prompts_then_activates_on_trust() {
     let tmp = TempDir::new().unwrap();
     let project = tmp.path().to_path_buf();
     make_venv(&project);
@@ -168,45 +168,125 @@ fn test_venv_silently_auto_activates() {
 
     let mut harness = boot_harness_like_main(120, 40, project);
 
-    // Wait for env-manager's `plugins_loaded` hook to fire and the
-    // activation message to render in the status bar. The activation
-    // message string (i18n key `status.activating`) contains both
-    // ".venv" and "Activating" so the predicate only matches the
-    // intended state.
+    // venv-only raises the core trust modal naming the marker — not silently
+    // trusted, not silently activated.
     harness
         .wait_until(|h| {
             let s = h.screen_to_string();
-            s.contains(".venv") && (s.contains("Activating") || s.contains("active"))
+            s.contains("SECURITY WARNING") && s.contains("Detected: .venv")
+        })
+        .unwrap();
+    let s = harness.screen_to_string();
+    assert!(
+        !s.contains("Trust & activate") && !s.contains("Environment detected"),
+        "venv must not surface the env-manager popup"
+    );
+
+    // Trust the folder: mnemonic 't' selects "Trust", Enter confirms.
+    harness
+        .send_key(KeyCode::Char('t'), KeyModifiers::NONE)
+        .unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+
+    // Now the path-only env activates silently (no second prompt) via the
+    // `trust_changed` hook.
+    harness
+        .wait_until(|h| {
+            let s = h.screen_to_string();
+            !s.contains("SECURITY WARNING")
+                && s.contains(".venv")
+                && (s.contains("Activating") || s.contains("active"))
+        })
+        .unwrap();
+}
+
+/// A session opened through the Orchestrator — a window created via
+/// `create_window_with_terminal`, the path the "New Session (Local)" flow and
+/// the session dock drive — must run the same workspace-trust decision a direct
+/// `fresh <dir>` launch gets. For a `.venv` that means: raise the core trust
+/// modal (a venv is executable content, not silently trusted), and once trusted
+/// activate the env in the new window via the `trust_changed` hook.
+///
+/// Regression (issue #2355): the orchestrator window used to bypass
+/// `maybe_prompt_workspace_trust` entirely, so the session never got the trust
+/// decision and never activated. This drives the create-window action and
+/// asserts the modal appears in the new window and that trusting activates the
+/// env there.
+#[test]
+fn test_orchestrator_session_prompts_then_activates_venv() {
+    if !pty_available() {
+        eprintln!("Skipping orchestrator env activation test: PTY not available");
+        return;
+    }
+
+    let tmp = TempDir::new().unwrap();
+    // Launch project: plain (no env marker) so booting it activates nothing —
+    // env-manager loads here and serves every window in the editor.
+    let launch = tmp.path().join("launch");
+    fs::create_dir_all(&launch).unwrap();
+    setup_env_manager(&launch);
+    // The project opened *through the orchestrator*: a path-only `.venv`.
+    let venv_proj = tmp.path().join("venvproj");
+    fs::create_dir_all(&venv_proj).unwrap();
+    make_venv(&venv_proj);
+
+    let mut harness = boot_harness_like_main(120, 40, launch);
+
+    // Orchestrator "New Session (Local)" for the venv project — the same call
+    // the plugin dispatcher makes for `createWindowWithTerminal`. The new
+    // window is born under its own per-session local authority.
+    let born = harness.editor().local_session_authority(&venv_proj);
+    harness
+        .editor_mut()
+        .create_window_with_terminal(
+            venv_proj.clone(),
+            "venvproj".into(),
+            Some(venv_proj.clone()),
+            // A harmless long-running child so the PTY doesn't exit immediately.
+            Some(vec!["sh".into(), "-c".into(), "sleep 60".into()]),
+            None,
+            born,
+            None,
+        )
+        .expect("create orchestrator session window");
+
+    // The new session gets the trust decision just like a direct launch: the
+    // core modal fires in the new window, naming the marker. (Before the
+    // regression fix it never appeared — the session bypassed the prompt.)
+    harness
+        .wait_until(|h| {
+            let s = h.screen_to_string();
+            s.contains("SECURITY WARNING") && s.contains("Detected: .venv")
         })
         .unwrap();
 
-    // Confirm via the status command. The screen should show
-    // "Environment active (.venv)" — the only way env-manager surfaces
-    // that string is from a real activation in trusted state.
-    run_palette_command(&mut harness, "Env: Show");
-    let status = harness.screen_to_string();
-    assert!(
-        status.contains("Environment active") && status.contains(".venv"),
-        "expected `Env: Show` to confirm .venv active. Screen:\n{}",
-        status
-    );
-
-    // No combined trust+activate popup — venv is the silent path.
-    assert!(
-        !status.contains("Trust & activate"),
-        "venv must not surface the combined trust+activate popup"
-    );
-    // No SECURITY WARNING modal either — venv is path-only and defaults Trusted.
-    assert!(
-        !status.contains("SECURITY WARNING"),
-        "venv-only folder must not raise the core trust modal"
-    );
+    // Trust it (mnemonic 't' + Enter); the path-only env then activates in the
+    // new window via `trust_changed`.
+    harness
+        .send_key(KeyCode::Char('t'), KeyModifiers::NONE)
+        .unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness
+        .wait_until(|h| {
+            let s = h.screen_to_string();
+            !s.contains("SECURITY WARNING")
+                && s.contains(".venv")
+                && (s.contains("Activating") || s.contains("active"))
+        })
+        .unwrap();
 }
 
-/// `.envrc` surfaces env-manager's combined popup. Picking "Trust & activate"
-/// (the first option) elevates trust and applies the env.
+/// `.envrc` raises the *core* trust modal — the single trust prompt, same as
+/// any other executable content — with concrete framing naming the marker.
+/// Picking "Trust" elevates trust, and env-manager activates direnv in
+/// response to the resulting `trust_changed` hook. There is no separate,
+/// plugin-owned "Trust & activate" popup (that duplicate was removed).
 #[test]
-fn test_envrc_shows_combined_trust_popup_and_elevates_on_accept() {
+fn test_envrc_raises_core_trust_modal_and_activates_on_trust() {
     let tmp = TempDir::new().unwrap();
     let project = tmp.path().to_path_buf();
     make_envrc(&project);
@@ -214,39 +294,36 @@ fn test_envrc_shows_combined_trust_popup_and_elevates_on_accept() {
 
     let mut harness = boot_harness_like_main(140, 40, project);
 
-    // env popup appears once `plugins_loaded` fires and detect() returns
-    // the shell-kind env. The body contains both signals so the predicate
-    // can't false-match on an unrelated popup that happens to say "Trust".
+    // The core trust modal fires for `.envrc`, naming the marker concretely.
     harness
         .wait_until(|h| {
             let s = h.screen_to_string();
-            s.contains("Environment detected") && s.contains("Trust & activate")
+            s.contains("SECURITY WARNING") && s.contains("Detected: .envrc")
         })
         .unwrap();
-    // No SECURITY WARNING modal stacked behind — env-shell case should
-    // not co-fire the core trust modal.
+    // The old plugin-owned combined popup must NOT appear — that's the
+    // duplicate this change removed.
     let snapshot = harness.screen_to_string();
     assert!(
-        !snapshot.contains("SECURITY WARNING"),
-        ".envrc must not stack the core trust modal alongside env popup"
+        !snapshot.contains("Environment detected") && !snapshot.contains("Trust & activate"),
+        ".envrc must not surface the env-manager trust popup (duplicate removed)"
     );
 
-    // The action popup needs explicit focus before Enter selects a row.
-    // Alt+T is the popup-focus binding. The first action is "Trust &
-    // activate".
+    // Select "Trust this folder" (mnemonic `t`), then confirm with Enter.
     harness
-        .send_key(KeyCode::Char('t'), KeyModifiers::ALT)
+        .send_key(KeyCode::Char('t'), KeyModifiers::NONE)
         .unwrap();
     harness
         .send_key(KeyCode::Enter, KeyModifiers::NONE)
         .unwrap();
 
-    // After accept, popup goes away and direnv activates. The activation
-    // message from `applyActivation` includes "Activating direnv".
+    // Trusting fires `trust_changed`; env-manager activates direnv in
+    // response. The activation message from `applyActivation` includes
+    // "Activating direnv", and the modal is gone.
     harness
         .wait_until(|h| {
             let s = h.screen_to_string();
-            !s.contains("Environment detected") && s.contains("Activating direnv")
+            !s.contains("SECURITY WARNING") && s.contains("Activating direnv")
         })
         .unwrap();
 }

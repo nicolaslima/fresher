@@ -2,6 +2,7 @@
 //! These tests are only compiled when the "plugins" feature is enabled.
 
 pub mod after_file_open_preview;
+pub mod asm_lsp_config;
 pub mod audit_mode;
 pub mod authority_snapshot;
 pub mod buffer_info_splits;
@@ -33,6 +34,7 @@ pub mod env_manager;
 pub mod file_explorer_slots;
 pub mod find_file;
 pub mod git;
+pub mod git_log_current_file;
 pub mod git_log_split_tab_focus;
 pub mod git_statusbar;
 pub mod goto_with_selection;
@@ -54,10 +56,12 @@ pub mod plugin_config_registration;
 pub mod plugin_keybinding_execution;
 pub mod plugins_dir_in_working_dir;
 pub mod review_diff_hunk_parity;
+pub mod review_diff_line_staging;
 pub mod review_diff_ux_bugs;
 pub mod tab_actions;
 pub mod terminal_hooks;
 pub mod theme_editor;
+pub mod trust_lockdown;
 pub mod unified_keybindings;
 pub mod vi_mode_autostart;
 pub mod watch_path;

@@ -20,6 +20,9 @@ use std::os::unix::fs::PermissionsExt;
 
 const EDITING_DISABLED_MSG: &str = "Editing disabled in this buffer";
 
+/// Persistent read-only indicator rendered in the status bar (issue #2309).
+const READ_ONLY_INDICATOR: &str = "[RO]";
+
 /// A file without write permission opens read-only by default: keystrokes are
 /// dropped and the "editing disabled" status message appears.
 #[test]
@@ -98,6 +101,136 @@ fn test_auto_read_only_disabled_opens_unwritable_file_editable() {
     assert!(
         !screen.contains(EDITING_DISABLED_MSG),
         "No editing-disabled message expected when auto_read_only is off. Screen:\n{}",
+        screen
+    );
+}
+
+/// A read-only buffer shows the persistent `[RO]` status-bar indicator, while
+/// an editable buffer does not (issue #2309). The indicator is its own status
+/// segment — it must appear in the default layout, which omits `{filename}`.
+#[test]
+fn test_read_only_buffer_shows_ro_status_indicator() {
+    let temp_dir = TempDir::new().unwrap();
+
+    // Library file: opens read-only by default.
+    let lib_dir = temp_dir.path().join("node_modules").join("somelib");
+    std::fs::create_dir_all(&lib_dir).unwrap();
+    let ro_file = lib_dir.join("index.js");
+    std::fs::write(&ro_file, "library content\n").unwrap();
+
+    let mut harness = EditorTestHarness::with_config_and_working_dir(
+        160,
+        24,
+        Config::default(),
+        temp_dir.path().to_path_buf(),
+    )
+    .unwrap();
+    harness.open_file(&ro_file).unwrap();
+    harness.render().unwrap();
+
+    let screen = harness.screen_to_string();
+    assert!(
+        screen.contains(READ_ONLY_INDICATOR),
+        "Read-only buffer should show a persistent [RO] status indicator. Screen:\n{}",
+        screen
+    );
+}
+
+/// An editable buffer shows no `[RO]` indicator (issue #2309): the segment is
+/// only present while the buffer is actually read-only.
+#[test]
+fn test_editable_buffer_has_no_ro_status_indicator() {
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("editable.txt");
+    std::fs::write(&file_path, "editable content\n").unwrap();
+
+    let mut harness = EditorTestHarness::with_config_and_working_dir(
+        160,
+        24,
+        Config::default(),
+        temp_dir.path().to_path_buf(),
+    )
+    .unwrap();
+    harness.open_file(&file_path).unwrap();
+    harness.render().unwrap();
+
+    let screen = harness.screen_to_string();
+    assert!(
+        !screen.contains(READ_ONLY_INDICATOR),
+        "Editable buffer should not show the [RO] status indicator. Screen:\n{}",
+        screen
+    );
+}
+
+/// Locate a substring on the rendered screen, returning `(col, row)` of its
+/// first character. Columns are counted as grapheme cells (the status bar is
+/// ASCII here, so char count == display column).
+fn find_on_screen(screen: &str, needle: &str) -> Option<(u16, u16)> {
+    for (row, line) in screen.lines().enumerate() {
+        if let Some(byte_idx) = line.find(needle) {
+            let col = line[..byte_idx].chars().count();
+            return Some((col as u16, row as u16));
+        }
+    }
+    None
+}
+
+/// Clicking the `[RO]` indicator opens the read-only menu, and choosing
+/// "Enable editing" makes the buffer editable (issue #2309 follow-up). Drives
+/// a real mouse click + keypress and asserts only on rendered output.
+#[test]
+fn test_read_only_indicator_click_opens_menu_and_enables_editing() {
+    use crossterm::event::{KeyCode, KeyModifiers};
+
+    let temp_dir = TempDir::new().unwrap();
+    let lib_dir = temp_dir.path().join("node_modules").join("somelib");
+    std::fs::create_dir_all(&lib_dir).unwrap();
+    let ro_file = lib_dir.join("index.js");
+    std::fs::write(&ro_file, "library content\n").unwrap();
+
+    let mut harness = EditorTestHarness::with_config_and_working_dir(
+        160,
+        24,
+        Config::default(),
+        temp_dir.path().to_path_buf(),
+    )
+    .unwrap();
+    harness.open_file(&ro_file).unwrap();
+    harness.render().unwrap();
+
+    // The indicator is on the status bar; find it and click it.
+    let screen = harness.screen_to_string();
+    let (ro_col, ro_row) =
+        find_on_screen(&screen, READ_ONLY_INDICATOR).expect("[RO] indicator should be visible");
+    harness.mouse_click(ro_col + 1, ro_row).unwrap();
+    harness.render().unwrap();
+
+    // The read-only menu should be open with an "Enable editing" action.
+    harness.assert_screen_contains("Enable editing");
+
+    // Confirm the (pre-selected) "Enable editing" row.
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.render().unwrap();
+
+    // Editing is now enabled: the [RO] indicator is gone and typed text lands.
+    harness.type_text("ZZTYPEDZZ").unwrap();
+    harness.render().unwrap();
+    let screen = harness.screen_to_string();
+    assert!(
+        screen.contains("ZZTYPEDZZ"),
+        "After enabling editing from the [RO] menu, typing should work. Screen:\n{}",
+        screen
+    );
+    assert!(
+        !screen.contains(EDITING_DISABLED_MSG),
+        "Editing should no longer be disabled after the menu enabled it. Screen:\n{}",
+        screen
+    );
+    assert!(
+        !screen.contains(READ_ONLY_INDICATOR),
+        "[RO] indicator should disappear once editing is enabled. Screen:\n{}",
         screen
     );
 }

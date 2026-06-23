@@ -94,19 +94,38 @@ impl crate::app::Editor {
         if let Some(existing) = self.find_window_by_root(&root) {
             return existing;
         }
-        let id = WindowId(self.next_window_id);
-        self.next_window_id += 1;
-
         // A new window for `root` is its own local session with its **own**
         // per-session trust scoped to that root — not a clone of the active
         // session's authority/trust (which would leak a trust decision across
         // projects). Its `fs_manager` rides the same (host) filesystem.
         let local_authority = self.local_session_authority(&root);
+        self.create_window_with_authority(root, label, local_authority)
+    }
+
+    /// Create a new window rooted at `root` under an explicit `authority`,
+    /// seeded with an empty scratch buffer + minimal split layout (so it is
+    /// renderable immediately) and announced via `window_created`.
+    ///
+    /// Unlike [`Self::create_window_at`] this does **not** dedup by root or
+    /// mint a fresh local authority — the caller supplies the backend. That
+    /// lets Switch Project (`change_working_dir`) carry a remote window's
+    /// already-connected authority onto the new project so the new root opens
+    /// on the same container / SSH host, while local callers pass a fresh
+    /// [`Self::local_session_authority`].
+    pub(crate) fn create_window_with_authority(
+        &mut self,
+        root: PathBuf,
+        label: String,
+        authority: crate::services::authority::Authority,
+    ) -> WindowId {
+        let id = WindowId(self.next_window_id);
+        self.next_window_id += 1;
+
         let mut resources = self.window_resources();
         resources.fs_manager = std::sync::Arc::new(crate::services::fs::FsManager::new(
-            std::sync::Arc::clone(&local_authority.filesystem),
+            std::sync::Arc::clone(&authority.filesystem),
         ));
-        let mut session = Window::new(id, label, root.clone(), local_authority, resources);
+        let mut session = Window::new(id, label, root.clone(), authority, resources);
         session.terminal_width = self.terminal_width;
         session.terminal_height = self.terminal_height;
         let resolved_label = session.label.clone();
@@ -251,6 +270,26 @@ impl crate::app::Editor {
         // directly.
         let previous_id = self.active_window;
         self.active_window = id;
+
+        // Run the workspace-trust decision for the project this session opens,
+        // exactly as the CLI / session-server startup paths do — the
+        // orchestrator's "New Session" path bypasses those, so without this a
+        // never-decided project opened through the dock stays Restricted and
+        // its env manager (venv / direnv / mise) never activates, leaving the
+        // terminal below on the *system* toolchain even though a direct
+        // `fresh <dir>` would have auto-trusted and activated it. `authority()`
+        // already follows `active_window` (set just above), so this scopes to
+        // the new window's trust + root. Local only: remote (born-attached
+        // SSH/k8s) sessions manage trust through their own connect flow and
+        // their markers don't live on the host filesystem.
+        if self
+            .authority()
+            .filesystem
+            .remote_connection_info()
+            .is_none()
+        {
+            self.maybe_prompt_workspace_trust();
+        }
 
         // The argv to re-run if this session is restored. `None` (plain
         // shell) is recorded as an empty vec: a present entry — even empty —
@@ -748,6 +787,16 @@ impl crate::app::Editor {
     ///
     /// Returns `true` on success, `false` on rejection.
     pub fn close_window(&mut self, id: WindowId) -> bool {
+        // A dormant remote session has no `Window` and no live connection —
+        // closing it just drops its descriptor so it leaves the dock. (It can
+        // never be the active window, and isn't the "last window".)
+        if self.dormant_remote.remove(&id).is_some() {
+            self.plugin_manager
+                .read()
+                .unwrap()
+                .run_hook("window_closed", HookArgs::WindowClosed { id: id.0 });
+            return true;
+        }
         if self.windows.len() <= 1 {
             tracing::warn!("close_window: refusing to close the last remaining window (id {id})");
             return false;
@@ -834,5 +883,112 @@ impl crate::app::Editor {
                 Err(e)
             }
         }
+    }
+
+    /// Begin bringing a **dormant remote** session online: connect its SSH/kube
+    /// backend, then — on success — promote it to a real `Window`
+    /// ([`Self::promote_dormant_remote`]). Used when the user dives into a
+    /// session that boot discovered but never connected: it has no `Window` yet,
+    /// only a `dormant_remote` descriptor (no authority). The active window is
+    /// left unchanged until the connection lands, so the editor never shows a
+    /// window without its real backend.
+    pub(crate) fn bring_dormant_remote_online(&mut self, id: WindowId) {
+        let Some(descriptor) = self.dormant_remote.get(&id) else {
+            return;
+        };
+        // Only remote-agent sessions are ever placed in `dormant_remote`.
+        let spec = match &descriptor.authority_spec {
+            crate::services::authority::SessionAuthoritySpec::RemoteAgent(s) => s.clone(),
+            _ => return,
+        };
+        let request_id = u64::MAX - id.0;
+        if self.remote_attach_inflight.contains(&request_id) {
+            return; // a connect for this session is already in flight
+        }
+        // `start_remote_connect` posts a "Connecting to …" status and, on
+        // success, emits `RemoteAttachReady` in `Reconnect { window_id: id }`
+        // mode — which `promote_dormant_remote` turns into the live window. The
+        // remote connect machinery is plugins-gated (dormant remote sessions are
+        // created through the orchestrator plugin); without it there is nothing
+        // to connect through, so diving into one is a no-op.
+        #[cfg(feature = "plugins")]
+        self.start_remote_connect(spec, Some(id), request_id);
+        #[cfg(not(feature = "plugins"))]
+        let _ = (spec, request_id);
+    }
+
+    /// Promote a dormant remote session to a live `Window`, **born with the
+    /// freshly-connected `authority`**. Its persisted workspace is restored
+    /// through that authority, so its terminals spawn on the remote backend —
+    /// never the local host. This is the *only* path that turns a
+    /// `dormant_remote` descriptor into a `Window`; there is deliberately no way
+    /// to build that window without the connected backend in hand, which is what
+    /// makes "a restored remote terminal running locally" unrepresentable.
+    pub(crate) fn promote_dormant_remote(
+        &mut self,
+        id: WindowId,
+        authority: crate::services::authority::Authority,
+        keepalive: Box<dyn std::any::Any + Send>,
+    ) {
+        let Some(descriptor) = self.dormant_remote.remove(&id) else {
+            // Raced with a close / a second connect — nothing to promote.
+            drop(authority);
+            drop(keepalive);
+            return;
+        };
+        let root = descriptor.root.clone();
+
+        // Resources rooted at this window's *own* backend filesystem (remote),
+        // so its file explorer / quick-open ride the session's backend.
+        let mut resources = self.window_resources();
+        resources.fs_manager = std::sync::Arc::new(crate::services::fs::FsManager::new(
+            std::sync::Arc::clone(&authority.filesystem),
+        ));
+
+        // Restore the persisted workspace through the connected authority (its
+        // terminals spawn over SSH/kube), or seed an empty layout when there is
+        // no saved workspace. Either constructor takes the authority by value —
+        // the window is born owning its real backend.
+        let workspace = if let Some(name) = self.session_name.clone() {
+            crate::workspace::Workspace::load_session(&name, &root)
+                .ok()
+                .flatten()
+        } else {
+            crate::workspace::Workspace::load(&root).ok().flatten()
+        };
+        let mut window = match workspace {
+            Some(ws) => crate::app::window::Window::from_workspace(
+                id,
+                descriptor.label.clone(),
+                root.clone(),
+                authority,
+                resources,
+                &ws,
+            ),
+            None => {
+                let mut w = crate::app::window::Window::new(
+                    id,
+                    descriptor.label.clone(),
+                    root.clone(),
+                    authority,
+                    resources,
+                );
+                w.seed_initial_layout();
+                w
+            }
+        };
+        window.terminal_width = self.terminal_width;
+        window.terminal_height = self.terminal_height;
+        window.plugin_state = descriptor.plugin_state.clone();
+        window.authority_spec = descriptor.authority_spec.clone();
+        self.windows.insert(id, window);
+        self.session_keepalives.insert(id, keepalive);
+
+        // Activate through the normal switch path: nothing to materialize
+        // (already restored), no reconnect re-trigger (keepalive now parked),
+        // and it adopts the new authority into the editor caches, fires
+        // `active_window_changed`, and relayouts.
+        self.set_active_window(id);
+        self.set_status_message(format!("Connected: {}", descriptor.label));
     }
 }

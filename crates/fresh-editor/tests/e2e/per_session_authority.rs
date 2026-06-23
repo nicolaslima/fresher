@@ -420,6 +420,36 @@ fn switching_to_a_dormant_remote_session_starts_reconnect() -> anyhow::Result<()
 }
 
 #[test]
+fn a_failed_remote_reconnect_shows_failedattach_on_the_status_line() -> anyhow::Result<()> {
+    // When a window's most recent remote reconnect fails, the `{remote}`
+    // status indicator must surface it as "Reconnect failed: <reason>" — the
+    // core, per-window counterpart to the plugin-driven FailedAttach override.
+    // Regression for the "show reconnect failures via the FailedAttach status
+    // indicator" fix: without the `remote_reconnect_error` derivation branch in
+    // `status_bar.rs` (and the value being threaded through `render.rs`), the
+    // indicator falls back to "Local" and the failure is invisible.
+    let temp = tempfile::tempdir()?;
+    let mut harness = EditorTestHarness::create(
+        120,
+        30,
+        HarnessOptions::new().with_working_dir(temp.path().to_path_buf()),
+    )?;
+
+    // The async reconnect path (`RemoteAttachFailed` for an existing window)
+    // records the carrier's diagnostic on the window. Drive that end state
+    // directly so the assertion stays on rendered output and needs no network.
+    harness
+        .editor_mut()
+        .active_window_mut()
+        .remote_reconnect_error = Some("ssh connect failed".into());
+    harness.render()?;
+
+    harness.assert_screen_contains("Reconnect failed");
+
+    Ok(())
+}
+
+#[test]
 fn trusting_one_session_does_not_change_another() -> anyhow::Result<()> {
     // Per-session trust: each open session owns its own WorkspaceTrust scoped
     // to its root, so a trust decision in one project never changes the live
@@ -531,6 +561,65 @@ fn activating_env_in_one_session_does_not_affect_another() -> anyhow::Result<()>
             .env_provider
             .is_active(),
         "activating an env in session A must not activate session B's env"
+    );
+    Ok(())
+}
+
+/// Regression (orchestrator "Trust restarted everything"): activating an env
+/// via `setEnv` — the path the env-manager drives on `trust_changed` for a
+/// shell/venv project — must NOT request a process-wide editor restart.
+///
+/// The `EnvProvider` is updated in place and every *new* spawn inherits it, so
+/// no rebuild is needed. The old `handle_set_env` called `request_restart`,
+/// which rebuilds the whole editor process — dropping every window's
+/// `terminal_manager` (all orchestrator sessions' PTYs) and reconstructing the
+/// orchestrator plugin (closing the dock). Asserting `!should_restart()` after
+/// activation locks that out. Drives `PluginCommand::SetEnv` directly (what
+/// `editor.setEnv` dispatches) rather than poking the provider, so it covers
+/// the actual restart decision.
+#[cfg(feature = "plugins")]
+#[test]
+fn activating_env_does_not_restart_the_editor() -> anyhow::Result<()> {
+    use fresh::services::workspace_trust::TrustLevel;
+    use fresh_core::api::PluginCommand;
+
+    let temp = tempfile::tempdir()?;
+    let mut harness = EditorTestHarness::create(
+        100,
+        30,
+        HarnessOptions::new().with_working_dir(temp.path().to_path_buf()),
+    )?;
+    let active = harness.editor_mut().active_window_id();
+    // Env activation only applies in a Trusted workspace (`handle_set_env`).
+    harness
+        .editor()
+        .session(active)
+        .unwrap()
+        .authority()
+        .workspace_trust
+        .set_level(TrustLevel::Trusted);
+
+    harness
+        .editor_mut()
+        .handle_plugin_command(PluginCommand::SetEnv {
+            snippet: "export FRESH_TEST=1".into(),
+            dir: None,
+        })?;
+
+    assert!(
+        harness
+            .editor()
+            .session(active)
+            .unwrap()
+            .authority()
+            .env_provider
+            .is_active(),
+        "env activated in place"
+    );
+    assert!(
+        !harness.editor().should_restart(),
+        "activating an env must not request a process-wide editor restart \
+         (a rebuild tears down other sessions' terminals and closes the dock)"
     );
     Ok(())
 }

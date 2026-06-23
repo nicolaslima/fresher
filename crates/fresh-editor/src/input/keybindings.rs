@@ -11,12 +11,18 @@ use std::sync::atomic::{AtomicBool, Ordering};
 ///   strip the redundant SHIFT so bindings defined as "BackTab" match.
 /// - Shift+Backspace has no distinct semantics from plain Backspace — strip
 ///   the redundant SHIFT so bindings defined as "Backspace" match both.
-/// - Uppercase letters may arrive as `Char('P')` + SHIFT (real Shift press)
-///   or `Char('A')` without SHIFT (CapsLock on, kitty keyboard protocol).
-///   In both cases, lowercase the character and preserve the existing
-///   modifiers. This ensures CapsLock+Ctrl+A matches the `Ctrl+A` binding,
-///   while Shift+P still matches the `Shift+P` binding.
-fn normalize_key(code: KeyCode, modifiers: KeyModifiers) -> (KeyCode, KeyModifiers) {
+/// - Uppercase letters may arrive as `Char('P')` + SHIFT (real Shift press
+///   with kitty keyboard protocol), `Char('P')` without SHIFT (typical
+///   terminal — the case carries the shift information, including with ALT:
+///   Alt+Shift+F arrives as `Char('F')` + ALT), or `Char('A')` with only
+///   CONTROL (CapsLock+Ctrl+A in some terminals). Lowercase the character and
+///   infer SHIFT so that a binding defined as `Shift+P` / `Alt+Shift+F`
+///   matches whether or not the terminal reports the modifier. The one
+///   exception is CONTROL: an uppercase letter with Ctrl is ambiguous between
+///   CapsLock+Ctrl+letter and Shift+Ctrl+letter, and treating it as the
+///   former preserves the long-standing intent that CapsLock+Ctrl+A still
+///   triggers the `Ctrl+A` binding — so don't infer SHIFT when CONTROL is set.
+pub(crate) fn normalize_key(code: KeyCode, modifiers: KeyModifiers) -> (KeyCode, KeyModifiers) {
     if code == KeyCode::BackTab {
         return (code, modifiers.difference(KeyModifiers::SHIFT));
     }
@@ -25,7 +31,12 @@ fn normalize_key(code: KeyCode, modifiers: KeyModifiers) -> (KeyCode, KeyModifie
     }
     if let KeyCode::Char(c) = code {
         if c.is_ascii_uppercase() {
-            return (KeyCode::Char(c.to_ascii_lowercase()), modifiers);
+            let new_modifiers = if modifiers.contains(KeyModifiers::CONTROL) {
+                modifiers
+            } else {
+                modifiers | KeyModifiers::SHIFT
+            };
+            return (KeyCode::Char(c.to_ascii_lowercase()), new_modifiers);
         }
     }
     (code, modifiers)
@@ -225,6 +236,13 @@ pub enum KeyContext {
     Normal,
     /// Prompt/minibuffer is active
     Prompt,
+    /// A find/replace search prompt is active. A narrowing of `Prompt`: it
+    /// owns the match-mode toggles (case / whole word / regex / confirm-each)
+    /// and falls through to `Prompt` for every generic editing/navigation key.
+    /// Keeping these toggles out of the broad `Prompt` scope is what stops
+    /// e.g. Alt+W from flipping whole-word match mode while an unrelated
+    /// prompt (the save/discard/cancel close confirmation) is up.
+    SearchPrompt,
     /// Popup window is visible
     Popup,
     /// Completion popup is visible (LSP or non-LSP). Takes precedence over `Popup`
@@ -281,7 +299,22 @@ impl KeyContext {
 
     /// Check if a context should allow input
     pub fn allows_text_input(&self) -> bool {
-        matches!(self, Self::Normal | Self::Prompt | Self::FileExplorer)
+        matches!(
+            self,
+            Self::Normal | Self::Prompt | Self::SearchPrompt | Self::FileExplorer
+        )
+    }
+
+    /// The context whose bindings this context inherits when it has no binding
+    /// of its own for a key. `SearchPrompt` is a narrowing of `Prompt`, so it
+    /// inherits all of `Prompt`'s editing/navigation/confirm keys and only
+    /// adds (or overrides) the few search-option toggles it owns. Checked
+    /// after this context's own bindings but before the Normal fallthrough.
+    pub fn parent_context(&self) -> Option<Self> {
+        match self {
+            Self::SearchPrompt => Some(Self::Prompt),
+            _ => None,
+        }
     }
 
     /// Parse context from a "when" string
@@ -293,6 +326,7 @@ impl KeyContext {
         Some(match trimmed {
             "global" => Self::Global,
             "prompt" => Self::Prompt,
+            "searchPrompt" | "search_prompt" => Self::SearchPrompt,
             "popup" => Self::Popup,
             "completion" => Self::Completion,
             "fileExplorer" | "file_explorer" => Self::FileExplorer,
@@ -312,6 +346,7 @@ impl KeyContext {
             Self::Global => "global".to_string(),
             Self::Normal => "normal".to_string(),
             Self::Prompt => "prompt".to_string(),
+            Self::SearchPrompt => "searchPrompt".to_string(),
             Self::Popup => "popup".to_string(),
             Self::Completion => "completion".to_string(),
             Self::FileExplorer => "fileExplorer".to_string(),
@@ -401,6 +436,8 @@ pub enum Action {
 
     // Selection
     SetMark,
+    CancelMark,
+    ClearMark,
 
     // Clipboard
     Copy,
@@ -498,6 +535,7 @@ pub enum Action {
     ShowStatusLog,
     ShowLspStatus,
     ShowRemoteIndicatorMenu,
+    ShowReadOnlyMenu,
     ClearWarnings,
     CommandPalette, // Alias for QuickOpen — kept for keymap/plugin compatibility
     /// Quick Open - unified prompt with prefix-based provider routing
@@ -667,6 +705,7 @@ pub enum Action {
     LspCompletion,
     LspGotoDefinition,
     LspReferences,
+    LspImplementation,
     LspRename,
     LspHover,
     LspSignatureHelp,
@@ -679,6 +718,14 @@ pub enum Action {
 
     // View toggles
     ToggleLineNumbers,
+    /// Toggle line-number visibility for the current buffer only (per-buffer
+    /// override that persists across restart, without touching the global
+    /// default or other buffers).
+    ToggleLineNumbersCurrentBuffer,
+    /// Toggle line wrap for the current buffer only (per-buffer override that
+    /// persists across restart, without touching the global default or other
+    /// buffers).
+    ToggleLineWrapCurrentBuffer,
     /// Playful full-screen wave that bounces all painted content around.
     TriggerWaveAnimation,
     ToggleScrollSync,
@@ -748,6 +795,8 @@ pub enum Action {
 
     // Terminal operations
     OpenTerminal,            // Open a new terminal in the current split
+    OpenTerminalRight,       // Open a new terminal in a split to the right (vertical split)
+    OpenTerminalBelow,       // Open a new terminal in a split below (horizontal split)
     CloseTerminal,           // Close the current terminal
     FocusTerminal,           // Focus the terminal buffer (if viewing terminal, focus input)
     TerminalEscape,          // Escape from terminal mode back to editor
@@ -936,6 +985,8 @@ impl Action {
             "duplicate_line" => DuplicateLine,
             "recenter" => Recenter,
             "set_mark" => SetMark,
+            "cancel_mark" => CancelMark,
+            "clear_mark" => ClearMark,
 
             "copy" => Copy,
             "cut" => Cut,
@@ -1010,6 +1061,7 @@ impl Action {
             "show_status_log" => ShowStatusLog,
             "show_lsp_status" => ShowLspStatus,
             "show_remote_indicator_menu" => ShowRemoteIndicatorMenu,
+            "show_read_only_menu" => ShowReadOnlyMenu,
             "clear_warnings" => ClearWarnings,
             "command_palette" => CommandPalette,
             "quick_open" => QuickOpen,
@@ -1131,6 +1183,7 @@ impl Action {
             "lsp_completion" => LspCompletion,
             "lsp_goto_definition" => LspGotoDefinition,
             "lsp_references" => LspReferences,
+            "lsp_implementation" => LspImplementation,
             "lsp_rename" => LspRename,
             "lsp_hover" => LspHover,
             "lsp_signature_help" => LspSignatureHelp,
@@ -1142,6 +1195,8 @@ impl Action {
             "toggle_mouse_hover" => ToggleMouseHover,
 
             "toggle_line_numbers" => ToggleLineNumbers,
+            "toggle_line_numbers_current_buffer" => ToggleLineNumbersCurrentBuffer,
+            "toggle_line_wrap_current_buffer" => ToggleLineWrapCurrentBuffer,
             "trigger_wave_animation" => TriggerWaveAnimation,
             "toggle_scroll_sync" => ToggleScrollSync,
             "toggle_mouse_capture" => ToggleMouseCapture,
@@ -1188,6 +1243,8 @@ impl Action {
             "menu_execute" => MenuExecute,
 
             "open_terminal" => OpenTerminal,
+            "open_terminal_right" => OpenTerminalRight,
+            "open_terminal_below" => OpenTerminalBelow,
             "close_terminal" => CloseTerminal,
             "focus_terminal" => FocusTerminal,
             "terminal_escape" => TerminalEscape,
@@ -1495,6 +1552,31 @@ impl KeybindingResolver {
         resolver
     }
 
+    /// Reload all configuration-derived bindings from `config` while
+    /// preserving plugin-contributed runtime state.
+    ///
+    /// The keymap bindings (`default_bindings` / `default_chord_bindings`) and
+    /// the user's custom overrides (`bindings` / `chord_bindings`) are rebuilt
+    /// from scratch exactly as [`KeybindingResolver::new`] does. Plugin state —
+    /// mode bindings registered at runtime via `defineMode` (`plugin_defaults`,
+    /// `plugin_chord_defaults`) and the set of modes inheriting Normal bindings
+    /// (`inheriting_modes`) — is not represented in `config`, so it is carried
+    /// over untouched.
+    ///
+    /// Use this instead of replacing the resolver with a fresh
+    /// [`KeybindingResolver::new`] whenever a config change forces a rebuild
+    /// (switching the active keybinding map, saving settings, editing
+    /// keybindings). Otherwise every plugin-contributed binding is dropped until
+    /// the next restart (issue #2307).
+    pub fn reload_from_config(&mut self, config: &Config) {
+        let mut rebuilt = Self::new(config);
+        // Carry over runtime plugin state, which lives only in the resolver.
+        rebuilt.plugin_defaults = std::mem::take(&mut self.plugin_defaults);
+        rebuilt.plugin_chord_defaults = std::mem::take(&mut self.plugin_chord_defaults);
+        rebuilt.inheriting_modes = std::mem::take(&mut self.inheriting_modes);
+        *self = rebuilt;
+    }
+
     /// Load default bindings from a vector of keybinding definitions (into default_bindings/default_chord_bindings)
     fn load_default_bindings_from_vec(&mut self, bindings: &[crate::config::Keybinding]) {
         for binding in bindings {
@@ -1743,6 +1825,8 @@ impl KeybindingResolver {
                 | Action::TerminalEscape
                 | Action::ToggleKeyboardCapture
                 | Action::OpenTerminal
+                | Action::OpenTerminalRight
+                | Action::OpenTerminalBelow
                 | Action::CloseTerminal
                 | Action::TerminalPaste
                 // File explorer
@@ -1887,6 +1971,24 @@ impl KeybindingResolver {
                     action
                 );
                 return action.clone();
+            }
+        }
+
+        // Fall through to the parent context's bindings (e.g. SearchPrompt →
+        // Prompt) so a narrowed context inherits all of its parent's keys and
+        // only owns/overrides the few it declares. Checked after this context's
+        // own bindings but before the Normal fallthrough below, so the parent's
+        // editing/navigation keys outrank Normal.
+        if let Some(parent) = context.parent_context() {
+            if let Some(parent_bindings) = self.bindings.get(&parent) {
+                if let Some(action) = parent_bindings.get(norm) {
+                    return action.clone();
+                }
+            }
+            if let Some(parent_bindings) = self.default_bindings.get(&parent) {
+                if let Some(action) = parent_bindings.get(norm) {
+                    return action.clone();
+                }
             }
         }
 
@@ -2351,6 +2453,8 @@ impl KeybindingResolver {
             Action::DuplicateLine => t!("action.duplicate_line"),
             Action::Recenter => t!("action.recenter"),
             Action::SetMark => t!("action.set_mark"),
+            Action::CancelMark => t!("action.cancel_mark"),
+            Action::ClearMark => t!("action.clear_mark"),
             Action::Copy => t!("action.copy"),
             Action::CopyWithTheme(theme) if theme.is_empty() => t!("action.copy_with_formatting"),
             Action::CopyWithTheme(theme) => t!("action.copy_with_theme", theme = theme),
@@ -2422,6 +2526,7 @@ impl KeybindingResolver {
             Action::ShowStatusLog => t!("action.show_status_log"),
             Action::ShowLspStatus => t!("action.show_lsp_status"),
             Action::ShowRemoteIndicatorMenu => t!("action.show_remote_indicator_menu"),
+            Action::ShowReadOnlyMenu => t!("action.show_read_only_menu"),
             Action::ClearWarnings => t!("action.clear_warnings"),
             Action::CommandPalette => t!("action.command_palette"),
             Action::QuickOpen => t!("action.quick_open"),
@@ -2539,6 +2644,7 @@ impl KeybindingResolver {
             Action::LspCompletion => t!("action.lsp_completion"),
             Action::LspGotoDefinition => t!("action.lsp_goto_definition"),
             Action::LspReferences => t!("action.lsp_references"),
+            Action::LspImplementation => t!("action.lsp_implementation"),
             Action::LspRename => t!("action.lsp_rename"),
             Action::LspHover => t!("action.lsp_hover"),
             Action::LspSignatureHelp => t!("action.lsp_signature_help"),
@@ -2549,6 +2655,10 @@ impl KeybindingResolver {
             Action::ToggleInlayHints => t!("action.toggle_inlay_hints"),
             Action::ToggleMouseHover => t!("action.toggle_mouse_hover"),
             Action::ToggleLineNumbers => t!("action.toggle_line_numbers"),
+            Action::ToggleLineNumbersCurrentBuffer => {
+                t!("action.toggle_line_numbers_current_buffer")
+            }
+            Action::ToggleLineWrapCurrentBuffer => t!("action.toggle_line_wrap_current_buffer"),
             Action::TriggerWaveAnimation => t!("action.trigger_wave_animation"),
             Action::ToggleScrollSync => t!("action.toggle_scroll_sync"),
             Action::ToggleMouseCapture => t!("action.toggle_mouse_capture"),
@@ -2596,6 +2706,8 @@ impl KeybindingResolver {
             Action::SwitchToPreviousTab => t!("action.switch_to_previous_tab"),
             Action::SwitchToTabByName => t!("action.switch_to_tab_by_name"),
             Action::OpenTerminal => t!("action.open_terminal"),
+            Action::OpenTerminalRight => t!("action.open_terminal_right"),
+            Action::OpenTerminalBelow => t!("action.open_terminal_below"),
             Action::CloseTerminal => t!("action.close_terminal"),
             Action::FocusTerminal => t!("action.focus_terminal"),
             Action::TerminalEscape => t!("action.terminal_escape"),
@@ -3089,6 +3201,143 @@ mod tests {
     }
 
     #[test]
+    fn test_shift_letter_binding_works_without_terminal_shift_modifier() {
+        // Regression test for https://github.com/sinelaw/fresh/issues/1899
+        // Most terminals don't report the SHIFT modifier when sending an
+        // uppercase letter — the case carries the shift information instead.
+        // A binding defined as `Shift+P` (key=p, modifiers=[shift]) must
+        // still trigger when the terminal sends `Char('P')` with no modifiers.
+        let mut config = Config::default();
+        config.keybindings.push(crate::config::Keybinding {
+            key: "p".to_string(),
+            modifiers: vec!["shift".to_string()],
+            keys: Vec::new(),
+            action: "save".to_string(),
+            args: HashMap::new(),
+            when: Some("normal".to_string()),
+        });
+        let resolver = KeybindingResolver::new(&config);
+
+        // Case 1: kitty keyboard protocol — explicit SHIFT modifier alongside uppercase.
+        let kitty_upper_shift = KeyEvent::new(KeyCode::Char('P'), KeyModifiers::SHIFT);
+        assert_eq!(
+            resolver.resolve(&kitty_upper_shift, KeyContext::Normal),
+            Action::Save,
+            "Char('P')+SHIFT should match Shift+P binding"
+        );
+
+        // Case 2: kitty protocol with lowercased char (caps lock or some terminals).
+        let kitty_lower_shift = KeyEvent::new(KeyCode::Char('p'), KeyModifiers::SHIFT);
+        assert_eq!(
+            resolver.resolve(&kitty_lower_shift, KeyContext::Normal),
+            Action::Save,
+            "Char('p')+SHIFT should match Shift+P binding"
+        );
+
+        // Case 3: typical terminal without kitty protocol — uppercase only, no modifier.
+        // This is the case that failed before the fix.
+        let plain_upper = KeyEvent::new(KeyCode::Char('P'), KeyModifiers::empty());
+        assert_eq!(
+            resolver.resolve(&plain_upper, KeyContext::Normal),
+            Action::Save,
+            "Char('P') with no modifier should match Shift+P binding \
+             (typical terminal behavior — case alone carries shift)"
+        );
+    }
+
+    #[test]
+    fn test_alt_shift_letter_binding_matches_across_terminal_encodings() {
+        // Alt+Shift+F is encoded differently by different terminals: some send
+        // `Char('F')` + ALT (no SHIFT bit — the case carries the shift), others
+        // send `Char('F')` + ALT + SHIFT. Both must match an `Alt+Shift+F`
+        // binding, and both must stay distinct from a plain `Alt+F` (Alt+f).
+        let mut config = Config::default();
+        config.keybindings.push(crate::config::Keybinding {
+            key: "f".to_string(),
+            modifiers: vec!["alt".to_string(), "shift".to_string()],
+            keys: Vec::new(),
+            action: "save".to_string(),
+            args: HashMap::new(),
+            when: Some("normal".to_string()),
+        });
+        let resolver = KeybindingResolver::new(&config);
+
+        // Encoding A: uppercase + ALT, terminal omits the SHIFT bit.
+        let no_shift_bit = KeyEvent::new(KeyCode::Char('F'), KeyModifiers::ALT);
+        assert_eq!(
+            resolver.resolve(&no_shift_bit, KeyContext::Normal),
+            Action::Save,
+            "Char('F')+ALT (no SHIFT bit) should match Alt+Shift+F"
+        );
+
+        // Encoding B: uppercase + ALT + SHIFT, terminal reports the SHIFT bit.
+        let with_shift_bit =
+            KeyEvent::new(KeyCode::Char('F'), KeyModifiers::ALT | KeyModifiers::SHIFT);
+        assert_eq!(
+            resolver.resolve(&with_shift_bit, KeyContext::Normal),
+            Action::Save,
+            "Char('F')+ALT+SHIFT should match Alt+Shift+F"
+        );
+
+        // Plain Alt+f (no shift) must NOT match the Alt+Shift+F binding.
+        let alt_f = KeyEvent::new(KeyCode::Char('f'), KeyModifiers::ALT);
+        assert_ne!(
+            resolver.resolve(&alt_f, KeyContext::Normal),
+            Action::Save,
+            "Alt+f (lowercase, no shift) must stay distinct from Alt+Shift+F"
+        );
+    }
+
+    #[test]
+    fn test_capslock_ctrl_letter_still_matches_ctrl_letter_binding() {
+        // The fix above must not regress the long-standing behavior where
+        // CapsLock+Ctrl+A is treated equivalently to Ctrl+A. When the
+        // character arrives uppercase with another modifier (CONTROL), we
+        // don't infer SHIFT — that case is ambiguous and the existing intent
+        // is to fold caps lock away.
+        let config = Config::default();
+        let resolver = KeybindingResolver::new(&config);
+
+        // Ctrl+A (lowercase, real key press).
+        let ctrl_a = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        let action_ctrl_a = resolver.resolve(&ctrl_a, KeyContext::Normal);
+
+        // CapsLock+Ctrl+A (uppercase from caps, CONTROL modifier only).
+        let caps_ctrl_a = KeyEvent::new(KeyCode::Char('A'), KeyModifiers::CONTROL);
+        let action_caps_ctrl_a = resolver.resolve(&caps_ctrl_a, KeyContext::Normal);
+
+        assert_eq!(
+            action_ctrl_a, action_caps_ctrl_a,
+            "CapsLock+Ctrl+A must resolve to the same action as Ctrl+A"
+        );
+    }
+
+    #[test]
+    fn test_uppercase_without_binding_falls_through_to_insert_char() {
+        // When there's no binding for a Shift+letter, an uppercase letter must
+        // still be inserted as text. The fix to normalize uppercase → SHIFT
+        // for lookup must not interfere with the InsertChar fallback (which
+        // uses the original event, not the normalized one).
+        let config = Config::default();
+        let resolver = KeybindingResolver::new(&config);
+
+        // 'Z' has no Shift+z binding in the default config.
+        let upper_z_no_mod = KeyEvent::new(KeyCode::Char('Z'), KeyModifiers::empty());
+        assert_eq!(
+            resolver.resolve(&upper_z_no_mod, KeyContext::Normal),
+            Action::InsertChar('Z'),
+            "Char('Z') with no modifier should still be inserted as 'Z'"
+        );
+
+        let upper_z_shift = KeyEvent::new(KeyCode::Char('Z'), KeyModifiers::SHIFT);
+        assert_eq!(
+            resolver.resolve(&upper_z_shift, KeyContext::Normal),
+            Action::InsertChar('Z'),
+            "Char('Z')+SHIFT should still be inserted as 'Z'"
+        );
+    }
+
+    #[test]
     fn test_file_explorer_ui_fallthrough() {
         // Regression test for https://github.com/sinelaw/fresh/issues/1903
         // From the FileExplorer context, application-level UI / navigation
@@ -3207,6 +3456,14 @@ mod tests {
             Some(KeyContext::Prompt)
         );
         assert_eq!(
+            KeyContext::from_when_clause("searchPrompt"),
+            Some(KeyContext::SearchPrompt)
+        );
+        assert_eq!(
+            KeyContext::from_when_clause("search_prompt"),
+            Some(KeyContext::SearchPrompt)
+        );
+        assert_eq!(
             KeyContext::from_when_clause("popup"),
             Some(KeyContext::Popup)
         );
@@ -3220,7 +3477,13 @@ mod tests {
     fn test_key_context_to_when_clause() {
         assert_eq!(KeyContext::Normal.to_when_clause(), "normal");
         assert_eq!(KeyContext::Prompt.to_when_clause(), "prompt");
+        assert_eq!(KeyContext::SearchPrompt.to_when_clause(), "searchPrompt");
         assert_eq!(KeyContext::Popup.to_when_clause(), "popup");
+        // Round-trips through from_when_clause.
+        assert_eq!(
+            KeyContext::from_when_clause(&KeyContext::SearchPrompt.to_when_clause()),
+            Some(KeyContext::SearchPrompt)
+        );
     }
 
     #[test]
@@ -3248,6 +3511,58 @@ mod tests {
         assert_eq!(
             resolver.resolve(&up_event, KeyContext::Normal),
             Action::MoveUp
+        );
+    }
+
+    #[test]
+    fn test_search_prompt_owns_toggles_and_inherits_prompt() {
+        let config = Config::default();
+        let resolver = KeybindingResolver::new(&config);
+
+        let alt_w = KeyEvent::new(KeyCode::Char('w'), KeyModifiers::ALT);
+
+        // Alt+W toggles whole-word ONLY in the SearchPrompt context.
+        assert_eq!(
+            resolver.resolve(&alt_w, KeyContext::SearchPrompt),
+            Action::ToggleSearchWholeWord,
+        );
+        // In the broad Prompt context (e.g. the save/discard/cancel close
+        // confirmation) Alt+W must NOT toggle whole-word — that was the bug.
+        assert_ne!(
+            resolver.resolve(&alt_w, KeyContext::Prompt),
+            Action::ToggleSearchWholeWord,
+        );
+
+        // The other match-mode toggles are likewise SearchPrompt-only.
+        let alt_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::ALT);
+        let alt_r = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::ALT);
+        assert_eq!(
+            resolver.resolve(&alt_c, KeyContext::SearchPrompt),
+            Action::ToggleSearchCaseSensitive,
+        );
+        assert_eq!(
+            resolver.resolve(&alt_r, KeyContext::SearchPrompt),
+            Action::ToggleSearchRegex,
+        );
+
+        // SearchPrompt inherits all generic editing/navigation keys from its
+        // parent Prompt context (Enter confirms, Esc cancels, text types).
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::empty());
+        assert_eq!(
+            resolver.resolve(&enter, KeyContext::SearchPrompt),
+            resolver.resolve(&enter, KeyContext::Prompt),
+        );
+        let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::empty());
+        assert_eq!(
+            resolver.resolve(&esc, KeyContext::SearchPrompt),
+            resolver.resolve(&esc, KeyContext::Prompt),
+        );
+        assert_eq!(
+            resolver.resolve(
+                &KeyEvent::new(KeyCode::Char('x'), KeyModifiers::empty()),
+                KeyContext::SearchPrompt,
+            ),
+            Action::InsertChar('x'),
         );
     }
 
@@ -3731,5 +4046,66 @@ mod tests {
                 duplicates.join("\n")
             );
         }
+    }
+
+    /// `reload_from_config` rebuilds config-derived bindings but must preserve
+    /// plugin-contributed runtime state — single keys, chords, and the
+    /// inheriting-modes set — that does not live in config (issue #2307).
+    #[test]
+    fn test_reload_from_config_preserves_plugin_state() {
+        let config = Config::default();
+        let mut resolver = KeybindingResolver::new(&config);
+
+        let mode_ctx = KeyContext::Mode("test-plugin-mode".to_string());
+        let single_action = Action::PluginAction("test-plugin.single".to_string());
+        let chord_action = Action::PluginAction("test-plugin.chord".to_string());
+
+        // Simulate a plugin's defineMode(): a single key, a chord, and a
+        // request to inherit Normal bindings.
+        resolver.load_plugin_default(
+            mode_ctx.clone(),
+            KeyCode::Char('z'),
+            KeyModifiers::NONE,
+            single_action.clone(),
+        );
+        resolver.load_plugin_chord_default(
+            mode_ctx.clone(),
+            vec![
+                (KeyCode::Char('g'), KeyModifiers::NONE),
+                (KeyCode::Char('g'), KeyModifiers::NONE),
+            ],
+            chord_action.clone(),
+        );
+        resolver.set_mode_inherits_normal_bindings("test-plugin-mode", true);
+
+        // A config-triggered rebuild (e.g. switching the active keybinding map).
+        resolver.reload_from_config(&config);
+
+        // Single-key plugin binding survives.
+        let single_event = KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE);
+        assert_eq!(
+            resolver.resolve(&single_event, mode_ctx.clone()),
+            single_action,
+            "single-key plugin binding must survive reload_from_config"
+        );
+
+        // Chord plugin binding survives: feed the first `g` as chord state and
+        // the second `g` as the new event to complete the `g g` sequence.
+        let chord_prefix = [(KeyCode::Char('g'), KeyModifiers::NONE)];
+        let second_g = KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE);
+        assert_eq!(
+            resolver.resolve_chord(&chord_prefix, &second_g, mode_ctx.clone()),
+            ChordResolution::Complete(chord_action),
+            "chord plugin binding must survive reload_from_config"
+        );
+
+        // The inheriting-modes set survives: an unbound key falls through to a
+        // Normal binding (Left → MoveLeft) only when the mode inherits.
+        let left = KeyEvent::new(KeyCode::Left, KeyModifiers::empty());
+        assert_eq!(
+            resolver.resolve(&left, mode_ctx),
+            Action::MoveLeft,
+            "inheriting-modes membership must survive reload_from_config"
+        );
     }
 }

@@ -3,15 +3,21 @@
 /**
  * Environment Manager
  *
- * Detects a project's environment manager (Python venv, direnv, mise) and
- * activates it by handing core an activation **snippet** via `editor.setEnv`.
- * Core captures the resulting environment on the active backend (local / SSH)
- * and applies it to every editor-spawned process — language servers,
- * formatters, `spawnProcess`.
+ * Activates a project's environment manager (Python venv, direnv, mise, …) by
+ * handing core an activation **snippet** via `editor.setEnv`. Core captures the
+ * resulting environment on the active backend (local / SSH) and applies it to
+ * every editor-spawned process — language servers, formatters, `spawnProcess`.
  *
- * Detection is passive (reads files only). Activation runs repo-controlled
- * code, so it is gated on Workspace Trust: the plugin only calls `setEnv` when
- * `editor.workspaceTrustLevel() === "trusted"` (and core enforces the same).
+ * **Detection lives in core, not here.** Which marker files mean which
+ * environment, and the snippet that activates it, are defined by `env.detectors`
+ * in the editor config (single source of truth, user-configurable). The plugin
+ * reads core's resolved result via `editor.detectedEnv()` and decides only
+ * *when* to apply it — it never probes the filesystem or hardcodes markers.
+ *
+ * Activation runs repo-controlled code, so it is gated on Workspace Trust: the
+ * plugin only calls `setEnv` when `editor.workspaceTrustLevel() === "trusted"`
+ * (and core enforces the same). The plugin can *request* the trust prompt but
+ * never sets the trust level itself — that is core's and the user's decision.
  *
  * ## Activation strategy (see `docs/internal/trust-env-devcontainer-ux-plan.md`)
  *
@@ -25,9 +31,12 @@
  *   Undo is one click on the status pill (or `Env: Use System`).
  * - **shell** (`.envrc` / `mise.toml` / `.mise.toml` / `.tool-versions`):
  *   activation runs `direnv export` / `mise env`, which evaluate user shell
- *   inside the repo. This is the dangerous case. We surface a combined
- *   "trust this folder and activate?" popup so the user makes one decision
- *   that elevates trust *and* activates the env.
+ *   inside the repo. This is the dangerous case, so it is gated on Workspace
+ *   Trust. The plugin does *not* ask the trust question itself — the core
+ *   workspace-trust modal is the single prompt for that, and it already names
+ *   the specific `.envrc`/`mise` marker. When the user trusts the folder, core
+ *   fires the `trust_changed` hook and this plugin activates the env in
+ *   response. One decision, one prompt, no duplicate "Trust & activate" popup.
  *
  * Coordination with the devcontainer plugin: if a `devcontainer.json` is
  * present and the current authority is local, env-manager defers entirely —
@@ -49,10 +58,6 @@ const editor = getEditor();
 
 const STATUS_TOKEN = "env";
 
-/** Popup ids — namespaced so action_popup_result callbacks can route. */
-const POPUP_ACTIVATE = "env-manager-activate";
-const POPUP_TRUST_ELEVATE = "env-manager-trust-elevate";
-
 /// Devcontainer plugin's attach-popup id. We listen for its outcome on the
 /// shared `action_popup_result` channel so we can un-defer the env popup
 /// when the user declines the devcontainer attach — see the
@@ -70,12 +75,11 @@ interface Detected {
   /** The activation snippet handed to `editor.setEnv`. */
   snippet: string;
   /**
-   * "path-only" envs (`.venv`/`venv`) auto-activate silently.
-   * "shell" envs (`.envrc`/`mise.toml`/`.tool-versions`) prompt first.
+   * "path-only" envs (`.venv`/`venv`) auto-activate silently when trusted.
+   * "shell" envs (`.envrc`/`mise.toml`/`.tool-versions`) only activate once
+   * the workspace is trusted (the core trust modal owns that prompt).
    */
   kind: "path-only" | "shell";
-  /** Marker file or directory name that triggered detection (for the popup body). */
-  marker: string;
 }
 
 function fileExists(p: string): boolean {
@@ -87,51 +91,29 @@ function fileExists(p: string): boolean {
 }
 
 /**
- * Detect the environment in the current workspace and return its activation
- * snippet, or null if none. These are auto-detected default snippets; direnv
- * and mise need their exporters (they're prompt-hook driven), venv sources its
- * activate script, and anything else is a pure login shell / user snippet.
+ * The environment detected in the current workspace, or null if none.
+ *
+ * Detection lives entirely in core, which is configurable through
+ * `env.detectors` in the editor config (venv / direnv / mise / pipenv /
+ * poetry by default). The plugin does *not* probe the filesystem or hardcode
+ * any markers or snippets — it just reads core's resolved result (name, kind,
+ * and a ready-to-run activation snippet) and decides *when* to apply it.
  */
 function detect(): Detected | null {
-  const cwd = editor.getCwd();
-  if (!cwd) return null;
-
-  for (const name of [".venv", "venv"]) {
-    const dir = editor.pathJoin(cwd, name);
+  const raw = editor.detectedEnv();
+  if (!raw) return null;
+  try {
+    const d = JSON.parse(raw) as Partial<Detected>;
     if (
-      fileExists(editor.pathJoin(dir, "bin", "python")) ||
-      fileExists(editor.pathJoin(dir, "bin", "python3")) ||
-      fileExists(editor.pathJoin(dir, "Scripts", "python.exe"))
+      typeof d.name === "string" &&
+      typeof d.snippet === "string" &&
+      (d.kind === "path-only" || d.kind === "shell")
     ) {
-      return {
-        name,
-        snippet: `source ${editor.pathJoin(dir, "bin", "activate")}`,
-        kind: "path-only",
-        marker: name,
-      };
+      return { name: d.name, snippet: d.snippet, kind: d.kind };
     }
+  } catch (_e) {
+    // Malformed payload — treat as "no env detected".
   }
-
-  if (fileExists(editor.pathJoin(cwd, ".envrc"))) {
-    return {
-      name: "direnv",
-      snippet: `eval "$(direnv export bash)"`,
-      kind: "shell",
-      marker: ".envrc",
-    };
-  }
-
-  for (const name of ["mise.toml", ".mise.toml", ".tool-versions"]) {
-    if (fileExists(editor.pathJoin(cwd, name))) {
-      return {
-        name: "mise",
-        snippet: `eval "$(mise env -s bash)"`,
-        kind: "shell",
-        marker: name,
-      };
-    }
-  }
-
   return null;
 }
 
@@ -162,29 +144,6 @@ function devcontainerConfigPresent(): boolean {
 function authorityIsNonLocal(): boolean {
   return editor.getAuthorityLabel().length > 0;
 }
-
-// === Per-cwd decision persistence ===
-
-type EnvDecision = "activated" | "dismissed";
-
-function envDecisionKey(): string {
-  return "env-decision:" + editor.getCwd();
-}
-
-function readEnvDecision(): EnvDecision | null {
-  const raw = editor.getGlobalState(envDecisionKey()) as unknown;
-  if (raw === "activated" || raw === "dismissed") return raw;
-  return null;
-}
-
-function writeEnvDecision(value: EnvDecision): void {
-  editor.setGlobalState(envDecisionKey(), value);
-}
-
-/** Session-only "Not now" — cleared on plugin reload, so the next editor
- * restart re-asks. Separate from the persisted "Never here" decision so
- * users have a real difference between "later" and "stop asking forever". */
-let envDismissedThisSession = false;
 
 // === Cross-plugin: devcontainer decline observation ===
 //
@@ -242,15 +201,16 @@ function applyActivation(det: Detected): void {
   editor.setStatus(
     editor.t(editor.envActive() ? "status.reloading" : "status.activating", { name: det.name }),
   );
-  writeEnvDecision("activated");
 }
 
 /** Activate (or, when already active, reload) the detected environment.
  *
- * Trust handling: if the workspace is not trusted, instead of silently
- * failing we surface a follow-up action popup ("Workspace not trusted —
- * trust and activate?") so the user can elevate trust without leaving the
- * activation flow. This replaces the previous dead-end status message.
+ * Trust handling: if the workspace is not trusted, we open the *core*
+ * workspace-trust modal (the single trust prompt) rather than a second,
+ * plugin-owned trust popup. Once the user trusts the folder, core fires
+ * `trust_changed` and our subscription below re-runs the activation — so the
+ * user's one "Trust" decision both elevates trust and activates the env,
+ * without us asking the trust question ourselves.
  */
 function activate(): void {
   const det = detect();
@@ -259,7 +219,7 @@ function activate(): void {
     return;
   }
   if (!isTrusted()) {
-    showTrustElevatePrompt(det);
+    requestCoreTrustPrompt();
     return;
   }
   applyActivation(det);
@@ -294,80 +254,19 @@ editor.registerCommand("%cmd.reload", "%cmd.reload_desc", "env_activate_handler"
 editor.registerCommand("%cmd.use_system", "%cmd.use_system_desc", "env_use_system_handler");
 editor.registerCommand("%cmd.status", "%cmd.status_desc", "env_status_handler");
 
-// === Popups ===
+// === Trust prompt ===
 
 /**
- * Combined trust + activate popup, surfaced on plugin load when the workspace
- * has a shell-based env (`.envrc` / `mise.toml`) and the user hasn't yet made
- * a decision. The "Trust & activate" action elevates trust *and* activates;
- * the user gets one decision for what is logically one intent.
+ * Open the *core* workspace-trust modal — the single, editor-owned trust
+ * prompt. Plugins can't open it through a dedicated API, but the editor
+ * exposes `workspace_trust_prompt` as an action and `executeActions` is the
+ * generic dispatch channel. We deliberately do NOT show a second, plugin-owned
+ * "Trust & activate" popup: that duplicated the trust question in a competing
+ * UI. Activation happens as a *consequence* of trust, via the `trust_changed`
+ * subscription below.
  */
-function showActivatePrompt(det: Detected): void {
-  editor.showActionPopup({
-    id: POPUP_ACTIVATE,
-    title: editor.t("popup.activate_title"),
-    message: editor.t("popup.activate_message", { name: det.name, marker: det.marker }),
-    actions: [
-      { id: "trust_and_activate", label: editor.t("popup.activate_action_trust") },
-      { id: "dismiss_once", label: editor.t("popup.activate_action_not_now") },
-      { id: "dismiss_always", label: editor.t("popup.activate_action_never") },
-    ],
-  });
-}
-
-/**
- * Follow-up popup shown when the user explicitly runs `Env: Activate` (or
- * clicks the locked pill) on an untrusted workspace. Same shape as the
- * combined popup but framed as an elevation request — the user already asked
- * to activate, so we just need their consent to elevate trust.
- */
-function showTrustElevatePrompt(det: Detected): void {
-  editor.showActionPopup({
-    id: POPUP_TRUST_ELEVATE,
-    title: editor.t("popup.trust_elevate_title"),
-    message: editor.t("popup.trust_elevate_message", { name: det.name }),
-    actions: [
-      { id: "trust_and_activate", label: editor.t("popup.activate_action_trust") },
-      { id: "keep_restricted", label: editor.t("popup.trust_elevate_action_keep") },
-      { id: "cancel", label: editor.t("popup.trust_elevate_action_cancel") },
-    ],
-  });
-}
-
-/** Promote the workspace to Trusted by dispatching the existing trust action.
- * Plugins can't set trust directly through a dedicated API, but the editor
- * exposes `workspace_trust_trust` as an action and `executeActions` is the
- * generic dispatch channel. */
-function elevateTrust(): void {
-  editor.executeActions([{ action: "workspace_trust_trust", count: 1 }]);
-}
-
-function onActivatePopup(data: ActionPopupResultData): void {
-  const det = detect();
-  if (!det) return;
-  if (data.action_id === "trust_and_activate") {
-    elevateTrust();
-    applyActivation(det);
-  } else if (data.action_id === "dismiss_always") {
-    writeEnvDecision("dismissed");
-  } else {
-    // "dismiss_once" or the generic "dismissed" id the core injects on
-    // Escape — both are session-only; the next editor restart re-asks.
-    envDismissedThisSession = true;
-  }
-}
-
-function onTrustElevatePopup(data: ActionPopupResultData): void {
-  const det = detect();
-  if (!det) return;
-  if (data.action_id === "trust_and_activate") {
-    elevateTrust();
-    applyActivation(det);
-  } else if (data.action_id === "keep_restricted") {
-    editor.executeActions([{ action: "workspace_trust_restrict", count: 1 }]);
-    editor.setStatus(editor.t("status.kept_restricted"));
-  }
-  // "cancel" / "dismissed" — no-op, leaves trust as-is.
+function requestCoreTrustPrompt(): void {
+  editor.executeActions([{ action: "workspace_trust_prompt", count: 1 }]);
 }
 
 /// Catch the devcontainer attach popup's outcome on the shared
@@ -391,12 +290,21 @@ function onDevcontainerAttachResult(data: ActionPopupResultData): void {
 }
 
 editor.on("action_popup_result", (data) => {
-  if (data.popup_id === POPUP_ACTIVATE) {
-    onActivatePopup(data);
-  } else if (data.popup_id === POPUP_TRUST_ELEVATE) {
-    onTrustElevatePopup(data);
-  } else if (data.popup_id === DEVCONTAINER_ATTACH_POPUP_ID) {
+  // env-manager no longer owns a trust popup; the only action popup it still
+  // coordinates with is the devcontainer plugin's attach prompt.
+  if (data.popup_id === DEVCONTAINER_ATTACH_POPUP_ID) {
     onDevcontainerAttachResult(data);
+  }
+});
+
+// Trust is granted elsewhere — the core trust modal, the status-bar trust
+// pill, or a palette command — all of which route through core's
+// `set_workspace_trust_level` and fire `trust_changed`. That is our cue to
+// activate a now-trusted env, so the user's single "Trust" decision both
+// elevates trust and turns the env on, with no second prompt from us.
+editor.on("trust_changed", (data) => {
+  if (data.level === "trusted" && !editor.envActive()) {
+    maybeAutoActivate();
   }
 });
 
@@ -407,24 +315,21 @@ editor.on("action_popup_result", (data) => {
  *
  * Routing:
  * - No env detected → nothing.
- * - Path-only (`.venv`/`venv`) → auto-activate silently if trusted, regardless
- *   of any prior decision (the activation is recorded but we don't re-prompt
- *   the user about a non-prompting flow). Path-only is intentionally
- *   exempt from the trust-gating popup; the snippet is just `PATH` setup.
+ * - Path-only (`.venv`/`venv`) → auto-activate silently if trusted. Path-only
+ *   is intentionally exempt from trust prompting; the snippet is just `PATH`
+ *   setup.
  * - Shell env, devcontainer present, local authority, no observed
  *   decline → defer entirely. The devcontainer attach popup goes first; we
  *   re-run after the post-attach restart inside the container, or when the
  *   user declines the devcontainer popup (see `onDevcontainerAttachResult`).
  * - Shell env, devcontainer present but user already declined the attach
  *   (this session or persistently) → fall through to the env flow on the
- *   host. Defer is only valid while the devcontainer popup might still
- *   appear; once it's clear it won't, the env popup should.
+ *   host.
  * - Shell env, already activated → nothing (the env is live; user can reload).
- * - Shell env, prior "dismissed" decision → nothing (respect the user's "never here").
- * - Shell env, session-only dismissal → nothing this session.
- * - Shell env, undecided + trusted → silent activation (trust is the
- *   green light; honor it).
- * - Shell env, undecided + untrusted → show the combined trust+activate popup.
+ * - Shell env, trusted → silent activation (trust is the green light; honor it).
+ * - Shell env, not yet trusted → nothing. The core workspace-trust modal owns
+ *   the ask; when the user trusts the folder, `trust_changed` re-runs this and
+ *   we activate. We never surface our own trust popup here.
  */
 function maybeAutoActivate(): void {
   const det = detect();
@@ -461,24 +366,29 @@ function maybeAutoActivate(): void {
     }
   }
 
-  const prior = readEnvDecision();
-  if (prior === "dismissed") return;
-  if (envDismissedThisSession) return;
-  if (prior === "activated" && isTrusted()) {
-    // User previously said yes; silently re-activate without re-prompting.
-    applyActivation(det);
-    return;
-  }
   if (isTrusted()) {
-    // Trust is already granted; just activate.
+    // Trust is granted (now or previously) → activate. Trust is the only gate.
     applyActivation(det);
     return;
   }
-  showActivatePrompt(det);
+  // Not trusted yet: stay silent. The core trust modal asks; `trust_changed`
+  // brings us back here once the user trusts.
 }
 
 registerHandler("env_maybe_auto_activate", maybeAutoActivate);
 editor.on("plugins_loaded", "env_maybe_auto_activate");
+
+// A session activated *after* boot — most notably one spawned through the
+// Orchestrator ("New Session" / dock), which creates a window without
+// re-firing `plugins_loaded` — must get the same auto-activation a direct
+// `fresh <dir>` launch gets. Without this, such a session stays on the system
+// toolchain even once its workspace trust is decided (issue #2355 follow-up).
+// Guarded on `!envActive()` so merely switching back to an already-active
+// session is a no-op and never re-applies (which would needlessly reload LSP).
+registerHandler("env_auto_activate_on_session", () => {
+  if (!editor.envActive()) maybeAutoActivate();
+});
+editor.on("active_window_changed", "env_auto_activate_on_session");
 
 // === Status pill (opt-in to a user's status-bar layout) ===
 //
@@ -529,24 +439,20 @@ for (const event of ["ready", "buffer_activated", "after_file_open", "focus_gain
 editor.on("status_bar_token_clicked", (data) => {
   if (data.plugin_name !== "env-manager") return;
   if (data.token_name === STATUS_TOKEN) {
-    // Click on the env pill is an explicit "I want to reconsider"
-    // gesture, so it bypasses both the session-only "Not now" and the
-    // persistent "Never here" dismissals — `maybeAutoActivate` would
-    // otherwise short-circuit on the persisted state and the chip
-    // would do nothing. Instead, surface the appropriate popup
-    // directly based on detected env + trust state. If there's no env
-    // detected at all, fall back to a status message so the click
-    // isn't silent.
+    // Click on the env pill is an explicit "act on this env" gesture. If the
+    // folder is trusted, activate (or reload). If it isn't, open the core
+    // trust modal — the single trust prompt — rather than a plugin-owned
+    // popup; trusting then activates via `trust_changed`. If there's no env
+    // detected at all, fall back to a status message so the click isn't silent.
     const det = detect();
     if (!det) {
       editor.setStatus(editor.t("status.no_env_detected"));
       return;
     }
-    envDismissedThisSession = false;
     if (isTrusted()) {
       applyActivation(det);
     } else {
-      showActivatePrompt(det);
+      requestCoreTrustPrompt();
     }
   }
 });

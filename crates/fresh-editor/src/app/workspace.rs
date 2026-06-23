@@ -184,6 +184,55 @@ impl Editor {
         self.restore_workspace_for(self.active_window)
     }
 
+    /// The single window-restore flow: load and apply window `id`'s
+    /// persisted workspace, then apply the fresh-session file-explorer
+    /// default. Shared by eager startup restore
+    /// ([`Editor::restore_active_window_on_launch`]) and lazy
+    /// dock/preview materialization ([`Editor::materialize_window`]) so a
+    /// directory behaves identically however it is (re-)entered — a
+    /// deliberately-closed explorer stays closed, a brand-new directory
+    /// defaults to the tree. Operates on `windows[id]` directly, so it is
+    /// correct for a background window that is not active yet.
+    ///
+    /// `opened_files` suppresses the explorer default when the launch
+    /// opened specific files instead of a bare directory.
+    pub fn restore_window(
+        &mut self,
+        id: fresh_core::WindowId,
+        opened_files: bool,
+    ) -> Result<bool, WorkspaceError> {
+        let restored = self.restore_workspace_for(id)?;
+        if let Some(win) = self.windows.get_mut(&id) {
+            win.apply_fresh_session_explorer_default(opened_files, restored);
+        }
+        Ok(restored)
+    }
+
+    /// Eager startup restore of the active foreground window, applying
+    /// the fresh-session explorer default. The launch-time counterpart to
+    /// the lazy [`Editor::materialize_window`]; both funnel through
+    /// [`Editor::restore_window`].
+    pub fn restore_active_window_on_launch(
+        &mut self,
+        opened_files: bool,
+    ) -> Result<bool, WorkspaceError> {
+        self.restore_window(self.active_window, opened_files)
+    }
+
+    /// Apply the fresh-session explorer default to the active window for
+    /// launch/enter paths that did *not* run a workspace restore (e.g.
+    /// `--no-restore`, or a new directory opened into a running instance).
+    /// Same rule as [`Editor::restore_window`], just without a restore to
+    /// bundle it with.
+    pub fn apply_active_window_explorer_default(
+        &mut self,
+        opened_files: bool,
+        workspace_restored: bool,
+    ) {
+        self.active_window_mut()
+            .apply_fresh_session_explorer_default(opened_files, workspace_restored);
+    }
+
     /// Apply hot exit recovery to all currently open file-backed buffers.
     ///
     /// This restores unsaved changes from recovery files for buffers that were
@@ -398,7 +447,7 @@ impl Editor {
             }
         }
 
-        // For named sessions, save to session-scoped workspace file
+        // For a named daemon, save to the daemon-scoped workspace file
         if let Some(ref session_name) = self.session_name {
             workspace.save_session(session_name)
         } else {
@@ -459,9 +508,9 @@ impl Editor {
                 .get_mut(&id)
                 .expect("window present for restore");
             win.apply_workspace_layout(&workspace, session.as_deref());
-            // Restore the session's backend spec so a dormant remote session
-            // knows what to reconnect to (the live authority is still the
-            // local placeholder until reconnect).
+            // Restore the workspace's backend spec so a dormant remote
+            // workspace knows what to reconnect to (the live authority is still
+            // the local placeholder until reconnect).
             win.authority_spec = workspace.authority_spec.clone();
         } else {
             // Never-seeded shell: rebuild the window from the workspace via
@@ -565,7 +614,11 @@ impl Editor {
             return;
         }
         let saved_plugin_state = self.plugin_global_state.clone();
-        match self.restore_workspace_for(id) {
+        // Lazy counterpart to the eager startup restore: same
+        // `restore_window` flow, so a dock-switched directory applies its
+        // persisted explorer visibility (or the fresh-session default)
+        // exactly as a cold launch would. No CLI files on this path.
+        match self.restore_window(id, false) {
             Ok(true) => tracing::debug!("Materialized window {id} from workspace"),
             Ok(false) => {
                 tracing::trace!("No persisted workspace for window {id}; empty seed kept")
@@ -580,7 +633,7 @@ impl Editor {
     /// `materialize_window`); this eager variant exists only for tests
     /// that need all windows populated up front — chiefly the
     /// orchestrator bring-up render tests, which assert every restored
-    /// session paints. Not called from production code.
+    /// workspace paints. Not called from production code.
     pub fn materialize_all_windows(&mut self) {
         let pending: Vec<fresh_core::WindowId> = self.materialize_pending.iter().copied().collect();
         for id in pending {
@@ -603,7 +656,7 @@ impl crate::app::window::Window {
         for terminal in terminals {
             if let Some(buffer_id) = self.restore_terminal_from_workspace(terminal) {
                 terminal_buffer_map.insert(terminal.terminal_index, buffer_id);
-                // The terminal was live when the session was saved and the
+                // The terminal was live when the workspace was saved and the
                 // user never explicitly exited it, so focusing it should
                 // bring back a live terminal rather than the read-only
                 // scrollback view. Seed the resume set so `set_active_buffer`
@@ -670,7 +723,7 @@ impl crate::app::window::Window {
     }
 
     /// Set a status-bar message summarising how many buffers were restored and from
-    /// which session, then emit a debug log with split/buffer counts.
+    /// which daemon, then emit a debug log with split/buffer counts.
     fn log_restore_summary(&mut self, session_name: Option<&str>) {
         tracing::debug!(
             "Workspace restore complete: {} splits, {} buffers",
@@ -729,7 +782,7 @@ impl crate::app::window::Window {
 
         // Best-effort directory creation for terminal backing files
         #[allow(clippy::let_underscore_must_use)]
-        let _ = self.authority().filesystem.create_dir_all(
+        let _ = crate::app::terminal::terminal_backing_fs().create_dir_all(
             log_path
                 .parent()
                 .or_else(|| backing_path.parent())
@@ -758,16 +811,18 @@ impl crate::app::window::Window {
             .filter(|argv| !argv.is_empty() && self.resources.config.terminal.resume_agents);
         let spawn_argv =
             resume_argv.or_else(|| terminal.command.as_ref().filter(|argv| !argv.is_empty()));
-        // Run the resume/launch argv through the session's backend (local →
+        // Run the resume/launch argv through the workspace's backend (local →
         // directly; container → `docker exec … <argv>`) so a restored agent
         // rejoins *inside* its backend, not on the host. For a dormant remote
-        // session the live authority is still the local placeholder until
+        // workspace the live authority is still the local placeholder until
         // reconnect — `terminal_command` composes with whatever backend is
         // live, so the reconnect-on-activate step re-runs it in the real one.
         let wrapper_for_spawn = match spawn_argv {
             Some(argv) => self.authority().terminal_command(argv),
             None => self.resolved_terminal_wrapper(),
         };
+        let wrapper_for_spawn = self.apply_remote_terminal_env(wrapper_for_spawn);
+        let env_delta = self.terminal_env_delta(&wrapper_for_spawn);
         let terminal_id = match self.terminal_manager.spawn(
             terminal.cols,
             terminal.rows,
@@ -775,6 +830,7 @@ impl crate::app::window::Window {
             Some(log_path.clone()),
             Some(backing_path.clone()),
             wrapper_for_spawn,
+            env_delta,
         ) {
             Ok(id) => id,
             Err(e) => {
@@ -798,7 +854,7 @@ impl crate::app::window::Window {
         }
 
         // Carry the restore markers forward (even the empty-vec plain-shell
-        // marker) so a later save re-persists them and the session keeps
+        // marker) so a later save re-persists them and the workspace keeps
         // restoring — and resuming — across multiple restarts.
         if let Some(argv) = terminal.command.as_ref() {
             self.terminal_commands.insert(terminal_id, argv.clone());
@@ -838,7 +894,7 @@ impl crate::app::window::Window {
             large_file_threshold,
             &self.resources.grammar_registry,
             &self.resources.config.languages,
-            std::sync::Arc::clone(&self.authority().filesystem),
+            crate::app::terminal::terminal_backing_fs(),
         ) {
             self.install_terminal_buffer_state(buffer_id, new_state);
         }
@@ -1258,6 +1314,21 @@ impl crate::app::window::Window {
                             buf_state,
                             &mut state.buffer,
                         );
+
+                        // Refresh the buffer's cached primary cursor line number.
+                        // The cursor-position fields above are written directly
+                        // (no MoveCursor event), so without this the cache stays
+                        // at EditorState::new's default `Absolute(0)`. Status bar
+                        // and plugin-side `getCursorLine` both read this cache —
+                        // a Git Blame invoked right after restore would see 0 and
+                        // land on Ln 1 even though the cursor is at line 5000.
+                        let line = state
+                            .buffer
+                            .offset_to_position(cursor_pos)
+                            .map(|p| p.line)
+                            .unwrap_or(0);
+                        state.primary_cursor_line_number =
+                            crate::model::buffer::LineNumber::Absolute(line);
                     }
 
                     // Restore per-buffer view mode and compose width
@@ -1266,6 +1337,17 @@ impl crate::app::window::Window {
                         SerializedViewMode::PageView => ViewMode::PageView,
                     };
                     buf_state.compose_width = file_state.compose_width;
+                    // Re-apply explicit per-buffer view overrides (line numbers /
+                    // line wrap). Only Some(_) values were persisted, so buffers
+                    // the user never pinned keep following the global default.
+                    if let Some(line_numbers) = file_state.line_numbers {
+                        buf_state.line_numbers_override = Some(line_numbers);
+                        buf_state.show_line_numbers = line_numbers;
+                    }
+                    if let Some(line_wrap) = file_state.line_wrap {
+                        buf_state.line_wrap_override = Some(line_wrap);
+                        buf_state.viewport.line_wrap_enabled = line_wrap;
+                    }
                     buf_state.plugin_state = file_state.plugin_state.clone();
                     if let Some(state) = __buffers_mut.get_mut(&buffer_id) {
                         buf_state.folds.clear(&mut state.marker_list);
@@ -1434,6 +1516,35 @@ impl crate::app::window::Window {
         }
     }
 
+    /// The fresh-session file-explorer default: show the tree for a
+    /// brand-new directory. This is the single rule shared by every way
+    /// of entering a directory — startup restore, the orchestrator
+    /// dock/preview materialization, and the new-window (`fresh <dir>`
+    /// into a running instance) path — all of which funnel their restore
+    /// through [`Editor::restore_window`].
+    ///
+    /// It fires *only* when nothing was restored: a restored workspace
+    /// already carries the explorer's persisted visibility (applied by
+    /// [`Window::restore_file_explorer_settings`]), so re-showing here
+    /// would reopen a deliberately-closed explorer on every relaunch.
+    /// `opened_files` suppresses it when the launch opened specific files
+    /// rather than a bare directory. Visibility only — `key_context`
+    /// stays Normal so the buffer keeps focus, mirroring
+    /// `restore_file_explorer_settings`.
+    pub(crate) fn apply_fresh_session_explorer_default(
+        &mut self,
+        opened_files: bool,
+        workspace_restored: bool,
+    ) {
+        if opened_files || workspace_restored {
+            return;
+        }
+        self.file_explorer_visible = true;
+        if self.file_explorer.is_none() {
+            self.init_file_explorer();
+        }
+    }
+
     /// Open every file referenced by the saved split states, returning a map
     /// from relative (or absolute) path to the new `BufferId`.
     fn open_workspace_files(
@@ -1503,7 +1614,7 @@ impl crate::app::window::Window {
         }
     }
 
-    /// Re-apply read-only flags for files that were locked in the saved session.
+    /// Re-apply read-only flags for files that were locked in the saved workspace.
     /// Paths may be relative (under this window's `root`) or absolute.
     fn apply_read_only_flags(
         &mut self,
@@ -1591,6 +1702,10 @@ impl crate::app::window::Window {
             },
             view_mode: Default::default(),
             compose_width: None,
+            // Per-buffer overrides are workspace-scoped, not part of the
+            // cross-project global per-file state.
+            line_numbers: None,
+            line_wrap: None,
             plugin_state: std::collections::HashMap::new(),
             folds: Vec::new(),
         };
@@ -1619,11 +1734,9 @@ impl crate::app::window::Window {
                 if let Ok(mut state) = handle.state.lock() {
                     // Persist any scrolled-off lines not yet in the file (e.g.
                     // lines a resize spilled into history on a terminal that was
-                    // never viewed before quitting) so a restored session keeps
+                    // never viewed before quitting) so a restored workspace keeps
                     // the full scrollback.
-                    if let Ok(mut file) = self
-                        .authority()
-                        .filesystem
+                    if let Ok(mut file) = crate::app::terminal::terminal_backing_fs()
                         .open_file_for_append(&backing_path)
                     {
                         let mut writer = BufWriter::new(&mut *file);
@@ -1636,9 +1749,7 @@ impl crate::app::window::Window {
                         }
                     }
 
-                    if let Ok(mut file) = self
-                        .authority()
-                        .filesystem
+                    if let Ok(mut file) = crate::app::terminal::terminal_backing_fs()
                         .open_file_for_append(&backing_path)
                     {
                         let mut writer = BufWriter::new(&mut *file);
@@ -2286,11 +2397,11 @@ impl crate::app::window::Window {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs(),
-            // Session identity (windows.json is gone — the per-dir
+            // Workspace identity (windows.json is gone — the per-dir
             // workspace file is the sole record).
             label: Some(self.label.clone()),
             session_plugin_state: self.plugin_state.clone(),
-            // How to rebuild/reconnect this session's backend on restore.
+            // How to rebuild/reconnect this workspace's backend on restore.
             authority_spec: self.authority_spec.clone(),
         }
     }
@@ -2623,6 +2734,8 @@ fn serialize_split_view_state(
                     ViewMode::PageView => SerializedViewMode::PageView,
                 },
                 compose_width: buf_state.compose_width,
+                line_numbers: buf_state.line_numbers_override,
+                line_wrap: buf_state.line_wrap_override,
                 plugin_state: buf_state.plugin_state.clone(),
                 folds,
             },

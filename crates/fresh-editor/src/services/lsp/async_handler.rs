@@ -43,7 +43,10 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{ChildStdin, ChildStdout};
 use tokio::sync::{mpsc, oneshot};
 
-type PendingRequests = Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value, String>>>>>;
+/// Maps an in-flight LSP request id to the request method and the channel
+/// awaiting its response. The method is retained so error responses can be
+/// classified per-method (see `log_response_error`).
+type PendingRequests = Arc<Mutex<HashMap<i64, (String, oneshot::Sender<Result<Value, String>>)>>>;
 
 /// Grace period after didOpen before sending didChange (in milliseconds)
 /// This gives the LSP server time to process didOpen before receiving changes
@@ -73,30 +76,73 @@ const DEFAULT_REQUEST_TIMEOUT_MS: u64 = 30_000;
 const LSP_ERROR_CONTENT_MODIFIED: i64 = -32801;
 const LSP_ERROR_SERVER_CANCELLED: i64 = -32802;
 
+/// RequestFailed (-32803): "A request failed but it was syntactically correct."
+/// The spec wants informational requests (hover, completion, ...) to answer
+/// "nothing here" with a `null` result, but several servers return this error
+/// instead — e.g. asm-lsp replies with `-32803 "No information available"` when
+/// hovering a label or macro that isn't a documented opcode/register
+/// (sinelaw/fresh#2296). For those read-only methods a failure just means "no
+/// info for this position", so it's logged at debug. For methods where a
+/// failure is actionable (formatting, rename, ...) it still warns.
+const LSP_ERROR_REQUEST_FAILED: i64 = -32803;
+
+/// Methods where "the server couldn't produce a result" is a normal, expected
+/// outcome rather than a bug — a `null` result or a soft `RequestFailed` simply
+/// means there is nothing to show at the requested position.
+fn is_informational_method(method: &str) -> bool {
+    matches!(
+        method,
+        "textDocument/hover"
+            | "textDocument/completion"
+            | "textDocument/signatureHelp"
+            | "textDocument/definition"
+            | "textDocument/declaration"
+            | "textDocument/typeDefinition"
+            | "textDocument/implementation"
+            | "textDocument/references"
+            | "textDocument/documentHighlight"
+            | "textDocument/documentSymbol"
+            | "textDocument/inlayHint"
+            | "textDocument/foldingRange"
+    )
+}
+
 /// Whether a JSON-RPC error response should be logged at debug rather than warn.
 /// See `LSP_ERROR_*` constants above for the rationale behind each suppressed code.
 fn is_suppressed_error_code(code: i64) -> bool {
     code == LSP_ERROR_CONTENT_MODIFIED || code == LSP_ERROR_SERVER_CANCELLED
 }
 
+/// Whether an error response for `method` with `code` should be downgraded from
+/// warn to debug. Extends `is_suppressed_error_code` with a method-aware rule:
+/// a `RequestFailed` from an informational request (see `is_informational_method`)
+/// is a routine "no result here", not server misbehaviour.
+fn is_suppressed_response_error(code: i64, method: &str) -> bool {
+    is_suppressed_error_code(code)
+        || (code == LSP_ERROR_REQUEST_FAILED && is_informational_method(method))
+}
+
 /// Log an LSP JSON-RPC error response at the appropriate level.
 ///
-/// Suppressed codes (see `is_suppressed_error_code`) emit a debug record; every
-/// other code emits a warning so genuine server misbehaviour stays visible.
-fn log_response_error(code: i64, message: &str, server_name: &str, language: &str) {
-    if is_suppressed_error_code(code) {
+/// Suppressed errors (see `is_suppressed_response_error`) emit a debug record;
+/// every other error emits a warning so genuine server misbehaviour stays
+/// visible. `method` is the originating request method (e.g. `textDocument/hover`).
+fn log_response_error(code: i64, message: &str, server_name: &str, language: &str, method: &str) {
+    if is_suppressed_response_error(code, method) {
         tracing::debug!(
-            "LSP response from '{}' ({}): {} (code {}), discarding",
+            "LSP response from '{}' ({}) for {}: {} (code {}), discarding",
             server_name,
             language,
+            method,
             message,
             code
         );
     } else {
         tracing::warn!(
-            "LSP response error from '{}' ({}): {} (code {})",
+            "LSP response error from '{}' ({}) for {}: {} (code {})",
             server_name,
             language,
+            method,
             message,
             code
         );
@@ -603,6 +649,10 @@ fn extract_capability_summary(caps: &ServerCapabilities) -> ServerCapabilitySumm
             lsp_types::OneOf::Left(v) => *v,
             lsp_types::OneOf::Right(_) => true,
         }),
+        implementation: bool_or_options(&caps.implementation_provider, |p| match p {
+            lsp_types::ImplementationProviderCapability::Simple(v) => *v,
+            lsp_types::ImplementationProviderCapability::Options(_) => true,
+        }),
         references: bool_or_options(&caps.references_provider, |p| match p {
             lsp_types::OneOf::Left(v) => *v,
             lsp_types::OneOf::Right(_) => true,
@@ -710,6 +760,14 @@ enum LspCommand {
 
     /// Request go-to-definition
     GotoDefinition {
+        request_id: u64,
+        uri: Uri,
+        line: u32,
+        character: u32,
+    },
+
+    /// Request go-to-implementation
+    Implementation {
         request_id: u64,
         uri: Uri,
         line: u32,
@@ -1135,7 +1193,7 @@ impl LspState {
         };
 
         let (tx, rx) = oneshot::channel();
-        pending.lock().unwrap().insert(id, tx);
+        pending.lock().unwrap().insert(id, (method.to_string(), tx));
 
         if let Err(e) = self.write_message(&request).await {
             pending.lock().unwrap().remove(&id);
@@ -1429,10 +1487,7 @@ impl LspState {
         );
 
         let params = CompletionParams {
-            text_document_position: TextDocumentPositionParams {
-                text_document: TextDocumentIdentifier { uri },
-                position: Position { line, character },
-            },
+            text_document_position: Self::text_document_position(uri, line, character),
             work_done_progress_params: WorkDoneProgressParams::default(),
             partial_result_params: PartialResultParams::default(),
             context: None,
@@ -1477,6 +1532,43 @@ impl LspState {
         }
     }
 
+    /// Build the `TextDocumentPositionParams` shared by every position-based
+    /// request (definition, implementation, rename, hover, references,
+    /// signature help, …). Centralizes the `uri`/`line`/`character` →
+    /// params construction that was otherwise repeated verbatim in each
+    /// handler.
+    fn text_document_position(uri: Uri, line: u32, character: u32) -> TextDocumentPositionParams {
+        TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position { line, character },
+        }
+    }
+
+    /// Parse a `textDocument/definition`-style response into a flat list of
+    /// locations. The LSP spec lets servers answer with a single `Location`,
+    /// an array of `Location`s, or an array of `LocationLink`s (whose target
+    /// lives in `target_uri` / `target_selection_range`). Definition and
+    /// implementation both accept all three shapes, so the decoding lives
+    /// here once instead of being copy-pasted into each handler.
+    fn locations_from_response(result: Value) -> Vec<lsp_types::Location> {
+        if let Ok(loc) = serde_json::from_value::<lsp_types::Location>(result.clone()) {
+            vec![loc]
+        } else if let Ok(locs) = serde_json::from_value::<Vec<lsp_types::Location>>(result.clone())
+        {
+            locs
+        } else if let Ok(links) = serde_json::from_value::<Vec<lsp_types::LocationLink>>(result) {
+            links
+                .into_iter()
+                .map(|link| lsp_types::Location {
+                    uri: link.target_uri,
+                    range: link.target_selection_range,
+                })
+                .collect()
+        } else {
+            vec![]
+        }
+    }
+
     /// Handle go-to-definition request
     async fn handle_goto_definition(
         &self,
@@ -1496,10 +1588,7 @@ impl LspState {
         );
 
         let params = GotoDefinitionParams {
-            text_document_position_params: TextDocumentPositionParams {
-                text_document: TextDocumentIdentifier { uri },
-                position: Position { line, character },
-            },
+            text_document_position_params: Self::text_document_position(uri, line, character),
             work_done_progress_params: WorkDoneProgressParams::default(),
             partial_result_params: PartialResultParams::default(),
         };
@@ -1511,28 +1600,7 @@ impl LspState {
         {
             Ok(result) => {
                 // Parse the definition response (can be Location, Vec<Location>, or LocationLink)
-                let locations = if let Ok(loc) =
-                    serde_json::from_value::<lsp_types::Location>(result.clone())
-                {
-                    vec![loc]
-                } else if let Ok(locs) =
-                    serde_json::from_value::<Vec<lsp_types::Location>>(result.clone())
-                {
-                    locs
-                } else if let Ok(links) =
-                    serde_json::from_value::<Vec<lsp_types::LocationLink>>(result)
-                {
-                    // Convert LocationLink to Location
-                    links
-                        .into_iter()
-                        .map(|link| lsp_types::Location {
-                            uri: link.target_uri,
-                            range: link.target_selection_range,
-                        })
-                        .collect()
-                } else {
-                    vec![]
-                };
+                let locations = Self::locations_from_response(result);
 
                 // Send to main loop
                 let _ = self.async_tx.send(AsyncMessage::LspGotoDefinition {
@@ -1545,6 +1613,62 @@ impl LspState {
                 tracing::debug!("Go-to-definition request failed: {}", e);
                 // Send empty locations on error
                 let _ = self.async_tx.send(AsyncMessage::LspGotoDefinition {
+                    request_id,
+                    locations: vec![],
+                });
+                Err(e)
+            }
+        }
+    }
+
+    /// Handle go-to-implementation request
+    async fn handle_implementation(
+        &self,
+        request_id: u64,
+        uri: Uri,
+        line: u32,
+        character: u32,
+        pending: &PendingRequests,
+    ) -> Result<(), String> {
+        use lsp_types::request::GotoImplementationParams;
+
+        tracing::trace!(
+            "LSP: go-to-implementation request at {}:{}:{}",
+            uri.as_str(),
+            line,
+            character
+        );
+
+        let params = GotoImplementationParams {
+            text_document_position_params: Self::text_document_position(uri, line, character),
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        };
+
+        // Send request and get response
+        match self
+            .send_request_sequential::<_, Value>(
+                "textDocument/implementation",
+                Some(params),
+                pending,
+            )
+            .await
+        {
+            Ok(result) => {
+                // Parse the response (can be Location, Vec<Location>, or LocationLink)
+                let locations = Self::locations_from_response(result);
+
+                // Send to main loop
+                let _ = self.async_tx.send(AsyncMessage::LspImplementation {
+                    request_id,
+                    locations,
+                });
+                Ok(())
+            }
+            Err(e) => {
+                tracing::debug!("Go-to-implementation request failed: {}", e);
+                // Send empty locations on error
+                let _ = self.async_tx.send(AsyncMessage::LspImplementation {
                     request_id,
                     locations: vec![],
                 });
@@ -1574,10 +1698,7 @@ impl LspState {
         );
 
         let params = RenameParams {
-            text_document_position: TextDocumentPositionParams {
-                text_document: TextDocumentIdentifier { uri },
-                position: Position { line, character },
-            },
+            text_document_position: Self::text_document_position(uri, line, character),
             new_name,
             work_done_progress_params: WorkDoneProgressParams::default(),
         };
@@ -1639,10 +1760,7 @@ impl LspState {
         );
 
         let params = HoverParams {
-            text_document_position_params: TextDocumentPositionParams {
-                text_document: TextDocumentIdentifier { uri },
-                position: Position { line, character },
-            },
+            text_document_position_params: Self::text_document_position(uri, line, character),
             work_done_progress_params: WorkDoneProgressParams::default(),
         };
 
@@ -1756,10 +1874,7 @@ impl LspState {
         );
 
         let params = ReferenceParams {
-            text_document_position: lsp_types::TextDocumentPositionParams {
-                text_document: TextDocumentIdentifier { uri },
-                position: Position { line, character },
-            },
+            text_document_position: Self::text_document_position(uri, line, character),
             work_done_progress_params: WorkDoneProgressParams::default(),
             partial_result_params: PartialResultParams::default(),
             context: ReferenceContext {
@@ -1820,10 +1935,7 @@ impl LspState {
         );
 
         let params = SignatureHelpParams {
-            text_document_position_params: TextDocumentPositionParams {
-                text_document: TextDocumentIdentifier { uri },
-                position: Position { line, character },
-            },
+            text_document_position_params: Self::text_document_position(uri, line, character),
             work_done_progress_params: WorkDoneProgressParams::default(),
             context: None, // We can add context later for re-triggers
         };
@@ -2689,8 +2801,9 @@ struct LspTask {
     /// Next request ID
     next_id: i64,
 
-    /// Pending requests waiting for response
-    pending: HashMap<i64, oneshot::Sender<Result<Value, String>>>,
+    /// Pending requests waiting for response, keyed by request id. The stored
+    /// `String` is the request method (see `PendingRequests`).
+    pending: HashMap<i64, (String, oneshot::Sender<Result<Value, String>>)>,
 
     /// Server capabilities
     capabilities: Option<ServerCapabilities>,
@@ -2922,7 +3035,7 @@ impl LspTask {
                         count,
                         language
                     );
-                    for (id, tx) in pending_guard.drain() {
+                    for (id, (_method, tx)) in pending_guard.drain() {
                         tracing::debug!(
                             "LSP stdout reader: failing pending request id={} for {}",
                             id,
@@ -3236,6 +3349,25 @@ impl LspTask {
                     } else {
                         tracing::trace!("LSP not initialized, sending empty locations");
                         let _ = state.async_tx.send(AsyncMessage::LspGotoDefinition {
+                            request_id,
+                            locations: vec![],
+                        });
+                    }
+                }
+                LspCommand::Implementation {
+                    request_id,
+                    uri,
+                    line,
+                    character,
+                } => {
+                    if initialized {
+                        tracing::info!("Processing Implementation request for {}", uri.as_str());
+                        spawn_request!(state, pending, |s, p| s
+                            .handle_implementation(request_id, uri, line, character, &p)
+                            .await);
+                    } else {
+                        tracing::trace!("LSP not initialized, sending empty locations");
+                        let _ = state.async_tx.send(AsyncMessage::LspImplementation {
                             request_id,
                             locations: vec![],
                         });
@@ -3967,9 +4099,11 @@ async fn handle_message_dispatch(
             // can only be a stray/echoed server id we never tracked — drop it
             // rather than letting it look like an unknown request.
             let pending_id = response.id.as_i64();
-            if let Some(tx) = pending_id.and_then(|id| pending.lock().unwrap().remove(&id)) {
+            if let Some((method, tx)) =
+                pending_id.and_then(|id| pending.lock().unwrap().remove(&id))
+            {
                 let result = if let Some(error) = response.error {
-                    log_response_error(error.code, &error.message, server_name, language);
+                    log_response_error(error.code, &error.message, server_name, language, &method);
                     Err(format!(
                         "LSP error from '{}' ({}): {} (code {})",
                         server_name, language, error.message, error.code
@@ -4679,6 +4813,24 @@ impl LspHandle {
                 character,
             })
             .map_err(|_| "Failed to send goto_definition command".to_string())
+    }
+
+    /// Request go-to-implementation
+    pub fn implementation(
+        &self,
+        request_id: u64,
+        uri: Uri,
+        line: u32,
+        character: u32,
+    ) -> Result<(), String> {
+        self.command_tx
+            .try_send(LspCommand::Implementation {
+                request_id,
+                uri,
+                line,
+                character,
+            })
+            .map_err(|_| "Failed to send implementation command".to_string())
     }
 
     /// Request rename
@@ -5429,6 +5581,78 @@ mod tests {
         assert!(!is_suppressed_error_code(-32603)); // Internal error
         assert!(!is_suppressed_error_code(-32700)); // Parse error
         assert!(!is_suppressed_error_code(0));
+
+        // RequestFailed is NOT a blanket-suppressed code: on its own it still
+        // warns. It is only downgraded for informational methods (below).
+        assert!(!is_suppressed_error_code(LSP_ERROR_REQUEST_FAILED));
+    }
+
+    #[test]
+    fn test_request_failed_suppressed_only_for_informational_methods() {
+        // asm-lsp answers a hover over a non-opcode token with
+        // `-32803 "No information available"` instead of a null result
+        // (sinelaw/fresh#2296). That's a routine "nothing here", so an
+        // informational method must not warn...
+        assert!(is_suppressed_response_error(
+            LSP_ERROR_REQUEST_FAILED,
+            "textDocument/hover"
+        ));
+        assert!(is_suppressed_response_error(
+            LSP_ERROR_REQUEST_FAILED,
+            "textDocument/completion"
+        ));
+
+        // ...but a RequestFailed from a mutating/actionable method is a real
+        // problem the user should be able to see.
+        assert!(!is_suppressed_response_error(
+            LSP_ERROR_REQUEST_FAILED,
+            "textDocument/formatting"
+        ));
+        assert!(!is_suppressed_response_error(
+            LSP_ERROR_REQUEST_FAILED,
+            "textDocument/rename"
+        ));
+
+        // The method gate only applies to RequestFailed; other errors on an
+        // informational method still surface.
+        assert!(!is_suppressed_response_error(-32603, "textDocument/hover"));
+    }
+
+    #[test]
+    fn test_request_failed_on_hover_is_not_logged_as_warn() {
+        // The exact scenario from the bug report: a hover RequestFailed must
+        // stay at debug so a normal "no docs here" hover doesn't spam warnings.
+        let (emitted, contents) = capture_warn_logs(|| {
+            log_response_error(
+                LSP_ERROR_REQUEST_FAILED,
+                "No information available",
+                "asm-lsp",
+                "asm",
+                "textDocument/hover",
+            );
+        });
+        assert!(
+            !emitted,
+            "hover RequestFailed must not notify the WARN channel; got log:\n{}",
+            contents
+        );
+    }
+
+    #[test]
+    fn test_request_failed_on_formatting_still_warns() {
+        let (emitted, _contents) = capture_warn_logs(|| {
+            log_response_error(
+                LSP_ERROR_REQUEST_FAILED,
+                "formatting failed",
+                "some-server",
+                "rust",
+                "textDocument/formatting",
+            );
+        });
+        assert!(
+            emitted,
+            "RequestFailed on an actionable method should still WARN"
+        );
     }
 
     /// Scope a `WarningLogLayer` to the current thread and run `body`. Returns
@@ -5459,7 +5683,13 @@ mod tests {
     fn test_content_modified_and_server_cancelled_are_not_logged_as_warn() {
         for code in [LSP_ERROR_CONTENT_MODIFIED, LSP_ERROR_SERVER_CANCELLED] {
             let (emitted, contents) = capture_warn_logs(|| {
-                log_response_error(code, "expected during editing", "rust-analyzer", "rust");
+                log_response_error(
+                    code,
+                    "expected during editing",
+                    "rust-analyzer",
+                    "rust",
+                    "textDocument/completion",
+                );
             });
             assert!(
                 !emitted,
@@ -5480,6 +5710,7 @@ mod tests {
                 "Unhandled method textDocument/inlayHint",
                 "vscode-json-language-server",
                 "json",
+                "textDocument/inlayHint",
             );
         });
         assert!(
@@ -5498,7 +5729,13 @@ mod tests {
         // InternalError (-32603) and other unexpected codes must continue
         // to surface so genuine server misbehaviour stays visible.
         let (emitted, contents) = capture_warn_logs(|| {
-            log_response_error(-32603, "internal error", "rust-analyzer", "rust");
+            log_response_error(
+                -32603,
+                "internal error",
+                "rust-analyzer",
+                "rust",
+                "textDocument/hover",
+            );
         });
         assert!(
             emitted,

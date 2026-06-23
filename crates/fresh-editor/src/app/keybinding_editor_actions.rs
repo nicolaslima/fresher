@@ -90,9 +90,12 @@ impl Editor {
             self.config_mut().keybindings.push(binding);
         }
 
-        // Rebuild the keybinding resolver
-        *self.keybindings.write().unwrap() =
-            crate::input::keybindings::KeybindingResolver::new(&self.config);
+        // Rebuild the keybinding resolver, keeping plugin-contributed
+        // bindings alive across the rebuild (#2307).
+        self.keybindings
+            .write()
+            .unwrap()
+            .reload_from_config(&self.config);
 
         // Save to config file via the pending changes mechanism
         let config_value = match serde_json::to_value(&self.config.keybindings) {
@@ -290,6 +293,20 @@ impl Editor {
 
         self.keybinding_editor = Some(editor);
         Ok(true)
+    }
+
+    /// Select a display row by index (and toggle it if it's a section header) —
+    /// the same effect as a TUI click on that table row. Used by the web
+    /// `/kbedit` route so a native row click selects through the real editor.
+    pub(crate) fn kbedit_select_display_row(&mut self, idx: usize) {
+        if let Some(ed) = self.keybinding_editor.as_mut() {
+            if idx < ed.display_rows.len() {
+                ed.selected = idx;
+                if ed.selected_is_section_header() {
+                    ed.toggle_section_at_selected();
+                }
+            }
+        }
     }
 }
 

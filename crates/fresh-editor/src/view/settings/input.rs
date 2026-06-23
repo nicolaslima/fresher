@@ -104,19 +104,6 @@ impl SettingsState {
             return InputResult::Consumed;
         }
 
-        // Ctrl+R resets the focused field to its schema default. Only
-        // fires in navigation mode (not while typing into a control), so
-        // it doesn't conflict with editor inputs.
-        if event.modifiers.contains(KeyModifiers::CONTROL)
-            && matches!(event.code, KeyCode::Char('r') | KeyCode::Char('R'))
-        {
-            let editing = self.entry_dialog().map(|d| d.editing_text).unwrap_or(false);
-            if !editing {
-                self.reset_focused_entry_field();
-                return InputResult::Consumed;
-            }
-        }
-
         // Check if we're in a special editing mode
         let (editing_text, dropdown_open) = if let Some(dialog) = self.entry_dialog() {
             let dropdown_open = dialog
@@ -190,7 +177,7 @@ impl SettingsState {
                         }
                     } else {
                         dialog.stop_editing();
-                        dialog.focus_next();
+                        dialog.focus_next_field();
                     }
                 }
             }
@@ -283,7 +270,7 @@ impl SettingsState {
                     };
                     if escape {
                         dialog.stop_editing();
-                        dialog.focus_prev();
+                        dialog.focus_prev_field();
                     }
                 }
             }
@@ -318,7 +305,7 @@ impl SettingsState {
                     };
                     if escape {
                         dialog.stop_editing();
-                        dialog.focus_next();
+                        dialog.focus_next_field();
                     }
                 }
             }
@@ -363,7 +350,7 @@ impl SettingsState {
                     };
                     dialog.stop_editing();
                     if escape_forward {
-                        dialog.focus_next();
+                        dialog.focus_next_field();
                     }
                 }
             }
@@ -482,6 +469,11 @@ impl SettingsState {
                 }
             }
             KeyCode::Enter => {
+                // A focused per-field action button ([Reset]/[Inherit]) handles activation.
+                if self.entry_dialog_activate_focused_field_button() {
+                    return InputResult::Consumed;
+                }
+
                 // Check button state first with immutable borrow
                 // Button layout: [Save, Cancel] or [Save, Cancel, Delete].
                 // Save = 0, Cancel = 1, Delete = 2 (when present).
@@ -554,6 +546,11 @@ impl SettingsState {
                 }
             }
             KeyCode::Char(' ') => {
+                // A focused per-field action button ([Reset]/[Inherit]) handles activation.
+                if self.entry_dialog_activate_focused_field_button() {
+                    return InputResult::Consumed;
+                }
+
                 // Space toggles booleans, activates dropdowns (but doesn't submit form)
                 let control_action = self.entry_dialog().and_then(|dialog| {
                     if dialog.focus_on_buttons {

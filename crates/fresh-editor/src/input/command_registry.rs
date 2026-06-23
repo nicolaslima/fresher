@@ -821,6 +821,7 @@ mod tests {
             ("Go to Definition", Action::LspGotoDefinition),
             ("Show Hover Info", Action::LspHover),
             ("Find References", Action::LspReferences),
+            ("Go to Implementation", Action::LspImplementation),
             // Help commands
             ("Show Manual", Action::ShowHelp),
             ("Show Keyboard Shortcuts", Action::ShowKeyboardShortcuts),

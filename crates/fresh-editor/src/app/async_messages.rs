@@ -1420,6 +1420,7 @@ impl Editor {
             show_hidden: self.config.file_explorer.show_hidden,
             show_gitignored: self.config.file_explorer.show_gitignored,
             compact_directories: self.config.file_explorer.compact_directories,
+            custom_ignore_patterns: self.config.file_explorer.custom_ignore_patterns.clone(),
         };
         let is_active = window == self.active_window_id();
         // Route the result back to the window that asked for it. If that window
@@ -1546,13 +1547,6 @@ impl Editor {
             }
             _ => true,
         });
-
-        let cmd_names: Vec<String> = commands.iter().map(|c| c.debug_variant_name()).collect();
-        tracing::trace!(
-            count = commands.len(),
-            cmds = ?cmd_names,
-            "process_plugin_commands"
-        );
 
         for command in &commands {
             match command {

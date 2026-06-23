@@ -2,10 +2,11 @@
 //!
 //! These build and show various popups as buffer-level events:
 //! warnings popup, LSP status popup (with refresh hook), file-message
-//! popup, and a small text-properties query helper. The biggest of
-//! these — build_and_show_lsp_status_popup — is ~315 lines of popup
-//! construction that has nothing to do with buffer management proper;
-//! it just needed access to the buffer to dispatch the ShowPopup event.
+//! popup, and a small text-properties query helper. The LSP status popup
+//! is the largest; it is split into `collect_lsp_status_servers` (gather
+//! state), `push_lsp_server_rows` / `push_lsp_footer_rows` (build the list),
+//! and `present_lsp_status_popup` (pin width + show), orchestrated by
+//! `build_and_show_lsp_status_popup`.
 
 use rust_i18n::t;
 
@@ -20,6 +21,60 @@ use super::Editor;
 /// etc.) that might be on top.
 fn is_lsp_status_popup(popup: &crate::view::popup::Popup) -> bool {
     matches!(popup.resolver, crate::view::popup::PopupResolver::LspStatus)
+}
+
+/// Max display cells for each variable field (title / message) of the LSP
+/// progress line. Used to pin the popup width so it doesn't jitter as live
+/// progress messages come and go.
+const LSP_PROGRESS_FIELD_MAX: usize = 14;
+/// Hard cap on the LSP-status popup width.
+const LSP_POPUP_WIDTH_MAX: u16 = 50;
+/// Worst-case width of the runtime-varying progress line, used when pinning
+/// the popup width:
+///   "    ⏳ " (4-space indent + ⏳ (2 cells) + space = 7 cells)
+///   + field (title) + " · " (3) + field (message) + " (100%)" (7)
+const LSP_PROGRESS_LINE_MAX: usize = 7 + LSP_PROGRESS_FIELD_MAX + 3 + LSP_PROGRESS_FIELD_MAX + 7;
+
+/// Truncate `s` to at most `max_cells` display cells, appending an ellipsis
+/// if truncation happened (the ellipsis is included in the budget, so the
+/// result is ≤ `max_cells` wide regardless of input).
+fn truncate_to_cells(s: &str, max_cells: usize) -> String {
+    use unicode_width::UnicodeWidthChar;
+    let w = unicode_width::UnicodeWidthStr::width(s);
+    if w <= max_cells {
+        return s.to_string();
+    }
+    let budget = max_cells.saturating_sub(1);
+    let mut used = 0;
+    let mut out = String::new();
+    for ch in s.chars() {
+        let cw = ch.width().unwrap_or(0);
+        if used + cw > budget {
+            break;
+        }
+        used += cw;
+        out.push(ch);
+    }
+    out.push('…');
+    out
+}
+
+/// A language's configured + running LSP servers, gathered once up-front so
+/// row-building doesn't have to re-query `self` for every server. Built by
+/// [`Editor::collect_lsp_status_servers`].
+struct LspStatusServers {
+    /// All server display-names for the language (configured ∪ running), sorted.
+    names: Vec<String>,
+    /// display-name → live runtime status, for servers that are running.
+    running: std::collections::HashMap<String, crate::services::async_bridge::LspServerStatus>,
+    /// display-name → binary-missing. Only meaningful when not running.
+    missing: std::collections::HashMap<String, bool>,
+    /// display-name → configured `auto_start`.
+    auto_start: std::collections::HashMap<String, bool>,
+    /// The user dismissed this language for the session.
+    user_dismissed: bool,
+    /// At least one configured server has `enabled = true`.
+    any_enabled: bool,
 }
 
 impl Editor {
@@ -163,12 +218,33 @@ impl Editor {
         self.build_and_show_lsp_status_popup(&language, was_focused);
     }
 
+    /// Build and show the LSP status popup for `language`. Orchestrates three
+    /// cohesive steps: gather the configured/running servers, build the list
+    /// rows, then pin + present the popup.
     fn build_and_show_lsp_status_popup(&mut self, language: &str, focused: bool) {
+        let servers = self.collect_lsp_status_servers(language);
+        if servers.names.is_empty() {
+            self.active_window_mut().status_message = Some(t!("lsp.no_server_active").to_string());
+            return;
+        }
+
+        // Build the popup's items as view-level `PopupListItem`s directly. We
+        // bypass the `PopupListItemData` event type because we need the
+        // `disabled` field (a view-only concern). Each item carries its own
+        // action key in `data`, and the `LspStatus` resolver tells confirm how
+        // to interpret it, so no separate action-key table is needed.
+        let mut items: Vec<crate::view::popup::PopupListItem> = Vec::new();
+        self.push_lsp_server_rows(language, &servers, &mut items);
+        self.push_lsp_footer_rows(language, &servers, &mut items);
+        self.present_lsp_status_popup(language, items, focused);
+    }
+
+    /// Gather the configured + running LSP servers for `language`, merged with
+    /// their runtime status, binary availability, and auto-start config.
+    fn collect_lsp_status_servers(&self, language: &str) -> LspStatusServers {
         use crate::services::async_bridge::LspServerStatus;
 
-        // Build a unified list of all configured servers for this language,
-        // merged with their runtime status (if running).
-        let running_statuses: std::collections::HashMap<String, LspServerStatus> = self
+        let running: std::collections::HashMap<String, LspServerStatus> = self
             .active_window()
             .lsp_server_statuses
             .iter()
@@ -189,13 +265,12 @@ impl Editor {
             })
             .unwrap_or_default();
 
-        // Per-server binary availability map (display_name → bool).
+        // Per-server binary availability map (display_name → missing).
         // `command_exists` is cached, so repeated popup opens or a
-        // refresh-while-open are cheap.  We look up by display name
-        // because `all_servers` below is built from display names;
-        // LspServerConfig::display_name() falls back to the command
-        // basename when no explicit `name` is set.
-        let missing_by_server: std::collections::HashMap<String, bool> = self
+        // refresh-while-open are cheap. We look up by display name because
+        // `names` below is built from display names; `display_name()` falls
+        // back to the command basename when no explicit `name` is set.
+        let missing: std::collections::HashMap<String, bool> = self
             .config
             .lsp
             .get(language)
@@ -213,12 +288,10 @@ impl Editor {
                     .collect()
             })
             .unwrap_or_default();
-        // Per-server auto_start flag map (display_name → auto_start).
-        // Used to decide whether to offer an "Enable auto-start for X"
-        // row alongside the "Start X" action — relevant only when the
-        // server is enabled but dormant and the user hasn't opted into
-        // auto-start yet.
-        let auto_start_by_server: std::collections::HashMap<String, bool> = self
+
+        // Per-server auto_start flag map — used to decide whether to offer an
+        // "Start X (always)" row alongside the plain "Start X".
+        let auto_start: std::collections::HashMap<String, bool> = self
             .config
             .lsp
             .get(language)
@@ -230,86 +303,70 @@ impl Editor {
                     .collect()
             })
             .unwrap_or_default();
+
         let user_dismissed = self
             .active_window()
             .is_lsp_language_user_dismissed(language);
 
-        if configured_servers.is_empty() && running_statuses.is_empty() {
-            self.active_window_mut().status_message = Some(t!("lsp.no_server_active").to_string());
-            return;
-        }
+        let any_enabled = self
+            .config
+            .lsp
+            .get(language)
+            .is_some_and(|cfg| cfg.as_slice().iter().any(|c| c.enabled));
 
         // Merge: start with configured servers, then add any running servers
         // not in the config (shouldn't happen, but be safe).
-        let mut all_servers: Vec<String> = configured_servers;
-        for name in running_statuses.keys() {
-            if !all_servers.contains(name) {
-                all_servers.push(name.clone());
+        let mut names = configured_servers;
+        for name in running.keys() {
+            if !names.contains(name) {
+                names.push(name.clone());
             }
         }
-        all_servers.sort();
+        names.sort();
 
-        // Build the popup's items as view-level `PopupListItem`s directly.
-        // We bypass the `PopupListItemData` event type here because we need
-        // the `disabled` field (for "View Log" when no log exists), which
-        // is a view-only concern and plumbing it through the event boundary
-        // would require touching ~40 existing literals across the test
-        // suite.
-        let mut items: Vec<crate::view::popup::PopupListItem> = Vec::new();
-        let mut action_keys: Vec<(String, String)> = Vec::new();
-
-        /// Truncate `s` to at most `max_cells` display cells, appending an
-        /// ellipsis if truncation happened (the ellipsis is included in the
-        /// budget, so the result is ≤ `max_cells` wide regardless of input).
-        fn truncate(s: &str, max_cells: usize) -> String {
-            use unicode_width::UnicodeWidthChar;
-            let w = unicode_width::UnicodeWidthStr::width(s);
-            if w <= max_cells {
-                return s.to_string();
-            }
-            let budget = max_cells.saturating_sub(1);
-            let mut used = 0;
-            let mut out = String::new();
-            for ch in s.chars() {
-                let cw = ch.width().unwrap_or(0);
-                if used + cw > budget {
-                    break;
-                }
-                used += cw;
-                out.push(ch);
-            }
-            out.push('…');
-            out
+        LspStatusServers {
+            names,
+            running,
+            missing,
+            auto_start,
+            user_dismissed,
+            any_enabled,
         }
-        const PROGRESS_FIELD_MAX: usize = 14;
-        const POPUP_WIDTH_MAX: u16 = 50;
+    }
 
-        for name in &all_servers {
-            let status = running_statuses.get(name).copied();
+    /// Push one block of rows per server — a status header, an optional live
+    /// progress line, and the per-server action rows (restart/stop, install
+    /// advisory, or start) — into `items`.
+    fn push_lsp_server_rows(
+        &self,
+        language: &str,
+        servers: &LspStatusServers,
+        items: &mut Vec<crate::view::popup::PopupListItem>,
+    ) {
+        use crate::services::async_bridge::LspServerStatus;
+
+        // The "not installed" copy says where it actually isn't: in the
+        // container for container authorities, on the host otherwise.
+        let authority_is_container = self.authority().display_label.starts_with("Container:");
+        let missing_label = if authority_is_container {
+            "not installed in container"
+        } else {
+            "binary not in PATH"
+        };
+
+        for name in &servers.names {
+            let status = servers.running.get(name).copied();
             let is_active = status
                 .map(|s| !matches!(s, LspServerStatus::Shutdown))
                 .unwrap_or(false);
-            // A server is "missing" only when it's NOT currently running
-            // (an absolute-path binary could have been removed mid-session,
-            // but the live server is still talking to us).
-            let binary_missing =
-                !is_active && missing_by_server.get(name).copied().unwrap_or(false);
+            // A server is "missing" only when it's NOT currently running (an
+            // absolute-path binary could have been removed mid-session, but
+            // the live server is still talking to us).
+            let binary_missing = !is_active && servers.missing.get(name).copied().unwrap_or(false);
 
-            // Header: server name + status (data = None → not clickable,
-            // not underlined).  Swap the "not running" label for a more
-            // actionable "binary not found" when we can see up-front that
-            // a start attempt would fail — this is the user-visible half
-            // of the pre-click probe. The `binary_missing` signal comes
-            // from the authority-routed `command_exists` (L-3c), so the
-            // "not installed" copy says where it actually isn't: in the
-            // container for container authorities, on the host
-            // otherwise.
-            let authority_is_container = self.authority().display_label.starts_with("Container:");
-            let missing_label = if authority_is_container {
-                "not installed in container"
-            } else {
-                "binary not in PATH"
-            };
+            // Header: server name + status (no data → not clickable). Swap the
+            // "not running" label for an actionable "binary not found" when a
+            // start attempt would clearly fail.
             let (icon, label) = match status {
                 Some(LspServerStatus::Running) => ("●", "ready"),
                 Some(LspServerStatus::Error) => ("✗", "error"),
@@ -324,57 +381,49 @@ impl Editor {
                 }
             };
             items.push(crate::view::popup::PopupListItem::new(format!(
-                "{} {} ({})",
-                icon, name, label
+                "{icon} {name} ({label})"
             )));
 
-            // Progress row immediately UNDER the server's name row, if
-            // there's an active `$/progress` notification for this
-            // language.  Indented to match the action rows below, and the
-            // title + message fields are individually truncated so a
-            // runaway progress path can't stretch the popup.  The popup
-            // width is pinned in advance (see below) so the row's content
-            // changing never reshapes the popup.
+            // Progress row immediately UNDER the server's name row, if there's
+            // an active `$/progress` notification for this language. Fields are
+            // individually truncated so a runaway progress path can't stretch
+            // the popup (the width is pinned in advance).
             if let Some(info) = self
                 .active_window()
                 .lsp_progress
                 .values()
                 .find(|info| info.language == language)
             {
-                let mut line = format!("    ⏳ {}", truncate(&info.title, PROGRESS_FIELD_MAX));
+                let mut line = format!(
+                    "    ⏳ {}",
+                    truncate_to_cells(&info.title, LSP_PROGRESS_FIELD_MAX)
+                );
                 if let Some(ref msg) = info.message {
-                    line.push_str(&format!(" · {}", truncate(msg, PROGRESS_FIELD_MAX)));
+                    line.push_str(&format!(
+                        " · {}",
+                        truncate_to_cells(msg, LSP_PROGRESS_FIELD_MAX)
+                    ));
                 }
                 if let Some(pct) = info.percentage {
-                    line.push_str(&format!(" ({}%)", pct));
+                    line.push_str(&format!(" ({pct}%)"));
                 }
                 items.push(crate::view::popup::PopupListItem::new(line));
             }
 
             if is_active {
-                // Restart
-                let restart_key = format!("restart:{}/{}", language, name);
                 items.push(
-                    crate::view::popup::PopupListItem::new(format!("    Restart {}", name))
-                        .with_data(restart_key.clone()),
+                    crate::view::popup::PopupListItem::new(format!("    Restart {name}"))
+                        .with_data(format!("restart:{language}/{name}")),
                 );
-                action_keys.push((restart_key, format!("Restart {}", name)));
-
-                // Stop
-                let stop_key = format!("stop:{}/{}", language, name);
                 items.push(
-                    crate::view::popup::PopupListItem::new(format!("    Stop {}", name))
-                        .with_data(stop_key.clone()),
+                    crate::view::popup::PopupListItem::new(format!("    Stop {name}"))
+                        .with_data(format!("stop:{language}/{name}")),
                 );
-                action_keys.push((stop_key, format!("Stop {}", name)));
             } else if binary_missing {
-                // Show a disabled advisory row instead of an actionable
-                // "Start" — clicking Start here would spawn, fail, and
-                // noise up the status area. Copy shifts with the
-                // authority so the user is pointed at the right
-                // install surface: `devcontainer.json`'s
-                // `postCreateCommand` for containers, the host's
-                // package manager otherwise.
+                // A disabled advisory row instead of an actionable "Start" —
+                // clicking Start here would spawn, fail, and noise up the
+                // status area. Copy shifts with the authority so the user is
+                // pointed at the right install surface.
                 let advisory = if authority_is_container {
                     format!("    Install {name} in container (postCreateCommand)")
                 } else {
@@ -382,131 +431,92 @@ impl Editor {
                 };
                 items.push(crate::view::popup::PopupListItem::new(advisory).disabled());
             } else {
-                // Two sibling rows for a dormant server, in the
-                // order the user most likely wants:
-                //
-                //   "Start <name> (always)" — persist auto_start=true
-                //                              AND start the server now.
-                //                              Listed first because
-                //                              persistent-start is the
-                //                              common case, so pre-
-                //                              selecting it lets the
-                //                              user press Enter and
-                //                              move on.
-                //   "Start <name> once"     — start for this session,
-                //                              config stays auto_start=false.
-                //
-                // The "once" suffix is only needed (vs. just "Start")
-                // when the "(always)" sibling is also present — i.e.
-                // when auto_start is currently false. Otherwise there
-                // is nothing to disambiguate it from.
-                let is_manual = !auto_start_by_server.get(name).copied().unwrap_or(true);
+                // Two sibling rows for a dormant server, ordered by what the
+                // user most likely wants:
+                //   "Start <name> (always)" — persist auto_start=true AND start
+                //                              now. Listed first (the default)
+                //                              so Enter does the common thing.
+                //   "Start <name> once"     — start for this session only.
+                // The "once" suffix is only needed when the "(always)" sibling
+                // is present (i.e. auto_start is currently false).
+                let is_manual = !servers.auto_start.get(name).copied().unwrap_or(true);
 
-                // "(always)" row — first, so it's the default.
                 if is_manual {
-                    let autostart_key = format!("autostart:{}/{}", language, name);
                     items.push(
                         crate::view::popup::PopupListItem::new(format!(
-                            "    Start {} (always)",
-                            name
+                            "    Start {name} (always)"
                         ))
-                        .with_data(autostart_key.clone()),
+                        .with_data(format!("autostart:{language}/{name}")),
                     );
-                    action_keys.push((autostart_key, format!("Start {} (always)", name)));
                 }
 
-                // "once" / plain Start row.
                 let start_label = if is_manual {
-                    format!("    Start {} once", name)
+                    format!("    Start {name} once")
                 } else {
-                    format!("    Start {}", name)
+                    format!("    Start {name}")
                 };
-                let start_action_label = if is_manual {
-                    format!("Start {} once", name)
-                } else {
-                    format!("Start {}", name)
-                };
-                let start_key = format!("start:{}", language);
-                if !action_keys.iter().any(|(k, _)| k == &start_key) {
+                // All dormant servers for a language share the same `start:`
+                // key; only emit the row once.
+                let start_key = format!("start:{language}");
+                if !items
+                    .iter()
+                    .any(|i| i.data.as_deref() == Some(start_key.as_str()))
+                {
                     items.push(
-                        crate::view::popup::PopupListItem::new(start_label)
-                            .with_data(start_key.clone()),
+                        crate::view::popup::PopupListItem::new(start_label).with_data(start_key),
                     );
-                    action_keys.push((start_key, start_action_label));
                 }
             }
         }
+    }
 
-        // Disable / Enable row — shown whenever the language has at
-        // least one configured server. The label flips on either the
-        // session-level dismiss flag OR the persisted `enabled = false`
-        // half: both mean "the language is currently muted from the
-        // user's POV", and showing "Disable" while the config already
-        // has every server disabled would leave the user with no
-        // surface to undo it. Picking the row writes through to the
-        // matching half of the state in `handle_lsp_status_action`
-        // (`dismiss:` flips both, `enable:` flips both) so the two
-        // signals stay in sync after every round-trip.
-        let any_enabled = self
-            .config
-            .lsp
-            .get(language)
-            .is_some_and(|cfg| cfg.as_slice().iter().any(|c| c.enabled));
-        let muted = user_dismissed || !any_enabled;
+    /// Push the language-level footer rows — enable/disable, view log, plugin
+    /// contributions, and the trailing dismiss row — into `items`.
+    fn push_lsp_footer_rows(
+        &self,
+        language: &str,
+        servers: &LspStatusServers,
+        items: &mut Vec<crate::view::popup::PopupListItem>,
+    ) {
+        // Disable / Enable row. The label flips on either the session-level
+        // dismiss flag OR a fully-`enabled = false` config: both mean "the
+        // language is currently muted", and showing "Disable" while every
+        // server is already disabled would leave no surface to undo it.
+        let muted = servers.user_dismissed || !servers.any_enabled;
         if muted {
-            let enable_key = format!("enable:{}", language);
             items.push(
-                crate::view::popup::PopupListItem::new(format!("    Enable LSP for {}", language))
-                    .with_data(enable_key.clone()),
+                crate::view::popup::PopupListItem::new(format!("    Enable LSP for {language}"))
+                    .with_data(format!("enable:{language}")),
             );
-            action_keys.push((enable_key, format!("Enable LSP for {}", language)));
         } else {
-            let dismiss_key = format!("dismiss:{}", language);
             items.push(
-                crate::view::popup::PopupListItem::new(format!("    Disable LSP for {}", language))
-                    .with_data(dismiss_key.clone()),
+                crate::view::popup::PopupListItem::new(format!("    Disable LSP for {language}"))
+                    .with_data(format!("dismiss:{language}")),
             );
-            action_keys.push((dismiss_key, format!("Disable LSP for {}", language)));
         }
 
-        // View log action — grayed out and non-actionable when no
-        // log file exists yet for this language (e.g. the server was
-        // never started, or has been rotated away).
+        // View log action — grayed out and non-actionable when no log file
+        // exists yet for this language.
         let log_path = crate::services::log_dirs::lsp_log_path(language);
-        let log_exists = log_path.exists();
-        let log_key = format!("log:{}", language);
         let mut log_item = crate::view::popup::PopupListItem::new("    View Log".to_string());
-        if log_exists {
-            log_item = log_item.with_data(log_key.clone());
-            action_keys.push((log_key, "View Log".to_string()));
+        if log_path.exists() {
+            log_item = log_item.with_data(format!("log:{language}"));
         } else {
             log_item = log_item.disabled();
         }
         items.push(log_item);
 
-        // Plugin-contributed rows — injected between View Log and
-        // Dismiss as an extra "Plugin actions" section. This is the
-        // merge half of "Option B" (#1941 follow-up): instead of
-        // plugins pushing their own separate popup via
-        // `editor.showActionPopup` (which stacked on top of this one
-        // and confused the user), they install rows here via
-        // `PluginCommand::SetLspMenuContributions` and the editor
-        // routes the eventual selection back via
-        // `action_popup_result` with `popup_id = "lsp_status"` and
-        // `action_id = "{plugin_id}|{item_id}"`.
-        //
-        // Sorted by (plugin_id, item index) for stable ordering so
-        // the popup doesn't shuffle rows between renders. A single
-        // header row labels the section when there's at least one
-        // contributed item, so the user can tell the rows below come
-        // from a plugin (vs. built-in actions like Stop/Restart).
+        // Plugin-contributed rows — injected as an extra "Plugin actions"
+        // section. Sorted by plugin_id for stable ordering; a single header
+        // labels the section so the user can tell these rows come from a
+        // plugin (vs. built-in actions like Stop/Restart).
         let mut contributed: Vec<(&String, &Vec<crate::app::LspMenuItem>)> = self
             .active_window()
             .lsp_menu_contributions
             .iter()
-            .filter_map(|((lang, plugin_id), items)| {
-                if lang == language && !items.is_empty() {
-                    Some((plugin_id, items))
+            .filter_map(|((lang, plugin_id), plugin_items)| {
+                if lang == language && !plugin_items.is_empty() {
+                    Some((plugin_id, plugin_items))
                 } else {
                     None
                 }
@@ -514,30 +524,23 @@ impl Editor {
             .collect();
         contributed.sort_by(|a, b| a.0.cmp(b.0));
         if !contributed.is_empty() {
-            // Section header — non-actionable, mimics the language
-            // header at the top (no data → not clickable).
             items.push(crate::view::popup::PopupListItem::new(
                 "  ─ Plugin actions ─".to_string(),
             ));
             for (plugin_id, plugin_items) in contributed {
                 for it in plugin_items {
-                    let key = format!("plugin:{}|{}", plugin_id, it.id);
                     items.push(
                         crate::view::popup::PopupListItem::new(format!("    {}", it.label))
-                            .with_data(key.clone()),
+                            .with_data(format!("plugin:{}|{}", plugin_id, it.id)),
                     );
-                    action_keys.push((key, it.label.clone()));
                 }
             }
         }
 
-        // Trailing Dismiss row — gives users an on-screen way out of
-        // the popup without having to know that Esc works. The key
-        // label is looked up from the keybinding resolver so a
-        // rebound PopupCancel stays visible in the row label
-        // ("Dismiss (Q)", etc.). Falls back to "Esc" as the usual
-        // default if the resolver has no binding at all (unusual,
-        // but we don't want an empty parenthetical).
+        // Trailing Dismiss row — an on-screen way out for users who don't know
+        // Esc works. The key label comes from the keybinding resolver so a
+        // rebound PopupCancel stays visible ("Dismiss (Q)", etc.), falling back
+        // to "Esc".
         let cancel_binding = self
             .keybindings
             .read()
@@ -549,58 +552,45 @@ impl Editor {
                 )
             })
             .unwrap_or_else(|| "Esc".to_string());
-        let cancel_key = "cancel_popup".to_string();
         items.push(
-            crate::view::popup::PopupListItem::new(format!("    Dismiss ({})", cancel_binding))
-                .with_data(cancel_key.clone()),
+            crate::view::popup::PopupListItem::new(format!("    Dismiss ({cancel_binding})"))
+                .with_data("cancel_popup".to_string()),
         );
-        action_keys.push((cancel_key, format!("Dismiss ({})", cancel_binding)));
-        // `action_keys` is no longer kept on the editor — each list
-        // item already carries its action key in its `data` field, and
-        // the `LspStatus` resolver on the popup tells confirm how to
-        // interpret that data. The local binding is retained only to
-        // keep the existing construction logic unchanged; it falls out
-        // of scope with the rest.
-        let _ = action_keys;
+    }
 
-        // Pin the popup width up-front, using the *worst-case* widths for
-        // any row that varies at runtime (the progress line).  This keeps
-        // the popup from jittering when progress messages come and go or
-        // change length — the whole point of the spinner + live-refresh
-        // pair is that the UI should look stable while the LSP churns.
-        //
-        //   worst-case progress line =
-        //     "    ⏳ " (4-space indent + ⏳ (2 cells) + space = 7 cells)
-        //     + PROGRESS_FIELD_MAX   (title)
-        //     + " · "                (3 cells)
-        //     + PROGRESS_FIELD_MAX   (message)
-        //     + " (100%)"            (7 cells)
-        //   = 7 + 14 + 3 + 14 + 7 = 45 cells
-        const PROGRESS_LINE_MAX: usize = 7 + PROGRESS_FIELD_MAX + 3 + PROGRESS_FIELD_MAX + 7;
+    /// Pin the popup width (using worst-case widths so it doesn't jitter),
+    /// choose the anchor + initial selection, and show the assembled `items`
+    /// as the LSP-status list popup on the active buffer.
+    fn present_lsp_status_popup(
+        &mut self,
+        language: &str,
+        items: Vec<crate::view::popup::PopupListItem>,
+        focused: bool,
+    ) {
+        use crate::view::popup::{Popup, PopupContent, PopupKind, PopupResolver};
+        use ratatui::style::Style;
+
         let max_static_item_width = items
             .iter()
             .map(|i| unicode_width::UnicodeWidthStr::width(i.text.as_str()))
             .max()
             .unwrap_or(20);
-        let popup_width =
-            (max_static_item_width.max(PROGRESS_LINE_MAX) as u16 + 4).clamp(30, POPUP_WIDTH_MAX);
+        let popup_width = (max_static_item_width.max(LSP_PROGRESS_LINE_MAX) as u16 + 4)
+            .clamp(30, LSP_POPUP_WIDTH_MAX);
 
-        // Pre-select the first actionable item (skip header items with no
-        // data and disabled items like a non-existent View Log).
+        // Pre-select the first actionable item (skip header items with no data
+        // and disabled items like a non-existent View Log).
         let first_actionable = items
             .iter()
             .position(|i| i.data.is_some() && !i.disabled)
             .unwrap_or(0);
 
-        // Left-align the popup's column with the LSP indicator on the
-        // status bar, if we know where it was drawn in the last frame.
-        // Falls back to the previous BottomRight anchor when the LSP
-        // segment isn't visible (e.g. first render). `status_row` comes
-        // from the same cached layout so the popup hugs the status bar
-        // even in prompt-auto-hide mode.
+        // Left-align the popup's column with the LSP indicator on the status
+        // bar, if we know where it was drawn in the last frame. Falls back to
+        // the BottomRight anchor when the LSP segment isn't visible.
         let position = self
             .active_chrome()
-            .status_bar_lsp_area
+            .status_bar_clickable_area(crate::view::ui::status_bar::StatusBarClickable::Lsp)
             .map(
                 |(status_row, col_start, _)| crate::view::popup::PopupPosition::AboveStatusBarAt {
                     x: col_start,
@@ -609,9 +599,6 @@ impl Editor {
             )
             .unwrap_or(crate::view::popup::PopupPosition::BottomRight);
 
-        use crate::view::popup::{Popup, PopupContent, PopupKind, PopupResolver};
-        use ratatui::style::Style;
-
         let focus_hint = if !focused {
             self.popup_focus_key_hint()
         } else {
@@ -619,7 +606,7 @@ impl Editor {
         };
         let popup = Popup {
             kind: PopupKind::List,
-            title: Some(format!("LSP Servers ({})", language)),
+            title: Some(format!("LSP Servers ({language})")),
             description: None,
             transient: false,
             content: PopupContent::List {
@@ -635,9 +622,8 @@ impl Editor {
             scroll_offset: 0,
             text_selection: None,
             accept_key_hint: None,
-            // This is the LSP status popup — mark it so confirm/cancel
-            // routes through handle_lsp_status_action regardless of what
-            // other popups are on screen.
+            // Mark this as the LSP status popup so confirm/cancel routes through
+            // handle_lsp_status_action regardless of what else is on screen.
             resolver: PopupResolver::LspStatus,
             focused,
             focus_key_hint: focus_hint,
@@ -766,7 +752,39 @@ impl Editor {
             }
         }
 
-        if !override_handled {
+        // Core-driven FailedAttach: a dormant remote workspace whose
+        // dive-triggered reconnect failed (recorded on the window, not via the
+        // plugin override). Offer a generic Retry (re-run the core reconnect)
+        // and a Dismiss that clears the error — independent of the
+        // devcontainer-specific override path above.
+        let core_failed_attach = !override_handled
+            && self
+                .active_window()
+                .remote_reconnect_error
+                .as_deref()
+                .is_some();
+        if core_failed_attach {
+            let err = self
+                .active_window()
+                .remote_reconnect_error
+                .clone()
+                .unwrap_or_default();
+            title = if err.is_empty() {
+                "Remote: Reconnect failed".to_string()
+            } else {
+                format!("Remote: Reconnect failed — {err}")
+            };
+            items.push(
+                PopupListItem::new("    Retry".to_string())
+                    .with_data("retry_reconnect".to_string()),
+            );
+            items.push(
+                PopupListItem::new("    Reopen Locally".to_string())
+                    .with_data("clear_reconnect_error".to_string()),
+            );
+        }
+
+        if !override_handled && !core_failed_attach {
             match (connection.as_deref(), is_disconnected) {
                 // Connected authority (container or SSH), not disconnected.
                 (Some(label), false) => {
@@ -810,6 +828,22 @@ impl Editor {
                 // Disconnected — warn and offer fallbacks.
                 (Some(_), true) => {
                     title = "Remote: Disconnected".to_string();
+                    // Offer Reconnect for a live remote-agent (SSH/kube) window:
+                    // its backend can be rebuilt from the stored
+                    // `RemoteAgentSpec`, re-pointing this window's authority and
+                    // respawning its dead terminal over the new link. Container
+                    // (`Plugin`) windows reconnect through their owning plugin
+                    // (`devcontainer up`), not here, so they don't get this row.
+                    let is_remote_agent = matches!(
+                        self.active_window().authority_spec,
+                        crate::services::authority::SessionAuthoritySpec::RemoteAgent(_)
+                    );
+                    if is_remote_agent {
+                        items.push(
+                            PopupListItem::new("    Reconnect".to_string())
+                                .with_data("reconnect".to_string()),
+                        );
+                    }
                     items.push(
                         PopupListItem::new("    Go Local".to_string())
                             .with_data("detach".to_string()),
@@ -873,7 +907,9 @@ impl Editor {
         // even in prompt-auto-hide mode.
         let position = self
             .active_chrome()
-            .status_bar_remote_area
+            .status_bar_clickable_area(
+                crate::view::ui::status_bar::StatusBarClickable::RemoteIndicator,
+            )
             .map(
                 |(status_row, col_start, _)| crate::view::popup::PopupPosition::AboveStatusBarAt {
                     x: col_start,
@@ -926,6 +962,111 @@ impl Editor {
         }
     }
 
+    /// Show the read-only indicator menu, anchored to the status bar's
+    /// `{read_only}` segment. Offers to enable editing (which dispatches
+    /// `Action::ToggleReadOnly`). Toggles closed on a second click, mirroring
+    /// the LSP / remote menus.
+    pub fn show_read_only_popup(&mut self) {
+        use crate::view::popup::{
+            Popup, PopupContent, PopupKind, PopupListItem, PopupPosition, PopupResolver,
+        };
+        use ratatui::style::Style;
+
+        // Second click on the indicator closes the menu instead of rebuilding.
+        if self
+            .active_state()
+            .popups
+            .top()
+            .is_some_and(|p| matches!(p.resolver, PopupResolver::ReadOnly))
+        {
+            self.hide_popup();
+            return;
+        }
+        // Not a toggle-close: clear any other menu popup left open so this one
+        // never renders over a stale popup (#1941).
+        self.dismiss_menu_popups_for_prompt();
+
+        let items = vec![
+            PopupListItem::new(format!("    {}", t!("read_only.menu.enable_editing")))
+                .with_data("toggle_read_only".to_string()),
+            PopupListItem::new(format!("    {}", t!("read_only.menu.cancel")))
+                .with_data("cancel".to_string()),
+        ];
+
+        let position = self
+            .active_chrome()
+            .status_bar_clickable_area(crate::view::ui::status_bar::StatusBarClickable::ReadOnly)
+            .map(
+                |(status_row, col_start, _)| PopupPosition::AboveStatusBarAt {
+                    x: col_start,
+                    status_row,
+                },
+            )
+            .unwrap_or(PopupPosition::BottomRight);
+
+        let popup_width = (items
+            .iter()
+            .map(|i| unicode_width::UnicodeWidthStr::width(i.text.as_str()))
+            .max()
+            .unwrap_or(24)
+            + 4) as u16;
+
+        let popup = Popup {
+            kind: PopupKind::List,
+            title: Some(t!("read_only.menu.title").to_string()),
+            description: None,
+            transient: false,
+            content: PopupContent::List { items, selected: 0 },
+            position,
+            width: popup_width.clamp(28, 50),
+            max_height: 10,
+            bordered: true,
+            border_style: Style::default().fg(self.theme.read().unwrap().popup_border_fg),
+            background_style: Style::default().bg(self.theme.read().unwrap().popup_bg),
+            scroll_offset: 0,
+            text_selection: None,
+            accept_key_hint: None,
+            resolver: PopupResolver::ReadOnly,
+            // Explicitly invoked from the status-bar `{read_only}` element, so
+            // this popup wants the keyboard immediately.
+            focused: true,
+            focus_key_hint: None,
+        };
+
+        let buffer_id = self.active_buffer();
+        if let Some(state) = self
+            .windows
+            .get_mut(&self.active_window)
+            .map(|w| &mut w.buffers)
+            .expect("active window present")
+            .get_mut(&buffer_id)
+        {
+            state.popups.show(popup);
+        }
+    }
+
+    /// Dispatch the action selected from the read-only indicator menu.
+    /// `"toggle_read_only"` flips the buffer's read-only state (enabling
+    /// editing); `"cancel"` is a no-op (the popup already closed).
+    pub fn handle_read_only_menu_action(&mut self, action_key: &str) {
+        match action_key {
+            "toggle_read_only" => {
+                if let Err(e) =
+                    self.handle_action(crate::input::keybindings::Action::ToggleReadOnly)
+                {
+                    tracing::warn!("read-only menu: toggling read-only failed: {}", e);
+                }
+            }
+            "cancel" => {}
+            other => {
+                tracing::warn!(
+                    "handle_read_only_menu_action: unknown action key '{}'",
+                    other
+                );
+            }
+        }
+    }
+
     /// Dispatch the action selected from the Remote Indicator popup.
     ///
     /// - `"detach"` — `clear_authority()` (falls back to local).
@@ -946,6 +1087,29 @@ impl Editor {
         }
         if action_key == "clear_override" {
             self.remote_indicator_override = None;
+            return;
+        }
+        if action_key == "reconnect" || action_key == "retry_reconnect" {
+            // Reconnect the active window's remote backend on explicit request:
+            // the Disconnected popup's "Reconnect" row and the FailedAttach
+            // "Retry" row both land here. `force_reconnect_remote_session`
+            // clears any recorded error up front (so the indicator flips to
+            // "Connecting"), forces the connect even for a *live* window whose
+            // stale keepalive is still parked, and is a no-op for a non-remote
+            // workspace. The reconnect path is plugins-gated (remote sessions
+            // are created through the orchestrator plugin), so this is a no-op
+            // in a plugins-less build.
+            #[cfg(feature = "plugins")]
+            self.force_reconnect_remote_session(self.active_window);
+            return;
+        }
+        if action_key == "clear_reconnect_error" {
+            // "Reopen Locally" / dismiss: drop the failed-reconnect error so the
+            // indicator stops showing FailedAttach. The workspace keeps its
+            // remote `authority_spec`, so a later dive still retries the connect.
+            if let Some(w) = self.windows.get_mut(&self.active_window) {
+                w.remote_reconnect_error = None;
+            }
             return;
         }
         if action_key == "cancel_popup" {
@@ -983,24 +1147,23 @@ impl Editor {
     pub fn maybe_prompt_workspace_trust(&mut self) {
         // Phase 1 of the trust+env+devcontainer UX plan (see
         // `docs/internal/trust-env-devcontainer-ux-plan.md`): when the
-        // workspace is undecided AND has executable content, two paths:
+        // workspace is undecided AND has executable content, the core trust
+        // modal is the *single* trust prompt for every kind of marker —
+        // env-shell (`.envrc`/`mise.toml`/`.tool-versions`), project
+        // manifests, devcontainer config, .NET solution/project files. It is
+        // shown with concrete framing: the popup names the *specific* markers
+        // that triggered it (Cargo.toml, build.rs, .envrc, App.sln…) rather
+        // than the abstract "this project can run code on your machine." The
+        // workspace starts Restricted while waiting for the user to choose.
         //
-        // - The folder has env-shell markers (`.envrc`/`mise.toml`/
-        //   `.tool-versions`) — start as Restricted and let the
-        //   env-manager plugin's combined "Trust this folder and
-        //   activate?" popup do the asking, because that prompt is the
-        //   most concrete framing of the decision (it names the
-        //   specific env). The user's "Trust & activate" choice
-        //   dispatches `workspace_trust_trust`, which records the
-        //   decision and raises the level to Trusted.
-        //
-        // - Any other executable content (project manifests, devcontainer-
-        //   only, .NET solution/project files, …) — fire the core trust
-        //   modal here, with concrete framing: the popup names the
-        //   *specific* markers that triggered it (Cargo.toml, build.rs,
-        //   App.sln, devcontainer.json…) rather than the abstract
-        //   "this project can run code on your machine." Start as
-        //   Restricted while waiting for the user to choose.
+        // Previously env-shell folders were carved out here so the
+        // env-manager plugin could surface its own combined "Trust this
+        // folder and activate?" popup — a *second* trust UI for the same
+        // decision, which is exactly the duplication users hit. Now the
+        // plugin no longer asks the trust question: it activates the env as a
+        // *consequence* of trust, driven by the `trust_changed` hook this
+        // editor fires when the level changes (see env-manager.ts). One
+        // decision, one prompt, one place it is recorded.
         //
         // A decision the user explicitly recorded is always honored — this
         // branch only fires for undecided projects.
@@ -1014,55 +1177,42 @@ impl Editor {
         let markers =
             crate::services::workspace_trust::executable_content_markers(self.working_dir());
 
-        // Categorize the markers so we can route to the right surface.
-        // Path-only envs (`.venv`, `venv`) are not modeled as a
-        // "would-run-shell" question — activation is a `PATH` prepend,
-        // not arbitrary user shell. The North Star treats them as
-        // "Cheap actions don't ask": auto-activate silently, undo via
-        // status pill. So path-only env *alone* doesn't trigger any
-        // prompt; we hand the workspace to env-manager as Trusted.
-        let path_only_env_markers = [".venv", "venv"];
-        let env_shell_markers = [".envrc", "mise.toml", ".mise.toml", ".tool-versions"];
-        let only_path_only_env = !markers.is_empty()
-            && markers
-                .iter()
-                .all(|m| path_only_env_markers.contains(&m.as_str()));
-        let has_env_shell = markers
-            .iter()
-            .any(|m| env_shell_markers.contains(&m.as_str()));
-
-        if markers.is_empty() || only_path_only_env {
-            // Nothing genuinely needs gating. Default to Trusted so the
-            // restricted chip doesn't appear, env-manager auto-activates
-            // any path-only env silently, and the user isn't blocked on
-            // a question that has no real downside. Persist this — it's
-            // the same decision we'd record if the user had explicitly
-            // confirmed.
+        if markers.is_empty() {
+            // Nothing executable to gate (plain text/docs). Trust silently so
+            // the restricted chip doesn't appear and the user isn't blocked on
+            // a question with no real downside. Persist it — same decision we'd
+            // record if the user had explicitly confirmed.
             self.authority()
                 .workspace_trust
                 .set_level(crate::services::workspace_trust::TrustLevel::Trusted);
             return;
         }
 
-        // For env-shell and other executable content, seed Restricted
-        // *in memory only* — `set_level_transient` does not write to
-        // disk. The on-disk store stays undecided until the user picks
-        // a concrete option in the surfaced prompt. That preserves the
-        // contract: cancelling (quit) leaves the project undecided so
-        // the prompt fires again next time, while any deliberate
-        // choice (env-manager's "Trust & activate" / "Never here" or
-        // the core modal's three radios) writes the decision through
-        // via `set_level`.
+        // All executable content — including a *bare* `.venv`/`venv` — goes
+        // through the trust decision. A virtualenv is a module-namespace
+        // boundary, NOT a security boundary: activating it runs the repo's
+        // interpreter, which auto-executes any `.pth`/`sitecustomize.py` shipped
+        // inside the venv (a documented malware-drop vector), so its mere
+        // presence must not silently grant trust. "Path-only" still governs how
+        // it *activates* — silently, with no second prompt, once the workspace
+        // is trusted (see env-manager) — it just no longer exempts the folder
+        // from the trust decision itself.
+
+        // Seed Restricted *in memory only* —
+        // `set_level_transient` does not write to disk. The on-disk store
+        // stays undecided until the user picks a concrete option in the
+        // modal. That preserves the contract: cancelling (quit) leaves the
+        // project undecided so the prompt fires again next time, while any
+        // deliberate choice (the modal's three radios) writes the decision
+        // through via `set_level`.
         self.authority()
             .workspace_trust
             .set_level_transient(crate::services::workspace_trust::TrustLevel::Restricted);
 
-        if !has_env_shell {
-            // Non-cancellable on open: the choice has to be made, but
-            // any concrete option resolves it. (`Esc` is inert on the
-            // forced-choice variant; user must pick a row.)
-            self.show_workspace_trust_popup(false);
-        }
+        // Non-cancellable on open: the choice has to be made, but any
+        // concrete option resolves it. (`Esc` is inert on the forced-choice
+        // variant; the user must pick a row.)
+        self.show_workspace_trust_popup(false);
     }
 
     /// Show the workspace-trust prompt: a centered list asking how this
@@ -1299,7 +1449,7 @@ impl Editor {
 
         let mut popup = Popup::markdown(
             &md,
-            &*self.theme.read().unwrap(),
+            &self.theme.read().unwrap(),
             Some(&self.grammar_registry),
         );
         popup.transient = false;

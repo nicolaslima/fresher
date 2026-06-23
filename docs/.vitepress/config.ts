@@ -44,6 +44,7 @@ export default defineConfig({
         text: "Blog",
         link: "/blog/",
         items: [
+          { text: "Fresh 0.4.0", link: "/blog/fresh-0.4.0/" },
           { text: "The Architecture of Fresh", link: "/blog/fresh-pipeline/" },
           { text: "Fresh 0.3.0", link: "/blog/fresh-0.3.0/" },
           { text: "Fresh 0.2.18", link: "/blog/fresh-0.2.18/" },
@@ -71,7 +72,7 @@ export default defineConfig({
           { text: "Encoding", link: "/features/encoding" },
           { text: "Remote Editing (SSH)", link: "/features/ssh" },
           { text: "Devcontainers", link: "/features/devcontainer" },
-          { text: "Session Persistence", link: "/features/session-persistence" },
+          { text: "Daemon Mode", link: "/features/session-persistence" },
           { text: "Keybinding Editor", link: "/features/keybinding-editor" },
           { text: "Dashboard", link: "/features/dashboard" },
         ],

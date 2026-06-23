@@ -199,6 +199,7 @@ pub struct ServerCapabilitySummary {
     pub completion_resolve: bool,
     pub completion_trigger_characters: Vec<String>,
     pub definition: bool,
+    pub implementation: bool,
     pub references: bool,
     pub document_formatting: bool,
     pub document_range_formatting: bool,
@@ -268,6 +269,7 @@ impl ServerCapabilitySummary {
                 }
             }
             "textDocument/definition" => self.definition = register,
+            "textDocument/implementation" => self.implementation = register,
             "textDocument/references" => self.references = register,
             "textDocument/formatting" => self.document_formatting = register,
             "textDocument/rangeFormatting" => self.document_range_formatting = register,
@@ -370,6 +372,7 @@ impl ServerHandle {
             LspFeature::Hover => self.capabilities.hover,
             LspFeature::Completion => self.capabilities.completion,
             LspFeature::Definition => self.capabilities.definition,
+            LspFeature::Implementation => self.capabilities.implementation,
             LspFeature::References => self.capabilities.references,
             LspFeature::Format => {
                 self.capabilities.document_formatting || self.capabilities.document_range_formatting

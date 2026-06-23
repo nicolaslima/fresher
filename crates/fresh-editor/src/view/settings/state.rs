@@ -364,6 +364,67 @@ impl SettingsState {
         );
     }
 
+    fn paths_intersect(a: &str, b: &str) -> bool {
+        if a.is_empty() || b.is_empty() {
+            return a == b;
+        }
+        if a == b {
+            return true;
+        }
+        let a_prefix = format!("{}/", a.trim_end_matches('/'));
+        let b_prefix = format!("{}/", b.trim_end_matches('/'));
+        a.starts_with(&b_prefix) || b.starts_with(&a_prefix)
+    }
+
+    /// True when this JSON pointer has an unsaved change in the current
+    /// Settings session. This is intentionally separate from `item.modified`,
+    /// which tracks whether a value is defined in the target config layer.
+    pub fn path_has_pending_change(&self, path: &str) -> bool {
+        self.pending_changes
+            .keys()
+            .any(|pending| Self::paths_intersect(path, pending))
+            || self
+                .pending_deletions
+                .iter()
+                .any(|pending| Self::paths_intersect(path, pending))
+    }
+
+    pub fn page_has_pending_changes(&self, page_idx: usize) -> bool {
+        let Some(page) = self.pages.get(page_idx) else {
+            return false;
+        };
+        (!page.path.is_empty() && self.path_has_pending_change(&page.path))
+            || page
+                .items
+                .iter()
+                .any(|item| self.path_has_pending_change(&item.path))
+    }
+
+    fn schema_default_for_path(&self, path: &str) -> Option<serde_json::Value> {
+        self.pages
+            .iter()
+            .flat_map(|page| &page.items)
+            .find(|item| item.path == path)
+            .and_then(|item| item.default.clone())
+    }
+
+    /// Return the value this setting had when Settings was opened.
+    ///
+    /// Built-in settings are usually materialized in `original_config`.
+    /// Plugin settings can exist only as schema defaults until the user saves
+    /// an override, so the schema default is part of the original effective
+    /// value for dirty-state comparisons.
+    fn effective_original_value(&self, path: &str) -> Option<serde_json::Value> {
+        self.original_config
+            .pointer(path)
+            .cloned()
+            .or_else(|| self.schema_default_for_path(path))
+    }
+
+    fn value_matches_effective_original(&self, path: &str, value: &serde_json::Value) -> bool {
+        self.effective_original_value(path).as_ref() == Some(value)
+    }
+
     /// Hide the settings panel
     pub fn hide(&mut self) {
         self.visible = false;
@@ -953,9 +1014,7 @@ impl SettingsState {
 
     /// Record a pending change for a setting
     pub fn set_pending_change(&mut self, path: &str, value: serde_json::Value) {
-        // Check if this is the same as the original value
-        let original = self.original_config.pointer(path);
-        if original == Some(&value) {
+        if self.value_matches_effective_original(path, &value) {
             self.pending_changes.remove(path);
         } else {
             self.pending_changes.insert(path.to_string(), value);
@@ -1095,26 +1154,14 @@ impl SettingsState {
     /// read-only / non-modified / no-default fields. The dialog itself
     /// becomes dirty (user_edited = true) so the title flips to
     /// `• modified`, signalling that the parent still owes a save.
-    pub fn reset_focused_entry_field(&mut self) {
-        let Some(dialog) = self.entry_dialog_mut() else {
-            return;
-        };
-        if dialog.focus_on_buttons {
-            return;
+    /// If keyboard focus is on a field's per-field action button
+    /// (`[Reset]`/`[Inherit]`/`[Clear]`), perform it and return true (so
+    /// Enter/Space consume the key). These buttons are reached by Tab.
+    pub fn entry_dialog_activate_focused_field_button(&mut self) -> bool {
+        match self.entry_dialog_mut() {
+            Some(dialog) => dialog.activate_focused_field_button(),
+            None => false,
         }
-        let idx = dialog.selected_item;
-        let Some(item) = dialog.items.get_mut(idx) else {
-            return;
-        };
-        if item.read_only {
-            return;
-        }
-        let Some(default) = item.default.clone() else {
-            return;
-        };
-        update_control_from_value(&mut item.control, &default);
-        item.modified = false;
-        dialog.user_edited = true;
     }
 
     pub fn reset_current_to_default(&mut self) {
@@ -1131,6 +1178,25 @@ impl SettingsState {
         });
 
         if let Some((path, default)) = reset_info {
+            let original_source = self.get_layer_source(&path);
+
+            if original_source != self.target_layer {
+                // The row is only modified because of an unsaved pending edit.
+                // Reset should cancel that edit and return to the inherited
+                // resolved value, not record a no-op deletion against a layer
+                // that did not define the setting in the first place.
+                self.pending_changes.remove(&path);
+                self.pending_deletions.remove(&path);
+                let original = self.effective_original_value(&path).unwrap_or(default);
+                if let Some(item) = self.current_item_mut() {
+                    update_control_from_value(&mut item.control, &original);
+                    item.modified = false;
+                    item.layer_source = original_source;
+                    item.is_null = item.nullable && original.is_null();
+                }
+                return;
+            }
+
             // Mark this path for deletion from the target layer
             self.pending_deletions.insert(path.clone());
             // Remove any pending change for this path
@@ -1236,17 +1302,33 @@ impl SettingsState {
         });
 
         if let Some((path, value)) = change_info {
+            let original_value = self.effective_original_value(&path);
+            let matches_original = original_value.as_ref() == Some(&value);
+            let original_source = self.get_layer_source(&path);
+
             // When user changes a value, it becomes "modified" (defined in target layer)
             // Remove from pending deletions if it was scheduled for removal
             self.pending_deletions.remove(&path);
+            self.set_pending_change(&path, value);
 
             // Update the item's state
             if let Some(item) = self.current_item_mut() {
-                item.modified = true; // New semantic: value is now defined in target layer
-                item.layer_source = target_layer; // Value now comes from target layer
-                item.is_null = false; // Explicit value clears the inherited state
+                if matches_original {
+                    item.modified = !item.is_auto_managed && original_source == target_layer;
+                    item.layer_source = original_source;
+                    item.is_null = item.nullable
+                        && original_value
+                            .as_ref()
+                            .map(|v| v.is_null())
+                            .unwrap_or_else(|| {
+                                item.default.as_ref().map(|d| d.is_null()).unwrap_or(true)
+                            });
+                } else {
+                    item.modified = true; // New semantic: value is now defined in target layer
+                    item.layer_source = target_layer; // Value now comes from target layer
+                    item.is_null = false; // Explicit value clears the inherited state
+                }
             }
-            self.set_pending_change(&path, value);
         }
     }
 
@@ -1542,16 +1624,26 @@ impl SettingsState {
         // If the map doesn't allow adding, it also doesn't allow deleting (auto-managed entries)
         let no_delete = map_state.no_add;
 
+        // Per-field [Reset] targets must be this entry's *built-in* values
+        // (e.g. `languages.html.grammar = "HTML"`), not the generic schema
+        // default for the field type (`""`). Look the entry up in the bundled
+        // default config so Reset restores the right value.
+        let entry_pointer = format!("{}/{}", path, key);
+        let key = key.clone();
+        let value = value.clone();
+
         // Create dialog from schema
-        let dialog = EntryDialogState::from_schema(
-            key.clone(),
-            value,
+        let mut dialog = EntryDialogState::from_schema(
+            key,
+            &value,
             schema,
             path,
             false,
             no_delete,
             &self.available_status_bar_tokens,
         );
+        apply_builtin_defaults(&mut dialog, &entry_pointer);
+        dialog.inheritable_fields = inheritable_fields_for(path);
         self.entry_dialog_stack.push(dialog);
     }
 
@@ -2886,7 +2978,53 @@ impl SettingsState {
 }
 
 /// Update a control's state from a JSON value
-fn update_control_from_value(control: &mut SettingControl, value: &serde_json::Value) {
+/// Field names whose per-entry "set to null" genuinely *inherits* a parent
+/// value (so the button reads `[Inherit]`) rather than just clearing the field
+/// (`[Clear]`). For a `/languages` entry a field inherits when the global
+/// `editor` config has a same-named setting (e.g. `line_wrap`, `tab_size`);
+/// fields with no global fallback (e.g. `formatter`) are clear-only. Other maps
+/// have no such parent scope, so nothing inherits.
+fn inheritable_fields_for(map_path: &str) -> std::collections::HashSet<String> {
+    if map_path == "/languages" {
+        serde_json::to_value(crate::config::EditorConfig::default())
+            .ok()
+            .and_then(|v| {
+                v.as_object().map(|o| {
+                    o.keys()
+                        .cloned()
+                        .collect::<std::collections::HashSet<String>>()
+                })
+            })
+            .unwrap_or_default()
+    } else {
+        std::collections::HashSet::new()
+    }
+}
+
+/// Override each dialog field's `default` with the bundled config's value for
+/// this map entry (e.g. `languages.html.grammar = "HTML"`), so `[Reset]`
+/// restores the built-in per-entry value rather than the generic schema default
+/// for the field type. Falls back to the schema defaults when the entry isn't
+/// in the bundled config (e.g. a brand-new map key).
+fn apply_builtin_defaults(dialog: &mut EntryDialogState, entry_pointer: &str) {
+    let Ok(default_cfg) = serde_json::to_value(Config::default()) else {
+        return;
+    };
+    let Some(entry) = default_cfg.pointer(entry_pointer) else {
+        return;
+    };
+    for item in &mut dialog.items {
+        if item.path == "__key__" {
+            continue;
+        }
+        let field = item.path.trim_start_matches('/');
+        if let Some(v) = entry.get(field) {
+            item.default = Some(v.clone());
+        }
+    }
+}
+
+pub(crate) fn update_control_from_value(control: &mut SettingControl, value: &serde_json::Value) {
     match control {
         SettingControl::Toggle(state) => {
             if let Some(b) = value.as_bool() {
@@ -3073,6 +3211,28 @@ mod tests {
 }
 "#;
 
+    const TEST_SCHEMA_THEME_DEFAULT: &str = r#"
+{
+  "type": "object",
+  "properties": {
+    "theme": {
+      "type": "string",
+      "enum": ["dark", "light", "high-contrast"],
+      "default": "high-contrast"
+    }
+  },
+  "$defs": {}
+}
+"#;
+
+    fn open_theme_dropdown_state() -> SettingsState {
+        let config = test_config();
+        let mut state = SettingsState::new(TEST_SCHEMA_THEME_DEFAULT, &config).unwrap();
+        state.show();
+        state.toggle_focus();
+        state
+    }
+
     #[test]
     fn test_dropdown_toggle() {
         let config = test_config();
@@ -3175,6 +3335,41 @@ mod tests {
             }
         });
         assert_eq!(after_change, after_confirm);
+    }
+
+    #[test]
+    fn dropdown_reverting_to_original_value_clears_pending_and_row_modified() {
+        let mut state = open_theme_dropdown_state();
+
+        state.dropdown_select(0); // dark
+        assert!(state.has_changes());
+        assert!(state.current_item().unwrap().modified);
+
+        state.dropdown_select(2); // high-contrast, matching Config::default()
+        assert!(!state.has_changes());
+        let item = state.current_item().unwrap();
+        assert!(!item.modified);
+        assert_eq!(item.layer_source, ConfigLayer::System);
+    }
+
+    #[test]
+    fn reset_after_unsaved_inherited_dropdown_change_cancels_pending_edit() {
+        let mut state = open_theme_dropdown_state();
+
+        state.dropdown_select(1); // light
+        assert!(state.has_changes());
+        assert!(state.current_item().unwrap().modified);
+
+        state.reset_current_to_default();
+        assert!(!state.has_changes());
+        let item = state.current_item().unwrap();
+        assert!(!item.modified);
+        assert_eq!(item.layer_source, ConfigLayer::System);
+        if let SettingControl::Dropdown(dropdown) = &item.control {
+            assert_eq!(dropdown.selected_value(), Some("high-contrast"));
+        } else {
+            panic!("theme should render as a dropdown");
+        }
     }
 
     #[test]

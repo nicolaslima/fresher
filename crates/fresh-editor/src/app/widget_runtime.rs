@@ -13,6 +13,27 @@ use crate::model::event::{BufferId, LeafId, SplitId};
 
 use super::Editor;
 
+/// Render a floating panel's spec, choosing the marker-gutter
+/// renderer when the panel opted into the `▸ ` focus marker (the
+/// Orchestrator New Session form) and the plain renderer otherwise.
+/// Centralised so the mount / update / rerender paths can't drift on
+/// which renderer a given panel uses. Lives here (not in the
+/// `plugins`-gated `plugin_dispatch`) so the non-plugin rerender path
+/// can call it in plugin-less builds.
+pub(super) fn render_floating_spec(
+    focus_marker: bool,
+    spec: &fresh_core::api::WidgetSpec,
+    prev: &std::collections::HashMap<String, crate::widgets::WidgetInstanceState>,
+    prev_focus_key: &str,
+    panel_width: u32,
+) -> crate::widgets::RenderOutput {
+    if focus_marker {
+        crate::widgets::render_spec_with_marker(spec, prev, prev_focus_key, panel_width)
+    } else {
+        crate::widgets::render_spec(spec, prev, prev_focus_key, panel_width)
+    }
+}
+
 /// Walk a `Tree`'s flat `nodes` and return the absolute indices of
 /// nodes that are currently visible — i.e. every ancestor is in
 /// `expanded`. Mirrors the renderer's filter so dispatcher and
@@ -84,6 +105,76 @@ pub(super) fn translate_plugin_animation_kind(
 }
 
 impl Editor {
+    /// Process a resolved widget hit (from a TUI cell click or a native-frontend
+    /// click): move focus to the clicked widget, apply host-owned state changes
+    /// (tree expand / list selection) and fire the plugin's `widget_event`. This
+    /// is the single dispatch path shared by the buffer-cell click handler and
+    /// the web `/widget` route, so a click delivers identical behaviour in both.
+    pub(crate) fn deliver_widget_hit(
+        &mut self,
+        panel_key: &crate::widgets::PanelKey,
+        hit: &crate::widgets::HitArea,
+    ) {
+        // Click-to-focus: if the clicked widget has a stable, tabbable key, move
+        // focus there before firing the event so the next render reflects it.
+        if !hit.widget_key.is_empty() {
+            let is_tabbable = self
+                .widget_registry
+                .get(panel_key)
+                .map(|p| p.tabbable.iter().any(|k| k == &hit.widget_key))
+                .unwrap_or(false);
+            if is_tabbable {
+                self.set_panel_focus_and_notify(panel_key, hit.widget_key.clone());
+            }
+            self.rerender_widget_panel(panel_key);
+        }
+        // Tree disclosure click: the host owns expansion state, so toggle it
+        // (the toggle handler fires its own `expand` event with the post-toggle
+        // state). Tree row-body (`select`) and other kinds fall through.
+        let mut handled_specially = false;
+        if hit.widget_kind == "tree" && hit.event_type == "expand" {
+            if let Some(item_key) = hit.payload.get("key").and_then(|v| v.as_str()) {
+                self.handle_widget_tree_expand_toggle(panel_key, &hit.widget_key, item_key);
+                handled_specially = true;
+            }
+        }
+        // List row click: the host owns the List's selected index; a click only
+        // yields a `select` hit, so sync the selection (and repaint) then fall
+        // through to fire `select` with the List's *spec* key (per-item key stays
+        // in payload) — identical to keyboard nav.
+        let mut event_widget_key = hit.widget_key.clone();
+        if hit.widget_kind == "list" && hit.event_type == "select" {
+            if let Some(list_key) = hit.payload.get("list_key").and_then(|v| v.as_str()) {
+                event_widget_key = list_key.to_string();
+                if let Some(idx) = hit.payload.get("index").and_then(|v| v.as_i64()) {
+                    self.set_widget_list_selected_index(panel_key, list_key, idx as i32);
+                }
+            }
+        }
+        if !handled_specially {
+            self.fire_widget_event(
+                panel_key,
+                event_widget_key,
+                hit.event_type.to_string(),
+                hit.payload.clone(),
+            );
+        }
+    }
+
+    /// Native-frontend entry point: deliver the hit at `hit_index` in panel
+    /// `(plugin, panel_id)`'s recorded hit list — the same hits `widgets_view`
+    /// shipped to the frontend. Runs the shared `deliver_widget_hit` path.
+    pub fn deliver_widget_hit_by_index(&mut self, plugin: &str, panel_id: u64, hit_index: usize) {
+        let panel_key = crate::widgets::PanelKey::new(plugin, panel_id);
+        let hit = self
+            .widget_registry
+            .get(&panel_key)
+            .and_then(|p| p.hits.get(hit_index).cloned());
+        if let Some(hit) = hit {
+            self.deliver_widget_hit(&panel_key, &hit);
+        }
+    }
+
     /// Deliver a `widget_event` hook to the plugin owning `panel_key` —
     /// and to that plugin only. Panel ids are plugin-local, so the event
     /// carries the bare id; no other plugin ever sees it.
@@ -233,7 +324,16 @@ impl Editor {
             } else {
                 self.widget_panel_width(buffer_id)
             };
-            let out = crate::widgets::render_spec(spec, &prev, &prev_focus, panel_width);
+            // Floating panels that opted into the focus-marker gutter
+            // (the Orchestrator New Session form) must re-render
+            // through the same marker renderer on every host-driven
+            // refresh — otherwise a Tab / focus advance would repaint
+            // the panel without the gutter and the layout would jump.
+            let focus_marker = panel_slot
+                .and_then(|slot| self.panel(slot))
+                .map(|f| f.focus_marker)
+                .unwrap_or(false);
+            let out = render_floating_spec(focus_marker, spec, &prev, &prev_focus, panel_width);
             (buffer_id, is_floating, panel_width, out)
         };
         let _ = panel_width;
@@ -312,11 +412,6 @@ impl Editor {
             None => return,
         };
         let focus_key = panel.focus_key.clone();
-        let widget = if focus_key.is_empty() {
-            None
-        } else {
-            crate::widgets::find_widget_by_key(&panel.spec, &focus_key)
-        };
         // Completion-popup short-circuit: when the focused Text
         // widget has an open completion popup, intercept Tab /
         // Up / Down / Enter / Esc so they drive the popup instead
@@ -330,14 +425,6 @@ impl Editor {
             && self.focused_text_completions_open(panel_key);
         if completions_open {
             match key {
-                "Tab" => {
-                    self.fire_completion_accept(panel_key);
-                    // The plugin's accept handler typically calls
-                    // setValue + (maybe) setCompletions — those
-                    // mutations re-render on their own, so we
-                    // don't force a render here.
-                    return;
-                }
                 "Up" => {
                     self.move_focused_text_completion_index(panel_key, -1);
                     // Selection moved host-side; force a repaint
@@ -352,14 +439,57 @@ impl Editor {
                     self.rerender_widget_panel(panel_key);
                     return;
                 }
-                "Enter" | "Escape" => {
+                "Escape" => {
+                    // First Esc only closes the popup — the form stays
+                    // open. (A second Esc, with no popup, cancels.)
                     self.dismiss_focused_text_completions(panel_key);
                     self.rerender_widget_panel(panel_key);
                     return;
                 }
+                "Enter" => {
+                    if self.focused_text_completion_navigated(panel_key) {
+                        // The user stepped into the dropdown and Enter
+                        // accepts the highlighted candidate.
+                        self.fire_completion_accept(panel_key);
+                        return;
+                    }
+                    // Not navigated: the dropdown must not swallow the
+                    // submit. Close it, then fall through so Enter acts
+                    // on the form (advance / submit) below.
+                    self.dismiss_focused_text_completions(panel_key);
+                }
+                "Tab" => {
+                    if self.focused_text_completion_navigated(panel_key) {
+                        // The user stepped into the dropdown (↑/↓/wheel)
+                        // so a row is highlighted — Tab applies it and
+                        // closes the popup, just like Enter. Focus stays
+                        // on the field so the accepted value is visible
+                        // and editable (a second Tab then advances).
+                        self.fire_completion_accept(panel_key);
+                        return;
+                    }
+                    // Nothing highlighted (a freshly surfaced popup): Tab
+                    // commits the typed text and moves focus. Close the
+                    // popup, then fall through to the focus-advance
+                    // dispatch below.
+                    self.dismiss_focused_text_completions(panel_key);
+                }
                 _ => {}
             }
         }
+        // Re-fetch the focused widget for the main dispatch: the
+        // completion block above may have run `&mut self` (dismissing a
+        // popup), so we can't hold a borrow from before it. The spec is
+        // unchanged by a dismiss, so this resolves to the same widget.
+        let panel = match self.widget_registry.get(panel_key) {
+            Some(p) => p,
+            None => return,
+        };
+        let widget = if focus_key.is_empty() {
+            None
+        } else {
+            crate::widgets::find_widget_by_key(&panel.spec, &focus_key)
+        };
         match key {
             "Tab" => self.handle_widget_focus_advance(panel_key, 1),
             "Shift+Tab" => self.handle_widget_focus_advance(panel_key, -1),
@@ -655,6 +785,28 @@ impl Editor {
         )
     }
 
+    /// Has the user explicitly stepped into the focused Text widget's
+    /// open completion popup (via ↑/↓ / wheel)? Drives the Tab/Enter
+    /// dispatch: only a *navigated* popup accepts on Enter — a freshly
+    /// surfaced one lets Enter act on the form instead.
+    fn focused_text_completion_navigated(&self, panel_key: &crate::widgets::PanelKey) -> bool {
+        let panel = match self.widget_registry.get(panel_key) {
+            Some(p) => p,
+            None => return false,
+        };
+        if panel.focus_key.is_empty() {
+            return false;
+        }
+        matches!(
+            panel.instance_states.get(&panel.focus_key),
+            Some(crate::widgets::WidgetInstanceState::Text {
+                completions,
+                completion_navigated,
+                ..
+            }) if !completions.is_empty() && *completion_navigated
+        )
+    }
+
     /// Move the selected-index cursor of the focused Text widget's
     /// completion popup by `delta` (Up = -1, Down = +1). Clamps
     /// at the ends rather than wrapping — Down past the last
@@ -704,10 +856,19 @@ impl Editor {
             completions,
             completion_selected_index,
             completion_scroll_offset,
+            completion_navigated,
             ..
         }) = panel.instance_states.get_mut(&focus_key)
         {
             if completions.is_empty() {
+                return;
+            }
+            // The first ↑/↓ *enters* the dropdown: flip `navigated`
+            // and select the current (top) row without moving, so the
+            // user lands on a sensible candidate instead of skipping
+            // the first one. Subsequent presses move the selection.
+            if !*completion_navigated {
+                *completion_navigated = true;
                 return;
             }
             let max = (completions.len() - 1) as i32;
@@ -1163,12 +1324,16 @@ impl Editor {
         if let Some(crate::widgets::WidgetInstanceState::Text {
             completions,
             completion_scroll_offset,
+            completion_navigated,
             ..
         }) = panel.instance_states.get_mut(&focus_key)
         {
             if completions.is_empty() {
                 return;
             }
+            // Scrolling the popup with the wheel counts as stepping
+            // into it — Enter should then accept the highlighted row.
+            *completion_navigated = true;
             let total = completions.len() as u32;
             let max_scroll = total.saturating_sub(visible.min(total));
             let next = (*completion_scroll_offset as i32 + delta).clamp(0, max_scroll as i32);
@@ -1749,6 +1914,7 @@ impl Editor {
                 completions: Vec::new(),
                 completion_selected_index: 0,
                 completion_scroll_offset: 0,
+                completion_navigated: false,
             },
         );
         true

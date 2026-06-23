@@ -8,8 +8,72 @@ use super::items::{
 };
 use super::schema::{SettingSchema, SettingType};
 use crate::view::controls::{FocusState, TextInputState};
+use rust_i18n::t;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+
+/// A per-field action affordance rendered at the right edge of a field's row.
+///
+/// These target different values:
+/// * `Reset` sets the field to its *built-in default* (the value the bundled
+///   config ships for this entry).
+/// * `Inherit` sets the field to `null`. It renders as `[Inherit]` when null
+///   falls back to a parent-scope value (e.g. a per-language `line_wrap`
+///   inheriting `editor.line_wrap`), or `[Clear]` when there's no such fallback
+///   and null just unsets the field (e.g. a `formatter`). See
+///   [`EntryDialogState::field_action_buttons`].
+///
+/// A field only offers the action(s) that lead to a *different* result, so a
+/// nullable field whose built-in default is itself `null` shows only the
+/// Inherit/Clear button (Reset would be identical), while a plain field with a
+/// built-in default and no inheritance chain shows only `Reset`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldAction {
+    /// Set the field to its built-in default value.
+    Reset,
+    /// Set the field to `null` — inherit a parent value, or clear it when there
+    /// is no parent to inherit from.
+    Inherit,
+}
+
+/// Simple scalar controls whose per-field action buttons join the Tab order.
+/// Composite controls (lists, maps, JSON) keep their own internal navigation,
+/// so their inherit affordance stays mouse-only.
+fn is_simple_field_control(control: &SettingControl) -> bool {
+    matches!(
+        control,
+        SettingControl::Toggle(_)
+            | SettingControl::Number(_)
+            | SettingControl::Text(_)
+            | SettingControl::Dropdown(_)
+    )
+}
+
+/// Lay out right-aligned per-field action buttons against `right_edge`
+/// (exclusive). Returns `(action, x, width)` left to right, with a one-column
+/// gap between buttons and a one-column margin at the right edge. Shared by the
+/// renderer and the click hit-tester so their geometry can't drift.
+pub fn layout_field_action_buttons(
+    buttons: &[(FieldAction, String)],
+    right_edge: u16,
+) -> Vec<(FieldAction, u16, u16)> {
+    if buttons.is_empty() {
+        return Vec::new();
+    }
+    let widths: Vec<u16> = buttons
+        .iter()
+        .map(|(_, label)| label.chars().count() as u16)
+        .collect();
+    let gaps = buttons.len().saturating_sub(1) as u16;
+    let total: u16 = widths.iter().sum::<u16>() + gaps + 1;
+    let mut x = right_edge.saturating_sub(total);
+    let mut out = Vec::with_capacity(buttons.len());
+    for ((action, _), w) in buttons.iter().zip(widths) {
+        out.push((*action, x, w));
+        x = x.saturating_add(w + 1);
+    }
+    out
+}
 
 /// State for the entry detail dialog
 #[derive(Debug, Clone)]
@@ -64,6 +128,19 @@ pub struct EntryDialogState {
     /// indicator + the Esc discard prompt without relying on a
     /// JSON-equality check that's too noisy at the schema layer.
     pub user_edited: bool,
+    /// When `Some(i)`, keyboard focus is on the i-th per-field action button
+    /// (`[Reset]`/`[Inherit]`/`[Clear]`) of the currently selected field rather
+    /// than on the field's control — `i` indexes [`field_action_buttons`]. Tab
+    /// moves onto these buttons and Enter/Space activates them; it is the only
+    /// keyboard path to the per-field actions.
+    pub field_button_focus: Option<usize>,
+    /// Field names (item path without the leading `/`) that genuinely *inherit*
+    /// from a parent scope when unset — e.g. a per-language `line_wrap` falls
+    /// back to the global `editor.line_wrap`. For these the per-field "set to
+    /// null" button is labelled `[Inherit]`; for everything else (a `formatter`
+    /// with no global fallback) it's labelled `[Clear]`, since null just unsets
+    /// the value rather than inheriting one. Empty means "nothing inherits".
+    pub inheritable_fields: HashSet<String>,
 }
 
 impl EntryDialogState {
@@ -167,6 +244,8 @@ impl EntryDialogState {
             is_single_value,
             is_array_item: false,
             user_edited: false,
+            field_button_focus: None,
+            inheritable_fields: HashSet::new(),
         };
         // Pre-focus the first item in any ObjectArray controls so pressing
         // Enter opens the item editor instead of "Add new".
@@ -245,6 +324,8 @@ impl EntryDialogState {
             is_single_value: false,
             is_array_item: true,
             user_edited: false,
+            field_button_focus: None,
+            inheritable_fields: HashSet::new(),
         }
     }
 
@@ -330,6 +411,162 @@ impl EntryDialogState {
         self.user_edited = true;
     }
 
+    /// Mark the *focused field* as explicitly edited: flags the dialog dirty
+    /// and clears the field's inherited state. Once the user gives a field a
+    /// value of their own it is no longer inherited, so `to_value` persists it
+    /// and the row shows a definite value rather than the neutral inherited
+    /// chip. Call this from value-changing mutators (not cursor moves).
+    fn mark_field_edited(&mut self) {
+        self.user_edited = true;
+        if let Some(item) = self.current_item_mut() {
+            item.is_null = false;
+            if let SettingControl::Toggle(state) = &mut item.control {
+                state.inherited = false;
+            }
+        }
+    }
+
+    /// Reset the field at `idx` to *inherited* (unset). The value falls back to
+    /// the global/default layer again: the row renders the neutral inherited
+    /// chip / `(Inherited)` badge and `to_value` omits the field. Returns true
+    /// if anything changed. No-op for read-only, non-nullable, or
+    /// already-inherited fields.
+    pub fn inherit_field(&mut self, idx: usize) -> bool {
+        let Some(item) = self.items.get_mut(idx) else {
+            return false;
+        };
+        if item.read_only || !item.nullable || item.is_null {
+            return false;
+        }
+        item.is_null = true;
+        item.modified = false;
+        if let SettingControl::Toggle(state) = &mut item.control {
+            state.inherited = true;
+        }
+        self.user_edited = true;
+        true
+    }
+
+    /// Reset the field at `idx` to its built-in default value. Returns true if
+    /// anything changed. No-op unless `reset_distinct_default` reports a
+    /// distinct, non-inherited default to reset to.
+    pub fn reset_field(&mut self, idx: usize) -> bool {
+        let Some(default) = self.reset_distinct_default(idx) else {
+            return false;
+        };
+        let Some(item) = self.items.get_mut(idx) else {
+            return false;
+        };
+        super::state::update_control_from_value(&mut item.control, &default);
+        // An explicit default value is a real (non-inherited) value.
+        item.is_null = false;
+        item.modified = false;
+        if let SettingControl::Toggle(state) = &mut item.control {
+            state.inherited = false;
+        }
+        self.user_edited = true;
+        true
+    }
+
+    /// The value `[Reset]` would set, when reset is a *distinct, meaningful*
+    /// action for the field at `idx` — i.e. a simple, editable field that
+    /// currently overrides its built-in default, where that default isn't just
+    /// `null` (which `[Inherit]` already covers). Returns `None` otherwise.
+    fn reset_distinct_default(&self, idx: usize) -> Option<Value> {
+        let item = self.items.get(idx)?;
+        // Reset is offered for simple scalar controls and for object/JSON
+        // controls (e.g. a language's `formatter`), whose only other per-field
+        // action — Inherit → null — would *clear* a non-null built-in default
+        // rather than restore it. Composite list/map controls and opaque
+        // Complex controls are excluded.
+        let resettable = is_simple_field_control(&item.control)
+            || matches!(item.control, SettingControl::Json(_));
+        if item.read_only || item.is_null || !resettable {
+            return None;
+        }
+        let default = item.default.as_ref()?;
+        // A nullable field whose default is `null` resets to the same place as
+        // Inherit, so don't offer a redundant Reset.
+        if item.nullable && default.is_null() {
+            return None;
+        }
+        // Only when the current value actually differs from the default.
+        if control_to_value(&item.control) == *default {
+            return None;
+        }
+        Some(default.clone())
+    }
+
+    /// True when unsetting the field at `idx` makes it inherit a parent-scope
+    /// value (e.g. `editor.line_wrap`) rather than simply clearing it.
+    fn field_inherits(&self, idx: usize) -> bool {
+        self.items
+            .get(idx)
+            .map(|item| {
+                self.inheritable_fields
+                    .contains(item.path.trim_start_matches('/'))
+            })
+            .unwrap_or(false)
+    }
+
+    /// The per-field action buttons to render at the right edge of the field at
+    /// `idx`, left to right, with their labels. Empty when the field offers
+    /// none (e.g. inherited/unset, at its default, or read-only). The
+    /// `(Inherited)` badge is rendered separately.
+    pub fn field_action_buttons(&self, idx: usize) -> Vec<(FieldAction, String)> {
+        let Some(item) = self.items.get(idx) else {
+            return Vec::new();
+        };
+        if item.read_only {
+            return Vec::new();
+        }
+        let mut buttons = Vec::new();
+        if self.reset_distinct_default(idx).is_some() {
+            buttons.push((
+                FieldAction::Reset,
+                format!("[{}]", t!("settings.btn_reset")),
+            ));
+        }
+        // "Set to null" is offered for any overriding nullable field (composite
+        // ones too — they're click-only, see `field_focusable_count`). The label
+        // is [Inherit] when null falls back to a parent value, else [Clear].
+        if item.nullable && !item.is_null {
+            let label = if self.field_inherits(idx) {
+                t!("settings.btn_inherit")
+            } else {
+                t!("settings.btn_clear")
+            };
+            buttons.push((FieldAction::Inherit, format!("[{}]", label)));
+        }
+        buttons
+    }
+
+    /// Perform the action button at focusable index `i` for the field at `idx`.
+    fn perform_field_action(&mut self, idx: usize, action: FieldAction) -> bool {
+        match action {
+            FieldAction::Reset => self.reset_field(idx),
+            FieldAction::Inherit => self.inherit_field(idx),
+        }
+    }
+
+    /// Activate the currently keyboard-focused field action button, if any.
+    /// Returns true if a button was focused (so the key is consumed).
+    pub fn activate_focused_field_button(&mut self) -> bool {
+        let Some(i) = self.field_button_focus else {
+            return false;
+        };
+        if self.focus_on_buttons {
+            return false;
+        }
+        let idx = self.selected_item;
+        if let Some(action) = self.field_action_buttons(idx).get(i).map(|(a, _)| *a) {
+            self.perform_field_action(idx, action);
+        }
+        self.field_button_focus = None;
+        self.update_focus_states();
+        true
+    }
+
     /// Convert dialog state back to JSON value (excludes the __key__ item)
     /// Auto-commit any draft text sitting in a TextList's trailing
     /// `[+] Add new` slot. Without this, saving a dialog while the user
@@ -369,6 +606,21 @@ impl EntryDialogState {
             }
 
             let field_name = item.path.trim_start_matches('/');
+
+            // Preserve inheritance: a nullable field whose value is inherited
+            // (`is_null`) must NOT be written back as a concrete value, or it
+            // stops inheriting from the global/default layer. `is_null` starts
+            // true for inherited fields, is cleared the moment the user edits
+            // the field (`mark_field_edited`), and is set again by the per-field
+            // Inherit action — so it precisely tracks "did the user give this
+            // field a value of its own?". Without this, opening a language entry
+            // and toggling one field would freeze every *other* inherited field
+            // (e.g. writing `line_wrap: false`), which then overrides the global
+            // Toggle Line Wrap command forever (issue #2345).
+            if item.nullable && item.is_null {
+                continue;
+            }
+
             let value = control_to_value(&item.control);
             obj.insert(field_name.to_string(), value);
         }
@@ -400,6 +652,56 @@ impl EntryDialogState {
     /// through their internal entries and [+] Add new row before moving to the
     /// next dialog item. When at the last editable item, wraps to buttons.
     /// When on the last button, wraps back to the first editable item.
+    /// Number of focusable per-field action buttons (`[Reset]`/`[Inherit]`/
+    /// `[Clear]`) for the field at `idx`. Every field's buttons join the Tab
+    /// order — for composite controls they come *after* the control's own
+    /// internal sub-navigation (handled by `try_composite_focus_*`), so Tab is
+    /// the sole keyboard path to these actions.
+    fn field_focusable_count(&self, idx: usize) -> usize {
+        self.field_action_buttons(idx).len()
+    }
+
+    /// Advance focus to the next *field* (control), skipping any per-field
+    /// action buttons. Used by the form-style "commit and move on" flow
+    /// (Enter/Tab/arrows while editing), where stopping on the field's own
+    /// `[Reset]`/`[Inherit]` button would be surprising. Those buttons remain
+    /// reachable via Tab in navigation mode.
+    pub fn focus_next_field(&mut self) {
+        if self.editing_text {
+            return;
+        }
+        self.field_button_focus = None;
+        if self.selected_item + 1 < self.items.len() {
+            self.selected_item += 1;
+            self.sub_focus = None;
+            self.init_composite_focus(true);
+        } else {
+            self.focus_on_buttons = true;
+            self.focused_button = 0;
+        }
+        self.update_focus_states();
+        self.ensure_selected_visible(self.viewport_height);
+    }
+
+    /// Retreat focus to the previous *field* (control), skipping per-field
+    /// action buttons. The arrow-key counterpart to [`focus_next_field`].
+    pub fn focus_prev_field(&mut self) {
+        if self.editing_text {
+            return;
+        }
+        self.field_button_focus = None;
+        if self.selected_item > self.first_editable_index {
+            self.selected_item -= 1;
+            self.sub_focus = None;
+            self.init_composite_focus(false);
+        } else {
+            self.focus_on_buttons = true;
+            self.focused_button = self.button_count().saturating_sub(1);
+        }
+        self.update_focus_states();
+        self.ensure_selected_visible(self.viewport_height);
+    }
+
     pub fn focus_next(&mut self) {
         if self.editing_text {
             return;
@@ -414,15 +716,34 @@ impl EntryDialogState {
                     self.focus_on_buttons = false;
                     self.selected_item = self.first_editable_index;
                     self.sub_focus = None;
+                    self.field_button_focus = None;
                     self.init_composite_focus(true);
+                }
+            }
+        } else if let Some(i) = self.field_button_focus {
+            // Advance through this field's action buttons, then to the next field.
+            if i + 1 < self.field_focusable_count(self.selected_item) {
+                self.field_button_focus = Some(i + 1);
+            } else {
+                self.field_button_focus = None;
+                if self.selected_item + 1 < self.items.len() {
+                    self.selected_item += 1;
+                    self.sub_focus = None;
+                    self.init_composite_focus(true);
+                } else {
+                    self.focus_on_buttons = true;
+                    self.focused_button = 0;
                 }
             }
         } else {
             // Try navigating within a composite control first
             let handled = self.try_composite_focus_next();
             if !handled {
-                // Composite is at its exit boundary (or not a composite) — advance to next item
-                if self.selected_item + 1 < self.items.len() {
+                // Composite at its exit boundary (or not a composite). Stop on
+                // this field's action buttons before advancing, if it has any.
+                if self.field_focusable_count(self.selected_item) > 0 {
+                    self.field_button_focus = Some(0);
+                } else if self.selected_item + 1 < self.items.len() {
                     self.selected_item += 1;
                     self.sub_focus = None;
                     self.init_composite_focus(true);
@@ -458,8 +779,15 @@ impl EntryDialogState {
                     self.selected_item = self.items.len().saturating_sub(1);
                     self.sub_focus = None;
                     self.init_composite_focus(false);
+                    // Land on the field's last action button, if it has any.
+                    self.field_button_focus = self
+                        .field_focusable_count(self.selected_item)
+                        .checked_sub(1);
                 }
             }
+        } else if let Some(i) = self.field_button_focus {
+            // Step back through the action buttons, then to the control.
+            self.field_button_focus = i.checked_sub(1);
         } else {
             // Try navigating within a composite control first
             let handled = self.try_composite_focus_prev();
@@ -469,6 +797,11 @@ impl EntryDialogState {
                     self.selected_item -= 1;
                     self.sub_focus = None;
                     self.init_composite_focus(false);
+                    // Going backwards lands on the previous field's last
+                    // element, which is its last action button when present.
+                    self.field_button_focus = self
+                        .field_focusable_count(self.selected_item)
+                        .checked_sub(1);
                 } else {
                     // Before first editable item, go to buttons
                     self.focus_on_buttons = true;
@@ -696,7 +1029,13 @@ impl EntryDialogState {
     /// Update focus states for all items
     pub fn update_focus_states(&mut self) {
         for (idx, item) in self.items.iter_mut().enumerate() {
-            let state = if !self.focus_on_buttons && idx == self.selected_item {
+            // When focus is on one of the field's action buttons, the control
+            // itself is not the active element, so render it Normal — only the
+            // button shows the focused highlight.
+            let state = if !self.focus_on_buttons
+                && idx == self.selected_item
+                && self.field_button_focus.is_none()
+            {
                 FocusState::Focused
             } else {
                 FocusState::Normal
@@ -945,7 +1284,7 @@ impl EntryDialogState {
         if !self.editing_text {
             return;
         }
-        self.user_edited = true;
+        self.mark_field_edited();
         if let Some(item) = self.current_item_mut() {
             match &mut item.control {
                 SettingControl::Text(state) => {
@@ -969,7 +1308,7 @@ impl EntryDialogState {
         if !self.editing_text {
             return;
         }
-        self.user_edited = true;
+        self.mark_field_edited();
         if let Some(item) = self.current_item_mut() {
             match &mut item.control {
                 SettingControl::Text(state) => {
@@ -996,7 +1335,7 @@ impl EntryDialogState {
         if !self.editing_text {
             return;
         }
-        self.user_edited = true;
+        self.mark_field_edited();
         if let Some(item) = self.current_item_mut() {
             match &mut item.control {
                 SettingControl::Text(state) => {
@@ -1136,7 +1475,7 @@ impl EntryDialogState {
 
     /// Insert newline in JSON editor
     pub fn insert_newline(&mut self) {
-        self.user_edited = true;
+        self.mark_field_edited();
         if !self.editing_text {
             return;
         }
@@ -1169,14 +1508,19 @@ impl EntryDialogState {
 
     /// Toggle boolean value
     pub fn toggle_bool(&mut self) {
-        self.user_edited = true;
+        // Don't allow toggling read-only / non-toggle fields, and don't flag
+        // the dialog dirty when nothing actually changes.
+        let editable = self
+            .current_item()
+            .map(|i| !i.read_only && matches!(i.control, SettingControl::Toggle(_)))
+            .unwrap_or(false);
+        if !editable {
+            return;
+        }
+        self.mark_field_edited();
         if let Some(item) = self.current_item_mut() {
-            // Don't allow toggling read-only fields
-            if item.read_only {
-                return;
-            }
             if let SettingControl::Toggle(state) = &mut item.control {
-                state.checked = !state.checked;
+                state.toggle();
             }
         }
     }
@@ -1196,7 +1540,7 @@ impl EntryDialogState {
 
     /// Move dropdown selection up
     pub fn dropdown_prev(&mut self) {
-        self.user_edited = true;
+        self.mark_field_edited();
         if let Some(item) = self.current_item_mut() {
             if let SettingControl::Dropdown(state) = &mut item.control {
                 if state.open {
@@ -1208,7 +1552,7 @@ impl EntryDialogState {
 
     /// Move dropdown selection down
     pub fn dropdown_next(&mut self) {
-        self.user_edited = true;
+        self.mark_field_edited();
         if let Some(item) = self.current_item_mut() {
             if let SettingControl::Dropdown(state) = &mut item.control {
                 if state.open {
@@ -1229,7 +1573,7 @@ impl EntryDialogState {
 
     /// Delete the currently focused item from a TextList control
     pub fn delete_list_item(&mut self) {
-        self.user_edited = true;
+        self.mark_field_edited();
         if let Some(item) = self.current_item_mut() {
             if let SettingControl::TextList(state) = &mut item.control {
                 // Remove the currently focused item if any
@@ -1245,7 +1589,7 @@ impl EntryDialogState {
         if !self.editing_text {
             return;
         }
-        self.user_edited = true;
+        self.mark_field_edited();
         if let Some(item) = self.current_item_mut() {
             match &mut item.control {
                 SettingControl::Text(state) => {
@@ -1505,6 +1849,145 @@ mod tests {
 
         dialog.focus_prev();
         assert!(dialog.focus_on_buttons); // Wraps to buttons, not to read-only Key
+    }
+
+    /// A nullable field whose built-in default is itself non-null *and* is
+    /// currently overridden to a third value offers both `[Reset]` and
+    /// `[Inherit]`. Tab must step control → Reset → Inherit → (footer), and
+    /// Shift+Tab must reverse exactly: (footer) → Inherit → Reset → control.
+    #[test]
+    fn focus_cycles_through_both_field_action_buttons() {
+        let schema = SettingSchema {
+            path: "/test".to_string(),
+            name: "Test".to_string(),
+            description: None,
+            setting_type: SettingType::Object {
+                properties: vec![SettingSchema {
+                    path: "/wrap".to_string(),
+                    name: "Wrap".to_string(),
+                    description: None,
+                    setting_type: SettingType::Boolean,
+                    // Non-null built-in default, so Reset (→true) differs from
+                    // Inherit (→null).
+                    default: Some(serde_json::json!(true)),
+                    read_only: false,
+                    section: None,
+                    order: None,
+                    nullable: true,
+                    enum_from: None,
+                    dual_list_sibling: None,
+                    dynamically_extendable_status_bar_elements: false,
+                }],
+            },
+            default: None,
+            read_only: false,
+            section: None,
+            order: None,
+            nullable: false,
+            enum_from: None,
+            dual_list_sibling: None,
+            dynamically_extendable_status_bar_elements: false,
+        };
+        // Overridden to `false` — distinct from both the default (true) and
+        // inherit (null).
+        let mut dialog = EntryDialogState::from_schema(
+            "k".to_string(),
+            &serde_json::json!({ "wrap": false }),
+            &schema,
+            "/test",
+            false,
+            false,
+            &HashMap::new(),
+        );
+
+        // Field is index 1 (after read-only Key) and offers both buttons.
+        assert_eq!(dialog.selected_item, 1);
+        let buttons = dialog.field_action_buttons(1);
+        assert_eq!(
+            buttons.iter().map(|(a, _)| *a).collect::<Vec<_>>(),
+            vec![FieldAction::Reset, FieldAction::Inherit]
+        );
+        assert_eq!(dialog.field_button_focus, None);
+
+        // Forward: control → Reset → Inherit → footer.
+        dialog.focus_next();
+        assert_eq!(dialog.field_button_focus, Some(0)); // Reset
+        dialog.focus_next();
+        assert_eq!(dialog.field_button_focus, Some(1)); // Inherit
+        dialog.focus_next();
+        assert!(dialog.focus_on_buttons);
+
+        // Backward: footer → Inherit → Reset → control.
+        dialog.focus_prev();
+        assert!(!dialog.focus_on_buttons);
+        assert_eq!(dialog.field_button_focus, Some(1)); // Inherit
+        dialog.focus_prev();
+        assert_eq!(dialog.field_button_focus, Some(0)); // Reset
+        dialog.focus_prev();
+        assert_eq!(dialog.field_button_focus, None); // back on the control
+        dialog.focus_prev();
+        assert!(dialog.focus_on_buttons); // before first field → footer
+    }
+
+    /// A JSON/object field (like a language `formatter`) is not a "simple"
+    /// control, but its per-field action buttons must still be reachable by Tab
+    /// — that's the only keyboard path now that Ctrl+R is gone.
+    #[test]
+    fn focus_reaches_action_buttons_on_json_field() {
+        let schema = SettingSchema {
+            path: "/test".to_string(),
+            name: "Test".to_string(),
+            description: None,
+            setting_type: SettingType::Object {
+                properties: vec![SettingSchema {
+                    path: "/formatter".to_string(),
+                    name: "Formatter".to_string(),
+                    description: None,
+                    // Object => rendered as a JSON control.
+                    setting_type: SettingType::Object { properties: vec![] },
+                    default: Some(serde_json::json!({ "command": "clang-format" })),
+                    read_only: false,
+                    section: None,
+                    order: None,
+                    nullable: true,
+                    enum_from: None,
+                    dual_list_sibling: None,
+                    dynamically_extendable_status_bar_elements: false,
+                }],
+            },
+            default: None,
+            read_only: false,
+            section: None,
+            order: None,
+            nullable: false,
+            enum_from: None,
+            dual_list_sibling: None,
+            dynamically_extendable_status_bar_elements: false,
+        };
+        // Overridden to a different command, so it differs from the default.
+        let mut dialog = EntryDialogState::from_schema(
+            "c".to_string(),
+            &serde_json::json!({ "formatter": { "command": "my-fmt" } }),
+            &schema,
+            "/languages",
+            false,
+            false,
+            &HashMap::new(),
+        );
+
+        // The JSON field offers buttons (at least [Reset]); Tab steps onto them.
+        assert_eq!(dialog.selected_item, 1);
+        assert!(
+            !dialog.field_action_buttons(1).is_empty(),
+            "overridden JSON field should offer action buttons"
+        );
+        assert_eq!(dialog.field_button_focus, None);
+        dialog.focus_next();
+        assert_eq!(
+            dialog.field_button_focus,
+            Some(0),
+            "Tab should land on the JSON field's first action button"
+        );
     }
 
     #[test]

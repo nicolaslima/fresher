@@ -6,7 +6,18 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
+use crate::primitives::display_width::str_width;
+
 use super::{FocusState, ToggleColors, ToggleLayout, ToggleState};
+
+fn pad_to_display_width(label: &str, width: u16) -> String {
+    let width = width as usize;
+    let padding = width.saturating_sub(str_width(label));
+    let mut padded = String::with_capacity(label.len() + padding);
+    padded.push_str(label);
+    padded.extend(std::iter::repeat_n(' ', padding));
+    padded
+}
 
 /// Render a toggle control
 ///
@@ -65,21 +76,32 @@ pub fn render_toggle_aligned(
     };
 
     // Format: "Label: [v]" / "Label: [ ]" with optional padding.
-    let actual_label_width = label_width.unwrap_or(state.label.len() as u16);
-    let padded_label = format!(
-        "{:width$}",
-        state.label,
-        width = actual_label_width as usize
-    );
+    let label_display_width = str_width(&state.label) as u16;
+    let actual_label_width = label_width
+        .unwrap_or(label_display_width)
+        .max(label_display_width);
+    let padded_label = pad_to_display_width(&state.label, actual_label_width);
 
     // Compact checkbox glyph — matches the widget framework's
     // `[v]` / `[ ]` convention so an empty checkbox is not visually
     // confusable with an empty text input.
     //   checked:   [v]
     //   unchecked: [ ]
+    //   inherited: [-]   (value is unset and falls back to a lower layer)
     const CHIP_WIDTH: u16 = 3;
 
-    let line = if state.checked {
+    let line = if state.inherited {
+        // Neutral chip: the value is inherited/unset, so we deliberately avoid
+        // a definite checked/unchecked glyph that could be read as the user
+        // having set it off (issue #2345).
+        Line::from(vec![
+            Span::styled(padded_label, Style::default().fg(label_color)),
+            Span::styled(": ", Style::default().fg(label_color)),
+            Span::styled("[", Style::default().fg(bracket_color)),
+            Span::styled("-", Style::default().fg(bracket_color)),
+            Span::styled("]", Style::default().fg(bracket_color)),
+        ])
+    } else if state.checked {
         Line::from(vec![
             Span::styled(padded_label, Style::default().fg(label_color)),
             Span::styled(": ", Style::default().fg(label_color)),
@@ -118,5 +140,18 @@ pub fn render_toggle_aligned(
     ToggleLayout {
         checkbox_area,
         full_area,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pad_to_display_width_uses_terminal_columns() {
+        let padded = pad_to_display_width("你好", 6);
+
+        assert_eq!(str_width(&padded), 6);
+        assert_eq!(padded, "你好  ");
     }
 }

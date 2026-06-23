@@ -32,7 +32,7 @@ path = "src/bin/measure_startup.rs"
 required-features = ["dev-bins", "runtime"]
 
 [lib]
-name = "fresher"
+name = "fresh"
 path = "src/lib.rs"
 
 [features]

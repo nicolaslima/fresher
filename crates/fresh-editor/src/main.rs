@@ -40,7 +40,7 @@ const BEFORE_HELP_EN: &str =
 // The doc comments on `Cli` and its fields are intentionally short and
 // only used by the derive — the English `before_help` banner below is
 // the user's escape hatch back to a known language.
-/// fresh
+/// fresher
 #[derive(Parser, Debug)]
 #[command(name = "fresher")]
 #[command(version, propagate_version = true)]
@@ -124,11 +124,11 @@ struct Cli {
     ssh_url: Option<String>,
 
     // === Deprecated flags from pre-subcommand CLI (hidden, with warnings) ===
-    /// [deprecated: use `fresh config show`]
+    /// [deprecated: use `fresher config show`]
     #[arg(long, hide = true)]
     dump_config: bool,
 
-    /// [deprecated: use `fresh config paths`]
+    /// [deprecated: use `fresher config paths`]
     #[arg(long, hide = true)]
     show_paths: bool,
 
@@ -136,7 +136,7 @@ struct Cli {
     #[arg(long, hide = true, value_name = "PLUGIN_PATH")]
     check_plugin: Option<PathBuf>,
 
-    /// [deprecated: use `fresh init`]
+    /// [deprecated: use `fresher init`]
     #[arg(long, hide = true, value_name = "TYPE")]
     init: Option<Option<String>>,
 
@@ -219,7 +219,7 @@ impl From<Cli> for Args {
                 | ["s", "list", ..]
                 | ["session", "ls", ..]
                 | ["s", "ls", ..] => (true, None, false, None, false, false, None, cli.files, None),
-                // Open file in session: fresh --cmd session open-file <name> <files...> [--wait]
+                // Open file in session: fresher --cmd session open-file <name> <files...> [--wait]
                 ["session", "open-file", name, files @ ..]
                 | ["s", "open-file", name, files @ ..] => {
                     let session = if *name == "." {
@@ -493,7 +493,7 @@ struct SetupState {
     /// Single backend slot for "where does the editor act?".
     ///
     /// The editor always boots with `Authority::local()`. The SSH
-    /// startup form (`fresh user@host:path`) replaces it with
+    /// startup form (`fresher user@host:path`) replaces it with
     /// `Authority::ssh(...)` here. Devcontainer attach is now a plugin
     /// concern (it calls `editor.setAuthority({...})` from
     /// `plugins/devcontainer.ts` after `devcontainer up` returns) so
@@ -588,7 +588,7 @@ pub struct StdinStreamState {
 }
 
 /// Stream stdin content to a temp file on Windows.
-/// This is called when stdin is a pipe (e.g., `cat file.txt | fresh`).
+/// This is called when stdin is a pipe (e.g., `cat file.txt | fresher`).
 /// We duplicate the stdin handle, spawn a thread to read from it,
 /// and then reopen stdin from CONIN$ for keyboard input.
 #[cfg(windows)]
@@ -1838,7 +1838,7 @@ fn check_plugin_bundle(plugin_path: &std::path::Path) -> AnyhowResult<()> {
     Ok(())
 }
 
-/// `fresh --cmd init check` — syntax-check ~/.config/fresher/init.ts via oxc.
+/// `fresher --cmd init check` — syntax-check ~/.config/fresher/init.ts via oxc.
 /// Exits 0 if the file is absent or parses cleanly, 1 on any parse error.
 fn init_check_command() -> AnyhowResult<()> {
     let dir_context = fresh::config_io::DirectoryContext::from_system()
@@ -1884,7 +1884,7 @@ fn init_check_command() -> AnyhowResult<()> {
     std::process::exit(1);
 }
 
-/// Initialize a new Fresh package (plugin, theme, or language pack)
+/// Initialize a new Fresher package (plugin, theme, or language pack)
 fn init_package_command(package_type: Option<String>) -> AnyhowResult<()> {
     use std::io::{BufRead, Write};
 
@@ -1902,7 +1902,7 @@ fn init_package_command(package_type: Option<String>) -> AnyhowResult<()> {
         input.trim().to_string()
     };
 
-    println!("Fresh Package Initializer");
+    println!("Fresher Package Initializer");
     println!("=========================\n");
 
     // Determine package type
@@ -1919,7 +1919,7 @@ fn init_package_command(package_type: Option<String>) -> AnyhowResult<()> {
         }
         None => {
             println!("Package types:");
-            println!("  1. plugin   - Extend Fresh with custom commands and functionality");
+            println!("  1. plugin   - Extend Fresher with custom commands and functionality");
             println!("  2. theme    - Custom color schemes and styling");
             println!("  3. language - Syntax highlighting, LSP, and language configuration\n");
 
@@ -1941,7 +1941,7 @@ fn init_package_command(package_type: Option<String>) -> AnyhowResult<()> {
     };
 
     // Get package name
-    let default_name = format!("my-fresh-{}", pkg_type);
+    let default_name = format!("my-fresher-{}", pkg_type);
     let name = loop {
         let input = prompt(&format!("Package name [{}]: ", default_name));
         let name = if input.is_empty() {
@@ -1991,7 +1991,7 @@ fn init_package_command(package_type: Option<String>) -> AnyhowResult<()> {
     match pkg_type {
         "plugin" => {
             println!("  2. Edit plugin.ts to add your functionality");
-            println!("  3. Test locally: fresh --check-plugin .");
+            println!("  3. Test locally: fresher --check-plugin .");
             println!("  4. Validate manifest: ./validate.sh");
         }
         "theme" => {
@@ -2008,7 +2008,7 @@ fn init_package_command(package_type: Option<String>) -> AnyhowResult<()> {
     }
     println!("\nTo publish:");
     println!("  1. Push your package to a public Git repository");
-    println!("  2. Submit a PR to: https://github.com/sinelaw/fresh-plugins-registry");
+    println!("  2. Submit a PR to: https://github.com/nicolaslima/fresher-plugins-registry");
     println!("     Add your package to the appropriate registry file:");
     match pkg_type {
         "plugin" => println!("     - plugins.json"),
@@ -2016,7 +2016,7 @@ fn init_package_command(package_type: Option<String>) -> AnyhowResult<()> {
         "language" => println!("     - languages.json"),
         _ => unreachable!(),
     }
-    println!("\nDocumentation: https://github.com/sinelaw/fresh-plugins-registry#readme");
+    println!("\nDocumentation: https://github.com/nicolaslima/fresher-plugins-registry#readme");
 
     Ok(())
 }
@@ -2024,10 +2024,10 @@ fn init_package_command(package_type: Option<String>) -> AnyhowResult<()> {
 /// Write a validation script that checks package.json against the official schema
 fn write_validate_script(dir: &Path) -> AnyhowResult<()> {
     let validate_sh = r#"#!/bin/bash
-# Validate package.json against the official Fresh package schema
+# Validate package.json against the official Fresher package schema
 #
 # Prerequisite: pip install jsonschema
-curl -sSL https://raw.githubusercontent.com/sinelaw/fresh/main/scripts/validate-package.sh | bash
+curl -sSL https://raw.githubusercontent.com/nicolaslima/fresher/main/scripts/validate-package.sh | bash
 "#;
     write_script_file(dir, "validate.sh", validate_sh)
 }
@@ -2035,13 +2035,13 @@ curl -sSL https://raw.githubusercontent.com/sinelaw/fresh/main/scripts/validate-
 /// Write a validation script for themes (validates both package.json and theme.json)
 fn write_theme_validate_script(dir: &Path) -> AnyhowResult<()> {
     let validate_sh = r#"#!/bin/bash
-# Validate Fresh theme package
+# Validate Fresher theme package
 #
 # Prerequisite: pip install jsonschema
 set -e
 
 echo "Validating package.json..."
-curl -sSL https://raw.githubusercontent.com/sinelaw/fresh/main/scripts/validate-package.sh | bash
+curl -sSL https://raw.githubusercontent.com/nicolaslima/fresher/main/scripts/validate-package.sh | bash
 
 echo "Validating theme.json..."
 python3 -c "
@@ -2050,7 +2050,7 @@ import json, jsonschema, urllib.request, sys
 with open('theme.json') as f:
     data = json.load(f)
 
-schema_url = 'https://raw.githubusercontent.com/sinelaw/fresh/main/crates/fresh-editor/plugins/schemas/theme.schema.json'
+schema_url = 'https://raw.githubusercontent.com/nicolaslima/fresher/main/crates/fresh-editor/plugins/schemas/theme.schema.json'
 try:
     with urllib.request.urlopen(schema_url, timeout=5) as resp:
         schema = json.load(resp)
@@ -2097,7 +2097,7 @@ fn write_package_json(
     };
     let content = format!(
         r#"{{
-  "$schema": "https://raw.githubusercontent.com/sinelaw/fresh/main/crates/fresh-editor/plugins/schemas/package.schema.json",
+  "$schema": "https://raw.githubusercontent.com/nicolaslima/fresher/main/crates/fresh-editor/plugins/schemas/package.schema.json",
   "name": "{name}",
   "version": "0.1.0",
   "description": "{desc}",
@@ -2124,7 +2124,7 @@ fn create_plugin_package(
         description,
         author,
         "plugin",
-        "A Fresh plugin",
+        "A Fresher plugin",
         r#"{
     "entry": "plugin.ts"
   }"#,
@@ -2134,8 +2134,8 @@ fn create_plugin_package(
     write_validate_script(dir)?;
 
     // plugin.ts
-    let plugin_ts = r#"// Fresh Plugin
-// Documentation: https://github.com/user/fresh/blob/main/docs/plugins.md
+    let plugin_ts = r#"// Fresher Plugin
+// Documentation: https://github.com/user/fresher/blob/main/docs/plugins.md
 
 const editor = getEditor();
 
@@ -2157,7 +2157,7 @@ function onBufferOpened(): void {
 registerHandler("on_buffer_opened", onBufferOpened);
 editor.on("buffer_opened", "on_buffer_opened");
 
-// Example: Add a keybinding in your Fresh config:
+// Example: Add a keybinding in your Fresher config:
 // {
 //   "keyBindings": {
 //     "ctrl+alt+h": "command:hello"
@@ -2174,7 +2174,7 @@ editor.on("buffer_opened", "on_buffer_opened");
 
 ## Installation
 
-Install via Fresh's package manager:
+Install via Fresher's package manager:
 ```
 :pkg install {}
 ```
@@ -2195,7 +2195,7 @@ MIT
 "#,
         name,
         if description.is_empty() {
-            "A Fresh plugin."
+            "A Fresher plugin."
         } else {
             description
         },
@@ -2219,7 +2219,7 @@ fn create_theme_package(
         description,
         author,
         "theme",
-        "A Fresh theme",
+        "A Fresher theme",
         r#"{
     "theme": "theme.json"
   }"#,
@@ -2265,7 +2265,7 @@ fn create_theme_package(
 
 ## Installation
 
-Install via Fresh's package manager:
+Install via Fresher's package manager:
 ```
 :pkg install {}
 ```
@@ -2277,7 +2277,7 @@ After installation, activate the theme:
 :theme {}
 ```
 
-Or add to your Fresh config:
+Or add to your Fresher config:
 ```json
 {{
   "theme": "{}"
@@ -2294,7 +2294,7 @@ MIT
 "#,
         name,
         if description.is_empty() {
-            "A Fresh theme."
+            "A Fresher theme."
         } else {
             description
         },
@@ -2322,7 +2322,7 @@ fn create_language_package(
         description,
         author,
         "language",
-        "Language support for Fresh",
+        "Language support for Fresher",
         r#"{
     "grammar": {
       "file": "grammars/syntax.sublime-syntax",
@@ -2401,7 +2401,7 @@ contexts:
 
 ## Installation
 
-Install via Fresh's package manager:
+Install via Fresher's package manager:
 ```
 :pkg install {}
 ```
@@ -2429,7 +2429,7 @@ Update `package.json` to match your language's requirements.
 
 1. Edit `grammars/syntax.sublime-syntax` for syntax highlighting
 2. Update `package.json` with correct file extensions and LSP command
-3. Test by copying to `~/.config/fresher/grammars/` and restarting Fresh
+3. Test by copying to `~/.config/fresher/grammars/` and restarting Fresher
 
 **Tip:** Search GitHub for existing `<language> sublime-syntax` files you can adapt.
 If using an existing grammar, check its license and include a copy in `grammars/LICENSE`.
@@ -2451,7 +2451,7 @@ MIT
 "#,
         name,
         if description.is_empty() {
-            "Language support for Fresh."
+            "Language support for Fresher."
         } else {
             description
         },
@@ -2604,13 +2604,13 @@ fn list_sessions_command() -> AnyhowResult<()> {
         if sessions.len() == 1 {
             let (id, display) = &sessions[0];
             if display != id {
-                println!("Attach with: fresh -a  (from that directory)");
-                println!("         or: fresh -a {}", id);
+                println!("Attach with: fresher -a  (from that directory)");
+                println!("         or: fresher -a {}", id);
             } else {
-                println!("Attach with: fresh -a {}", id);
+                println!("Attach with: fresher -a {}", id);
             }
         } else {
-            println!("Attach with: fresh -a [NAME]");
+            println!("Attach with: fresher -a [NAME]");
         }
     }
 
@@ -2936,7 +2936,7 @@ fn run_open_files_command(
             return run_attach(session_name, &[]);
         } else {
             eprintln!(
-                "Started new session and opened {} file(s). Attach with: fresh -a{}",
+                "Started new session and opened {} file(s). Attach with: fresher -a{}",
                 file_requests.len(),
                 session_name.map_or(String::new(), |n| format!(" {}", n)),
             );
@@ -3310,7 +3310,7 @@ fn run_attach(session_name: Option<&str>, files: &[String]) -> AnyhowResult<()> 
         Ok(client::ClientExitReason::Detached) => {
             tracing::debug!("Client exit: Detached");
             eprintln!("Detached from session. Server continues running.");
-            eprintln!("Reattach with: fresh -a  or  fresh session attach");
+            eprintln!("Reattach with: fresher -a  or  fresher session attach");
         }
         Ok(client::ClientExitReason::VersionMismatch { server_version }) => {
             tracing::debug!("Client exit: VersionMismatch");
@@ -3336,13 +3336,13 @@ fn print_deprecation_warnings(cli: &Cli) {
 
     // These flags existed in master and are now reorganized into --cmd commands
     if cli.dump_config {
-        eprintln!("warning: --dump-config is deprecated, use `fresh --cmd config show` instead");
+        eprintln!("warning: --dump-config is deprecated, use `fresher --cmd config show` instead");
     }
     if cli.show_paths {
-        eprintln!("warning: --show-paths is deprecated, use `fresh --cmd config paths` instead");
+        eprintln!("warning: --show-paths is deprecated, use `fresher --cmd config paths` instead");
     }
     if cli.init.is_some() {
-        eprintln!("warning: --init is deprecated, use `fresh --cmd init` instead");
+        eprintln!("warning: --init is deprecated, use `fresher --cmd init` instead");
     }
 }
 
@@ -3600,26 +3600,26 @@ fn build_localized_after_help() -> String {
         t("cli.example.attach_name")
     ));
     out.push_str(&format!(
-        "  fresh --cmd session new proj                 {}\n",
+        "  fresher --cmd session new proj                 {}\n",
         t("cli.example.new_session")
     ));
     out.push_str(&format!(
-        "  fresh --cmd session open-file . main.rs     {}\n",
+        "  fresher --cmd session open-file . main.rs     {}\n",
         t("cli.example.open_in_dir")
     ));
     out.push_str(&format!(
-        "  fresh --cmd session open-file proj a.rs     {}\n",
+        "  fresher --cmd session open-file proj a.rs     {}\n",
         t("cli.example.open_in_named")
     ));
     out.push('\n');
 
     out.push_str(&format!("{}\n", t("cli.section.remote")));
     out.push_str(&format!(
-        "  fresh ssh://[user@]host[:port]/path[:line[:col]]   {}\n",
+        "  fresher ssh://[user@]host[:port]/path[:line[:col]]   {}\n",
         t("cli.example.remote_url")
     ));
     out.push_str(&format!(
-        "  fresh user@host:path[:line[:col]]                  {}\n",
+        "  fresher user@host:path[:line[:col]]                  {}\n",
         t("cli.example.remote_scp")
     ));
     out.push_str(&format!("  {}\n", t("cli.remote.note")));
@@ -3629,17 +3629,17 @@ fn build_localized_after_help() -> String {
     out.push_str(&format!("  {}\n\n", t("cli.guided.wait_intro")));
     out.push_str(&format!("  {}\n\n", t("cli.guided.session_dot")));
     out.push_str(&format!("  {}\n", t("cli.guided.annotation")));
-    out.push_str("    fresh --cmd session open-file . 'src/main.rs:10-25@\"msg\"' --wait\n\n");
+    out.push_str("    fresher --cmd session open-file . 'src/main.rs:10-25@\"msg\"' --wait\n\n");
     out.push_str(&format!("  {}\n", t("cli.guided.markdown")));
     out.push_str(
-        "    fresh --cmd session open-file . \\\n      $'src/main.rs:10-25@\"**Title**\\nBody text here\"' --wait\n\n",
+        "    fresher --cmd session open-file . \\\n      $'src/main.rs:10-25@\"**Title**\\nBody text here\"' --wait\n\n",
     );
     out.push_str(&format!("  {}\n", t("cli.guided.walkthrough")));
-    out.push_str("    fresh --cmd session open-file . 'a.rs:1-10@\"Step 1\"' --wait\n");
-    out.push_str("    fresh --cmd session open-file . 'b.rs:5-20@\"Step 2\"' --wait\n");
-    out.push_str("    fresh --cmd session open-file . 'c.rs:30@\"Step 3\"'   --wait\n\n");
+    out.push_str("    fresher --cmd session open-file . 'a.rs:1-10@\"Step 1\"' --wait\n");
+    out.push_str("    fresher --cmd session open-file . 'b.rs:5-20@\"Step 2\"' --wait\n");
+    out.push_str("    fresher --cmd session open-file . 'c.rs:30@\"Step 3\"'   --wait\n\n");
     out.push_str(&format!("  {}\n", t("cli.guided.git_editor")));
-    out.push_str("    git config core.editor 'fresh --cmd session open-file . --wait'\n\n");
+    out.push_str("    git config core.editor 'fresher --cmd session open-file . --wait'\n\n");
 
     out.push_str(&format!(
         "{}: https://getfresh.dev/docs",
@@ -4053,7 +4053,7 @@ fn real_main() -> AnyhowResult<()> {
         if update_result.update_available {
             eprintln!();
             eprintln!(
-                "A new version of fresh is available: {} -> {}",
+                "A new version of fresher is available: {} -> {}",
                 release_checker::CURRENT_VERSION,
                 update_result.latest_version
             );
@@ -4061,7 +4061,7 @@ fn real_main() -> AnyhowResult<()> {
                 eprintln!("Update with: {}", cmd);
             } else {
                 eprintln!(
-                    "Download from: https://github.com/sinelaw/fresh/releases/tag/v{}",
+                    "Download from: https://github.com/nicolaslima/fresher/releases/tag/v{}",
                     update_result.latest_version
                 );
             }

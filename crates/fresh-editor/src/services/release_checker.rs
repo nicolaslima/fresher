@@ -16,8 +16,8 @@ use std::time::Duration;
 /// The current version of the editor
 pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Default GitHub releases API URL for the fresh editor
-pub const DEFAULT_RELEASES_URL: &str = "https://api.github.com/repos/sinelaw/fresh/releases/latest";
+/// Default GitHub releases API URL for the fresher editor
+pub const DEFAULT_RELEASES_URL: &str = "https://api.github.com/repos/nicolaslima/fresher/releases/latest";
 
 /// Installation method detection result
 #[derive(Debug, Clone, PartialEq, Eq)]

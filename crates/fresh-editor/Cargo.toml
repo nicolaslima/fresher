@@ -3,7 +3,7 @@ name = "fresh-editor"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
-default-run = "fresh"
+default-run = "fresher"
 description = "A lightweight, fast terminal-based text editor with LSP support and TypeScript plugins"
 license.workspace = true
 repository.workspace = true
@@ -12,7 +12,7 @@ keywords = ["editor", "terminal", "tui", "text-editor", "lsp"]
 categories = ["command-line-utilities", "text-editors"]
 
 [[bin]]
-name = "fresh"
+name = "fresher"
 path = "src/main.rs"
 required-features = ["runtime"]
 
@@ -32,7 +32,7 @@ path = "src/bin/measure_startup.rs"
 required-features = ["dev-bins", "runtime"]
 
 [lib]
-name = "fresh"
+name = "fresher"
 path = "src/lib.rs"
 
 [features]

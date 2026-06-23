@@ -25,9 +25,9 @@ version = "0.4.0"
 authors = ["Noam Lewis"]
 edition = "2021"
 license = "GPL-2.0"
-repository = "https://github.com/sinelaw/fresh"
-homepage = "https://sinelaw.github.io/fresh/"
-documentation = "https://docs.rs/fresh-editor"
+repository = "https://github.com/nicolaslima/fresher"
+homepage = "https://nicolaslima.github.io/fresher/"
+documentation = "https://docs.rs/fresher-editor"
 
 [workspace.dependencies]
 # Local crates

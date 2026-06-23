@@ -42,19 +42,19 @@ fn find_binary() -> String {
         .expect("could not find repo root");
 
     for profile in &["release", "debug"] {
-        let path = repo.join("target").join(profile).join("fresh");
+        let path = repo.join("target").join(profile).join("fresher");
         if path.is_file() {
             return path.to_string_lossy().into_owned();
         }
     }
 
-    if let Ok(output) = std::process::Command::new("which").arg("fresh").output() {
+    if let Ok(output) = std::process::Command::new("which").arg("fresher").output() {
         if output.status.success() {
             return String::from_utf8_lossy(&output.stdout).trim().to_string();
         }
     }
 
-    eprintln!("Error: could not find 'fresh' binary. Build with `cargo build --release` first.");
+    eprintln!("Error: could not find 'fresher' binary. Build with `cargo build --release` first.");
     std::process::exit(1);
 }
 

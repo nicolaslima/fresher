@@ -1,9 +1,9 @@
 [Desktop Entry]
-Name=Fresh
+Name=Fresher
 GenericName=Text Editor
 Comment=A lightweight, fast terminal-based text editor with LSP support
-Exec=fresh %F
-Icon=fresh
+Exec=fresher %F
+Icon=fresher
 Terminal=true
 Type=Application
 Categories=Development;TextEditor;Utility;

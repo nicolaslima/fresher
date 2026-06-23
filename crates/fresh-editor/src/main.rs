@@ -42,7 +42,7 @@ const BEFORE_HELP_EN: &str =
 // the user's escape hatch back to a known language.
 /// fresh
 #[derive(Parser, Debug)]
-#[command(name = "fresh")]
+#[command(name = "fresher")]
 #[command(version, propagate_version = true)]
 #[command(before_help = BEFORE_HELP_EN)]
 struct Cli {

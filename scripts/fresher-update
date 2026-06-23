@@ -1,73 +1,147 @@
 #!/usr/bin/env bash
 # fresher-update — Download and install the latest fresher binary
 # Repository: https://github.com/nicolaslima/fresher
+#
+# Detects your platform and downloads the correct artifact from the
+# latest CI run (or release). Installs to ~/.local/bin/fresh.
 
 set -euo pipefail
 
 REPO="nicolaslima/fresher"
-INSTALL_DIR="$HOME/.local/bin"
+INSTALL_DIR="${HOME}/.local/bin"
 BIN_NAME="fresh"
 
-# Determine platform
+# ── Platform detection ──────────────────────────────────────────────
 OS="$(uname -s)"
 ARCH="$(uname -m)"
-case "$OS" in
-  Darwin)  PLATFORM="macos-latest" ;;
-  Linux)   PLATFORM="ubuntu-latest" ;;
+
+case "${OS}" in
+  Darwin)
+    case "${ARCH}" in
+      x86_64)  TARGET="x86_64-apple-darwin"     ;;
+      arm64)   TARGET="aarch64-apple-darwin"     ;;
+      *)       echo "❌ Unsupported arch: ${ARCH} on macOS"; exit 1 ;;
+    esac
+    ;;
+  Linux)
+    case "${ARCH}" in
+      x86_64)  TARGET="x86_64-unknown-linux-gnu"  ;;
+      aarch64) TARGET="aarch64-unknown-linux-gnu"  ;;
+      *)       echo "❌ Unsupported arch: ${ARCH} on Linux"; exit 1 ;;
+    esac
+    ;;
+  MINGW*|MSYS*|CYGWIN*)
+    case "${ARCH}" in
+      x86_64)  TARGET="x86_64-pc-windows-msvc"   ;;
+      arm64)   TARGET="aarch64-pc-windows-msvc"   ;;
+      *)       echo "❌ Unsupported arch: ${ARCH} on Windows"; exit 1 ;;
+    esac
+    ;;
   *)
-    echo "❌ Unsupported OS: $OS"
+    echo "❌ Unsupported OS: ${OS}"
     exit 1
     ;;
 esac
 
-echo "🔍 Checking latest release of $REPO..."
+echo "🔍 Platform: ${OS} / ${ARCH} → ${TARGET}"
 
-LATEST=$(gh release view --repo "$REPO" --json tagName --jq '.tagName' 2>/dev/null || true)
+# ── Determine archive extension ────────────────────────────────────
+case "${TARGET}" in
+  *-windows-*) EXT="zip"   ;;
+  *)           EXT="tar.xz" ;;
+esac
 
-if [ -z "$LATEST" ]; then
-  echo "⚠️  No release found."
-  echo "   Trying latest CI artifact..."
-  RUN_ID=$(gh run list --repo "$REPO" --branch main --workflow "Build Fresher" --limit 1 --json databaseId --jq '.[0].databaseId' 2>/dev/null || true)
-  if [ -z "$RUN_ID" ]; then
-    echo "❌ No CI run found either."
-    echo "   Run 'gh workflow run \"Build Fresher\" --repo $REPO' first."
+ARTIFACT_NAME="fresher-${TARGET}"
+ARCHIVE_NAME="fresher-${TARGET}.${EXT}"
+
+# ── Try release first, fall back to CI artifact ─────────────────────
+DOWNLOAD_DIR="/tmp/fresher-update-$$"
+mkdir -p "${DOWNLOAD_DIR}"
+trap 'rm -rf "${DOWNLOAD_DIR}"' EXIT
+
+LATEST_TAG=$(gh release view --repo "${REPO}" --json tagName --jq '.tagName' 2>/dev/null || true)
+
+if [ -n "${LATEST_TAG}" ]; then
+  echo "📥 Downloading ${LATEST_TAG} for ${TARGET}..."
+  gh release download "${LATEST_TAG}" \
+    --repo "${REPO}" \
+    --pattern "${ARCHIVE_NAME}" \
+    --pattern "${ARCHIVE_NAME}.sha256" \
+    --dir "${DOWNLOAD_DIR}" 2>/dev/null || true
+fi
+
+# If release download didn't produce the file, try CI artifact
+if [ ! -f "${DOWNLOAD_DIR}/${ARCHIVE_NAME}" ]; then
+  echo "⚠️  No matching release asset found. Trying latest CI artifact..."
+  RUN_ID=$(gh run list --repo "${REPO}" --branch master --workflow "Build Fresher" --limit 1 \
+    --json databaseId --jq '.[0].databaseId' 2>/dev/null || true)
+
+  if [ -z "${RUN_ID}" ]; then
+    echo "❌ No CI run found. Run 'gh workflow run \"Build Fresher\" --repo ${REPO}' first."
     exit 1
   fi
-  echo "📦 Downloading artifact from run #$RUN_ID..."
-  gh run download "$RUN_ID" --repo "$REPO" --name "fresher-$PLATFORM" --dir /tmp/fresher-update
-else
-  echo "📥 Downloading $LATEST..."
-  gh release download "$LATEST" --repo "$REPO" --dir /tmp/fresher-update
+
+  echo "📦 Downloading artifact from run #${RUN_ID}..."
+  gh run download "${RUN_ID}" \
+    --repo "${REPO}" \
+    --name "${ARTIFACT_NAME}" \
+    --dir "${DOWNLOAD_DIR}"
 fi
 
-# Find the binary (might be named differently in artifact vs release)
-BIN_PATH=$(find /tmp/fresher-update -type f -exec file {} \; | grep -i "Mach-O\|ELF" | head -1 | cut -d: -f1)
-if [ -z "$BIN_PATH" ]; then
-  # Fallback: just grab whatever file there is
-  BIN_PATH=$(find /tmp/fresher-update -type f | head -1)
+# ── Verify checksum ─────────────────────────────────────────────────
+if [ -f "${DOWNLOAD_DIR}/${ARCHIVE_NAME}.sha256" ]; then
+  echo "🔐 Verifying checksum..."
+  (cd "${DOWNLOAD_DIR}" && sha256sum -c "${ARCHIVE_NAME}.sha256")
 fi
 
-if [ -z "$BIN_PATH" ]; then
+# ── Extract ─────────────────────────────────────────────────────────
+echo "📦 Extracting..."
+case "${EXT}" in
+  zip)
+    if command -v unzip &>/dev/null; then
+      unzip -o "${DOWNLOAD_DIR}/${ARCHIVE_NAME}" -d "${DOWNLOAD_DIR}/extracted"
+    else
+      # Fallback for systems without unzip (e.g. minimal Windows)
+      python3 -c "import zipfile, sys; zipfile.ZipFile(sys.argv[1]).extractall('${DOWNLOAD_DIR}/extracted')" "${DOWNLOAD_DIR}/${ARCHIVE_NAME}"
+    fi
+    ;;
+  tar.xz)
+    tar -xJf "${DOWNLOAD_DIR}/${ARCHIVE_NAME}" -C "${DOWNLOAD_DIR}"
+    # The archive creates a directory named fresher-<target>
+    if [ -d "${DOWNLOAD_DIR}/${ARTIFACT_NAME}" ]; then
+      mv "${DOWNLOAD_DIR}/${ARTIFACT_NAME}/fresh" "${DOWNLOAD_DIR}/extracted/fresh" 2>/dev/null || true
+    fi
+    ;;
+esac
+
+# ── Find the binary ─────────────────────────────────────────────────
+BIN_PATH=$(find "${DOWNLOAD_DIR}/extracted" -type f -name "fresh*" ! -name "*.sha256" ! -name "*.zip" 2>/dev/null | head -1)
+
+if [ -z "${BIN_PATH}" ]; then
+  # Broader search
+  BIN_PATH=$(find "${DOWNLOAD_DIR}" -type f -exec file {} \; | grep -i "Mach-O\|ELF\|PE32\|executable" | head -1 | cut -d: -f1)
+fi
+
+if [ -z "${BIN_PATH}" ]; then
   echo "❌ No binary found in download."
-  rm -rf /tmp/fresher-update
   exit 1
 fi
 
-echo "📦 Installing to $INSTALL_DIR/$BIN_NAME..."
+# ── Install ─────────────────────────────────────────────────────────
+echo "📦 Installing to ${INSTALL_DIR}/${BIN_NAME}..."
+
+mkdir -p "${INSTALL_DIR}"
 
 # Backup current binary if it exists and isn't already a backup
-if [ -f "$INSTALL_DIR/$BIN_NAME" ] && [ ! -f "$INSTALL_DIR/$BIN_NAME.bak" ]; then
-  cp "$INSTALL_DIR/$BIN_NAME" "$INSTALL_DIR/$BIN_NAME.bak"
-  echo "💾 Backup saved as $INSTALL_DIR/$BIN_NAME.bak"
+if [ -f "${INSTALL_DIR}/${BIN_NAME}" ] && [ ! -f "${INSTALL_DIR}/${BIN_NAME}.bak" ]; then
+  cp "${INSTALL_DIR}/${BIN_NAME}" "${INSTALL_DIR}/${BIN_NAME}.bak"
+  echo "💾 Backup saved as ${INSTALL_DIR}/${BIN_NAME}.bak"
 fi
 
-cp "$BIN_PATH" "$INSTALL_DIR/$BIN_NAME"
-chmod +x "$INSTALL_DIR/$BIN_NAME"
-
-echo "🧹 Cleaning up..."
-rm -rf /tmp/fresher-update
+cp "${BIN_PATH}" "${INSTALL_DIR}/${BIN_NAME}"
+chmod +x "${INSTALL_DIR}/${BIN_NAME}"
 
 echo "✅ fresher installed successfully!"
-echo "   Version: $("$INSTALL_DIR/$BIN_NAME" --version 2>/dev/null || echo 'N/A')"
+echo "   Version: $("${INSTALL_DIR}/${BIN_NAME}" --version 2>/dev/null || echo 'N/A')"
 echo ""
 echo "   Run 'fresh' to start the editor."

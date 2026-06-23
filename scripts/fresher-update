@@ -3,13 +3,13 @@
 # Repository: https://github.com/nicolaslima/fresher
 #
 # Detects your platform and downloads the correct artifact from the
-# latest CI run (or release). Installs to ~/.local/bin/fresh.
+# latest CI run (or release). Installs to ~/.local/bin/fresher.
 
 set -euo pipefail
 
 REPO="nicolaslima/fresher"
 INSTALL_DIR="${HOME}/.local/bin"
-BIN_NAME="fresh"
+BIN_NAME="fresher"
 
 # ── Platform detection ──────────────────────────────────────────────
 OS="$(uname -s)"
@@ -109,13 +109,13 @@ case "${EXT}" in
     tar -xJf "${DOWNLOAD_DIR}/${ARCHIVE_NAME}" -C "${DOWNLOAD_DIR}"
     # The archive creates a directory named fresher-<target>
     if [ -d "${DOWNLOAD_DIR}/${ARTIFACT_NAME}" ]; then
-      mv "${DOWNLOAD_DIR}/${ARTIFACT_NAME}/fresh" "${DOWNLOAD_DIR}/extracted/fresh" 2>/dev/null || true
+      mv "${DOWNLOAD_DIR}/${ARTIFACT_NAME}/fresher" "${DOWNLOAD_DIR}/extracted/fresher" 2>/dev/null || true
     fi
     ;;
 esac
 
 # ── Find the binary ─────────────────────────────────────────────────
-BIN_PATH=$(find "${DOWNLOAD_DIR}/extracted" -type f -name "fresh*" ! -name "*.sha256" ! -name "*.zip" 2>/dev/null | head -1)
+BIN_PATH=$(find "${DOWNLOAD_DIR}/extracted" -type f -name "fresher*" ! -name "*.sha256" ! -name "*.zip" 2>/dev/null | head -1)
 
 if [ -z "${BIN_PATH}" ]; then
   # Broader search
@@ -144,4 +144,4 @@ chmod +x "${INSTALL_DIR}/${BIN_NAME}"
 echo "✅ fresher installed successfully!"
 echo "   Version: $("${INSTALL_DIR}/${BIN_NAME}" --version 2>/dev/null || echo 'N/A')"
 echo ""
-echo "   Run 'fresh' to start the editor."
+echo "   Run 'fresher' to start the editor."

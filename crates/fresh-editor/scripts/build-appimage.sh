@@ -1,10 +1,10 @@
 #!/bin/bash
-# Build an AppImage from a pre-built fresh binary
+# Build an AppImage from a pre-built fresher binary
 #
 # Usage: ./scripts/build-appimage.sh <binary-dir> <version> [arch]
 #
 # Arguments:
-#   binary-dir  Directory containing the 'fresh' binary. Plugins and themes
+#   binary-dir  Directory containing the 'fresher' binary. Plugins and themes
 #               are compiled into the binary (embed-plugins feature + build.rs
 #               BUILTIN_THEMES), so no plugins/themes directory is expected.
 #   version     Version string (e.g., "0.1.0")
@@ -22,7 +22,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-APP_ID="io.github.sinelaw.fresh"
+APP_ID="io.github.nicolaslima.fresher"
 
 # Parse arguments
 if [ $# -lt 2 ]; then
@@ -49,8 +49,8 @@ case "$ARCH" in
 esac
 
 # Validate binary exists
-if [ ! -f "$BINARY_DIR/fresh" ]; then
-    echo "Error: Binary not found at $BINARY_DIR/fresh"
+if [ ! -f "$BINARY_DIR/fresher" ]; then
+    echo "Error: Binary not found at $BINARY_DIR/fresher"
     exit 1
 fi
 
@@ -58,7 +58,7 @@ fi
 WORK_DIR=$(mktemp -d)
 trap "rm -rf $WORK_DIR" EXIT
 
-echo "=== Building AppImage for fresh $VERSION ($ARCH) ==="
+echo "=== Building AppImage for fresher $VERSION ($ARCH) ==="
 echo "Binary dir: $BINARY_DIR"
 echo "Work dir: $WORK_DIR"
 echo ""
@@ -87,21 +87,21 @@ mkdir -p "$APPDIR/usr/share/icons/hicolor/scalable/apps"
 mkdir -p "$APPDIR/usr/share/metainfo"
 
 # Binary goes straight into /usr/bin (plugins/themes are embedded).
-cp "$BINARY_DIR/fresh" "$APPDIR/usr/bin/fresh"
-chmod 755 "$APPDIR/usr/bin/fresh"
+cp "$BINARY_DIR/fresher" "$APPDIR/usr/bin/fresher"
+chmod 755 "$APPDIR/usr/bin/fresher"
 
 # Copy desktop file from source and add AppImage version
-DESKTOP_SRC="$(cd "$REPO_ROOT/../.." && pwd)/crates/fresh-editor/resources/fresh.desktop"
-cp "$DESKTOP_SRC" "$APPDIR/fresh.desktop"
-echo "X-AppImage-Version=${VERSION}" >> "$APPDIR/fresh.desktop"
+DESKTOP_SRC="$(cd "$REPO_ROOT/../.." && pwd)/crates/fresh-editor/resources/fresher.desktop"
+cp "$DESKTOP_SRC" "$APPDIR/fresher.desktop"
+echo "X-AppImage-Version=${VERSION}" >> "$APPDIR/fresher.desktop"
 
 # Also place in standard location
-cp "$APPDIR/fresh.desktop" "$APPDIR/usr/share/applications/"
+cp "$APPDIR/fresher.desktop" "$APPDIR/usr/share/applications/"
 
 # Copy icon (SVG + hicolor PNGs)
 ICON_SRC="$REPO_ROOT/flatpak/${APP_ID}.svg"
-cp "$ICON_SRC" "$APPDIR/fresh.svg"
-cp "$ICON_SRC" "$APPDIR/usr/share/icons/hicolor/scalable/apps/fresh.svg"
+cp "$ICON_SRC" "$APPDIR/fresher.svg"
+cp "$ICON_SRC" "$APPDIR/usr/share/icons/hicolor/scalable/apps/fresher.svg"
 
 # Install hicolor PNG icons for desktop environments that prefer raster icons
 ICONS_ROOT="$(cd "$REPO_ROOT/../.." && pwd)/docs/icons/linux/hicolor"
@@ -109,7 +109,7 @@ if [ -d "$ICONS_ROOT" ]; then
     for size_dir in "$ICONS_ROOT"/*/apps; do
         size=$(basename "$(dirname "$size_dir")")
         mkdir -p "$APPDIR/usr/share/icons/hicolor/${size}/apps"
-        cp "$size_dir/fresh.png" "$APPDIR/usr/share/icons/hicolor/${size}/apps/fresh.png"
+        cp "$size_dir/fresher.png" "$APPDIR/usr/share/icons/hicolor/${size}/apps/fresher.png"
     done
     echo "Installed hicolor PNG icons"
 fi
@@ -125,7 +125,7 @@ cat > "$APPDIR/AppRun" << 'EOF'
 #!/bin/bash
 SELF=$(readlink -f "$0")
 HERE=${SELF%/*}
-exec "${HERE}/usr/bin/fresh" "$@"
+exec "${HERE}/usr/bin/fresher" "$@"
 EOF
 chmod +x "$APPDIR/AppRun"
 
@@ -136,7 +136,7 @@ echo "=== AppDir structure ==="
 
 echo ""
 echo "=== Building AppImage ==="
-OUTPUT_NAME="fresh-editor-${VERSION}-${ARCH}.AppImage"
+OUTPUT_NAME="fresher-editor-${VERSION}-${ARCH}.AppImage"
 export ARCH
 
 cd "$WORK_DIR"

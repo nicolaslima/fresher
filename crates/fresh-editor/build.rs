@@ -43,12 +43,12 @@ fn main() {
             let version = env!("CARGO_PKG_VERSION");
             res.set("FileVersion", version);
             res.set("ProductVersion", version);
-            res.set("ProductName", "Fresh");
-            res.set("FileDescription", "Fresh — fast terminal text editor");
+            res.set("ProductName", "Fresher");
+            res.set("FileDescription", "Fresher — fast terminal text editor");
             res.set("CompanyName", "Fresh");
             res.set("LegalCopyright", "Licensed under GPL-2.0");
-            res.set("OriginalFilename", "fresh.exe");
-            res.set("InternalName", "fresh");
+            res.set("OriginalFilename", "fresher.exe");
+            res.set("InternalName", "fresher");
 
             // Manifest is GUI-only: it declares Per-Monitor DPI awareness
             // and Common Controls v6, both of which are only useful when

@@ -1,9 +1,9 @@
 [Desktop Entry]
-Name=Fresh
+Name=Fresher
 GenericName=Text Editor
 Comment=A lightweight, fast text editor with native window support
-Exec=fresh --gui %F
-Icon=fresh
+Exec=fresher --gui %F
+Icon=fresher
 Terminal=false
 Type=Application
 Categories=Development;TextEditor;Utility;

@@ -390,7 +390,7 @@ impl FileExplorerRenderer {
         } else if node.entry.is_symlink() {
             theme.syntax_type
         } else if node.is_dir() {
-            theme.syntax_keyword
+            theme.editor_fg
         } else {
             theme.editor_fg
         };
@@ -476,7 +476,7 @@ impl FileExplorerRenderer {
             spans.push(Span::raw(" ".repeat(slot_padding)));
         }
 
-        let chain_segment_style = Style::default().fg(theme.syntax_keyword);
+        let chain_segment_style = Style::default().fg(theme.editor_fg);
         let chain_separator_style = Style::default().fg(theme.line_number_fg);
         for name in &chain_prefix_names {
             spans.push(Span::styled(name.clone(), chain_segment_style));

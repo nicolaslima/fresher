@@ -1,42 +1,51 @@
-# Fresh
+# Fresher
 
-A modern, full-featured terminal text editor, **with zero configuration**. Familiar keybindings, mouse support, and IDE-level features — no learning curve required.
+<p align="center">
+  <img src="docs/fresher-logo.png" alt="Fresher Logo" width="200">
+</p>
 
-[Official Website](https://sinelaw.github.io/fresh/) &nbsp;·&nbsp; [Documentation](https://getfresh.dev/docs) &nbsp;·&nbsp; [Discord](https://discord.gg/gqGh3K4uW3) &nbsp;·&nbsp; [Contributing](#contributing)
+<p align="center">
+  <strong>A fork of <a href="https://github.com/sinelaw/fresh">Fresh</a> — a modern, full-featured terminal text editor with zero configuration.</strong>
+</p>
 
-**[Quick Install](#installation):** &nbsp; `curl https://raw.githubusercontent.com/sinelaw/fresh/refs/heads/master/scripts/install.sh | sh`
-
----
-
-![Fresh Demo](docs/fresh-demo2.gif)
-
-Fresh brings the intuitive UX of VS Code and Sublime Text to the terminal. Standard keybindings, full mouse support, menus, and a command palette — everything works the way you'd expect, right out of the box. No modes, no memorizing shortcuts.
-
-Built for real-world performance: Fresh handles [multi-gigabyte files](https://noamlewis.com/blog/2025/12/09/how-fresh-loads-huge-files-fast) with negligible memory overhead and delivers consistently low-latency input, regardless of file size.
-
-### Command Palette & Fuzzy Finder
-
-One shortcut to find files, run commands, switch buffers, and jump to any line.
-
-![Command Palette](docs/blog/productivity/command-palette/showcase.gif)
-
-### Multi-Cursor Editing
-
-Select and edit multiple occurrences simultaneously — the same workflow you know from graphical editors.
-
-![Multi-Cursor](docs/blog/editing/multi-cursor/showcase.gif)
-
-### Themes & Customization
-
-Browse and apply color themes instantly. Full settings UI and interactive keybinding editor included.
-
-![Select Theme](docs/blog/themes/select-theme/showcase.gif)
-
-See more feature demos: [Editing](https://getfresh.dev/docs/blog/editing) (search & replace, block selection, sort lines, ...) · [Productivity](https://getfresh.dev/docs/blog/productivity) (file explorer, split view, integrated terminal, ...) · [Themes](https://getfresh.dev/docs/blog/themes)
+<p align="center">
+  Familiar keybindings, mouse support, and IDE-level features — no learning curve required.
+</p>
 
 ---
 
-## Feature Overview
+## About
+
+Fresher is a community fork of [Fresh](https://github.com/sinelaw/fresh), keeping the core editor synchronized with upstream while adding small quality-of-life improvements.
+
+### What's different from upstream
+
+| Customization | Description |
+|---|---|
+| **Gruvbox folder colors** | File explorer folders and breadcrumbs use `editor_fg` instead of `syntax_keyword` for better visibility with the Gruvbox theme |
+| **Update checker** | Points to [nicolaslima/fresher](https://github.com/nicolaslima/fresher) releases instead of upstream |
+| **`fresher-update` script** | Simple install/update script with platform detection and a `fresher` alias symlink |
+| **Simplified CI** | Stripped-down GitHub Actions — just build, release, and upstream sync. No publishing to package managers |
+
+Everything else is identical to upstream. Syncing with Fresh is automated via [sync-upstream.yml](.github/workflows/sync-upstream.yml).
+
+---
+
+## Quick Install (Fresher)
+
+```bash
+curl -sL https://raw.githubusercontent.com/nicolaslima/fresher/master/scripts/fresher-update | bash
+```
+
+This installs the `fresh` binary to `~/.local/bin/` and creates a `fresher` alias symlink, so you can run either `fresh` or `fresher` from your terminal.
+
+**Requires:** `gh` CLI ([GitHub CLI](https://cli.github.com/)) installed and authenticated.
+
+---
+
+## Features
+
+Fresh brings the intuitive UX of VS Code and Sublime Text to the terminal. Standard keybindings, full mouse support, menus, and a command palette — everything works the way you'd expect, right out of the box.
 
 | Category | Features |
 |----------|----------|
@@ -48,216 +57,45 @@ See more feature demos: [Editing](https://getfresh.dev/docs/blog/editing) (searc
 | **Language Server (LSP)** | go to definition, references, hover, code actions, rename, diagnostics, autocompletion |
 | **Productivity** | command palette, menu bar, keyboard macros, git log, diagnostics panel |
 | **Extensibility** | TypeScript plugins (sandboxed QuickJS), color highlighter, TODO highlighter, merge conflicts, path complete, keymaps |
-| **Internationalization** | Multiple language support (see [`locales/`](locales/)), plugin translation system |
+| **Internationalization** | Multiple language support, plugin translation system |
 
-## Installation
+### Command Palette & Fuzzy Finder
 
-Quick install (autodetect best method):
+![Command Palette](docs/blog/productivity/command-palette/showcase.gif)
 
-`curl https://raw.githubusercontent.com/sinelaw/fresh/refs/heads/master/scripts/install.sh | sh`
+### Multi-Cursor Editing
 
-Or, pick your preferred method:
+![Multi-Cursor](docs/blog/editing/multi-cursor/showcase.gif)
+
+### Themes & Customization
+
+![Select Theme](docs/blog/themes/select-theme/showcase.gif)
+
+---
+
+## Installation (from Fresh upstream)
+
+If you prefer to install from the original Fresh project:
 
 | Platform | Method |
 |----------|--------|
-| macOS | [brew](#brew) |
-| Bazzite/Bluefin/Aurora Linux | [brew](#brew) |
-| Windows | [winget](#windows-winget) |
-| Arch Linux | [AUR](#arch-linux-aur) |
-| Debian/Ubuntu | [.deb](#debianubuntu-deb) |
-| Fedora/RHEL | [.rpm](#fedorarhel-rpm), [Terra](https://terra.fyralabs.com/) |
-| OpenSUSE | [zypper](#opensuse-zypper), [.rpm](#fedorarhel-rpm) |
-| FreeBSD | [ports / pkg](https://www.freshports.org/editors/fresh) |
-| Gentoo | [GURU](#gentoo-guru) |
-| Linux (any distro) | [AppImage](#appimage), [Flatpak](#flatpak) |
-| All platforms | [Pre-built binaries](#pre-built-binaries) |
-| npm | [npm / npx](#npm) |
-| Rust users (Fast) | [cargo-binstall](#using-cargo-binstall) |
-| Rust users | [crates.io](#from-cratesio) |
-| Nix | [Nix flakes](#nix-flakes) |
-| Developers | [From source](#from-source) |
+| macOS | `brew install fresh-editor` |
+| Windows | `winget install fresh-editor` |
+| Arch Linux | [AUR](https://aur.archlinux.org/packages/fresh-editor-bin) |
+| Debian/Ubuntu | [.deb from releases](https://github.com/sinelaw/fresh/releases) |
+| Fedora/RHEL | [.rpm from releases](https://github.com/sinelaw/fresh/releases) |
+| npm | `npm install -g @fresh-editor/fresh-editor` |
+| Nix | `nix run github:sinelaw/fresh` |
+| From source | `cargo install --locked fresh-editor` |
 
-### Brew
+See the [Fresh README](https://github.com/sinelaw/fresh) for full installation instructions.
 
-On macOS and some linux distros (Bazzite/Bluefin/Aurora):
-
-> **Note:** On macOS, see [macOS Terminal Tips](https://getfresh.dev/docs/configuration/keyboard#macos-terminal-tips) for recommended terminal configuration.
-
-```bash
-brew install fresh-editor
-```
-
-### Windows (winget)
-
-```bash
-winget install fresh-editor
-```
-
-Alternatively, Windows users can use [npm](#npm).
-
-### Arch Linux ([AUR](https://aur.archlinux.org/packages/fresh-editor-bin))
-
-**Binary package (recommended, faster install):**
-
-```bash
-git clone https://aur.archlinux.org/fresh-editor-bin.git
-cd fresh-editor-bin
-makepkg --syncdeps --install
-```
-
-**Build from source:**
-
-```bash
-git clone https://aur.archlinux.org/fresh-editor.git
-cd fresh-editor
-makepkg --syncdeps --install
-```
-
-**Using an AUR helper (such as `yay` or `paru`):**
-
-```bash
-# Binary package (recommended, faster install)
-yay -S fresh-editor-bin
-
-# Or build from source
-yay -S fresh-editor
-```
-
-### Debian/Ubuntu (.deb)
-
-Download and install the latest release:
-
-```bash
-curl -sL $(curl -s https://api.github.com/repos/sinelaw/fresh/releases/latest | grep "browser_download_url.*_$(dpkg --print-architecture)\.deb" | cut -d '"' -f 4) -o fresh-editor.deb && sudo dpkg -i fresh-editor.deb
-```
-
-Or download the `.deb` file manually from the [releases page](https://github.com/sinelaw/fresh/releases).
-
-### Fedora/RHEL (.rpm)
-
-Download and install the latest release:
-
-```bash
-curl -sL $(curl -s https://api.github.com/repos/sinelaw/fresh/releases/latest | grep "browser_download_url.*\.$(uname -m)\.rpm" | cut -d '"' -f 4) -o fresh-editor.rpm && sudo rpm -U fresh-editor.rpm
-```
-
-Or download the `.rpm` file manually from the [releases page](https://github.com/sinelaw/fresh/releases).
-
-### OpenSUSE (zypper)
-
-```bash
-zypper install fresh-editor
-```
-
-### Gentoo ([GURU](https://wiki.gentoo.org/wiki/Project:GURU))
-
-Enable the repository as read in [Project:GURU/Information for End Users](https://wiki.gentoo.org/wiki/Project:GURU/Information_for_End_Users) then emerge the package:
-
-
-```bash
-emerge --ask app-editors/fresh
-```
-
-### AppImage
-
-Download the `.AppImage` file from the [releases page](https://github.com/sinelaw/fresh/releases) and run:
-
-```bash
-chmod +x fresh-editor-VERSION-x86_64.AppImage
-./fresh-editor-VERSION-x86_64.AppImage
-```
-
-**For faster startup** (recommended): Extract the AppImage instead of running it directly. This avoids the FUSE mount overhead on each launch (~10x faster):
-
-```bash
-./fresh-editor-VERSION-x86_64.AppImage --appimage-extract
-mkdir -p ~/.local/share/fresh-editor ~/.local/bin
-mv squashfs-root/* ~/.local/share/fresh-editor/
-ln -sf ~/.local/share/fresh-editor/usr/bin/fresh ~/.local/bin/fresh
-```
-
-Ensure `~/.local/bin` is in your PATH. Available for x86_64 and aarch64 architectures.
-
-### Flatpak
-
-Download the `.flatpak` bundle from the [releases page](https://github.com/sinelaw/fresh/releases) and install:
-
-```bash
-flatpak install --user fresh-editor-VERSION-x86_64.flatpak
-flatpak run io.github.sinelaw.fresh
-```
-
-See [flatpak/README.md](flatpak/README.md) for building from source.
-
-### Pre-built binaries
-
-Download the latest release for your platform from the [releases page](https://github.com/sinelaw/fresh/releases).
-
-### Using mise
-
-```bash
-mise use github:sinelaw/fresh
-```
-
-### npm
-
-```bash
-npm install -g @fresh-editor/fresh-editor
-```
-
-Or try it without installing:
-
-```bash
-npx @fresh-editor/fresh-editor
-```
-
-### Using cargo-binstall
-
-To install the binary directly without compiling (much faster than crates.io):
-
-First, install cargo-binstall if you haven't already
-
-```bash
-cargo install cargo-binstall
-```
-
-Then install fresh
-
-```bash
-cargo binstall fresh-editor
-```
-
-### Nix flakes
-
-Run without installing:
-```bash
-nix run github:sinelaw/fresh
-```
-
-Or install to your profile:
-```bash
-nix profile add github:sinelaw/fresh
-```
-
-### From crates.io
-
-```bash
-cargo install --locked fresh-editor
-```
-
-### From source
-
-```bash
-git clone https://github.com/sinelaw/fresh.git
-cd fresh
-cargo build --release
-./target/release/fresh [file]
-```
+---
 
 ## Documentation
 
 - [User Guide](https://getfresh.dev/docs)
-- [macOS Tips](https://getfresh.dev/docs/configuration/keyboard#macos-terminal-tips) - Terminal configuration, keyboard shortcuts, and troubleshooting for Mac users
+- [macOS Tips](https://getfresh.dev/docs/configuration/keyboard#macos-terminal-tips)
 - [Plugin Development](https://getfresh.dev/docs/plugins/development)
 
 ## Contributing

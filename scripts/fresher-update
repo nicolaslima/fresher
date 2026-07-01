@@ -128,6 +128,11 @@ fi
 cp "${BINARY_PATH}" "${INSTALL_DIR}/${BIN_NAME}"
 chmod +x "${INSTALL_DIR}/${BIN_NAME}"
 
+# macOS: ad-hoc sign to avoid Gatekeeper killing the binary
+if [ "$(uname -s)" = "Darwin" ]; then
+  codesign --force --sign - "${INSTALL_DIR}/${BIN_NAME}" 2>/dev/null || true
+fi
+
 # Create 'fresher' alias (symlink)
 ln -sf "${INSTALL_DIR}/${BIN_NAME}" "${INSTALL_DIR}/fresher"
 

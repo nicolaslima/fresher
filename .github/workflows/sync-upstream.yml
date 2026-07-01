@@ -1,0 +1,64 @@
+name: Sync Upstream
+
+on:
+  schedule:
+    - cron: '0 0 1,15 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Add upstream remote
+        run: git remote add upstream https://github.com/sinelaw/fresh.git
+
+      - name: Fetch upstream
+        run: git fetch upstream
+
+      - name: Merge upstream/master
+        run: |
+          git config user.email "fresher-bot@localhost"
+          git config user.name "Fresher Bot"
+          git checkout master
+          git merge upstream/master --no-edit || true
+
+      - name: Reapply patch (syntax_keyword → editor_fg)
+        run: |
+          sed -i 's/theme\.syntax_keyword/theme.editor_fg/' \
+            crates/fresh-editor/src/view/ui/file_explorer.rs
+
+      - name: Check if patch needs manual review
+        id: check
+        run: |
+          if grep -q 'theme\.syntax_keyword' crates/fresh-editor/src/view/ui/file_explorer.rs; then
+            echo "conflict=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "conflict=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create issue on conflict
+        if: steps.check.outputs.conflict == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: '⚠️ Sync conflict: folder color patch needs manual review',
+              body: 'The upstream changed `crates/fresh-editor/src/view/ui/file_explorer.rs` and our patch (`syntax_keyword → editor_fg`) could not be applied automatically.\n\nCheck the current state and reapply manually.'
+            })
+
+      - name: Commit and push if clean
+        if: steps.check.outputs.conflict == 'false'
+        run: |
+          git add crates/fresh-editor/src/view/ui/file_explorer.rs
+          git diff --cached --quiet || git commit -m "chore: sync upstream and reapply folder color patch"
+          git push origin master

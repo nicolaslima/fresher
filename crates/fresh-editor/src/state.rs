@@ -199,6 +199,15 @@ pub struct EditorState {
     /// wheel is ignored and no scrollbar is drawn.
     pub scrollable: bool,
 
+    /// Explicit per-buffer override for indentation-guide visibility.
+    /// `None` = follow the default (the global `editor.indentation_guide`,
+    /// except virtual buffers which default off — guides are a source-code aid,
+    /// like the column rulers). `Some(false)` = force off; `Some(true)` = force
+    /// on using the global mode. Set via the `setIndentationGuide` plugin API so
+    /// a file-backed tool view that the virtual-buffer default can't catch — the
+    /// Git Log commit-detail diff is the motivating case — can opt out.
+    pub indentation_guide_override: Option<bool>,
+
     /// Per-buffer user settings (tab size, indentation style, etc.)
     /// These settings are preserved across file reloads (auto-revert)
     pub buffer_settings: BufferSettings,
@@ -253,6 +262,26 @@ pub struct EditorState {
     /// version + geometry).  See
     /// `crate::view::visual_row_index` for invariants.
     pub visual_row_index: crate::view::visual_row_index::VisualRowIndex,
+
+    /// Forward coordinate mapper: remaps a byte coordinate captured at an older
+    /// buffer `version()` to the current version. Fed at the marker-adjustment
+    /// chokepoint (`apply_insert` / `apply_delete` / `replay_bulk_marker_adjustments`)
+    /// so its coverage matches the marker tree's by construction. Used to repair
+    /// stale coordinates that plugins echo back from fire-and-forget
+    /// `lines_changed` hooks. See `crate::model::coord_map`.
+    pub coord_map: crate::model::coord_map::CoordMap,
+}
+
+/// The fields of an [`Event::AddOverlay`], grouped so
+/// [`EditorState::apply_add_overlay`] takes one argument instead of seven.
+struct AddOverlaySpec<'a> {
+    namespace: &'a Option<crate::view::overlay::OverlayNamespace>,
+    range: &'a Range<usize>,
+    face: &'a EventOverlayFace,
+    priority: i32,
+    message: &'a Option<String>,
+    extend_to_line_end: bool,
+    url: &'a Option<String>,
 }
 
 impl EditorState {
@@ -297,6 +326,7 @@ impl EditorState {
             cursor_visibility_locked: false,
             editing_disabled: false,
             scrollable: true,
+            indentation_guide_override: None,
             buffer_settings: BufferSettings::default(),
             reference_highlighter: ReferenceHighlighter::new(),
             is_composite_buffer: false,
@@ -309,6 +339,7 @@ impl EditorState {
             display_name: "Text".to_string(),
             line_wrap_cache: crate::view::line_wrap_cache::LineWrapCache::default(),
             visual_row_index: crate::view::visual_row_index::VisualRowIndex::default(),
+            coord_map: crate::model::coord_map::CoordMap::default(),
         }
     }
 
@@ -428,6 +459,39 @@ impl EditorState {
         state
     }
 
+    /// Remap a byte coordinate that a plugin computed against an older buffer
+    /// version forward to the current buffer state.
+    ///
+    /// `epoch` is the `buffer.version()` the coordinate was captured at (the
+    /// `epoch` carried by the `lines_changed` hook). `None` means the caller
+    /// has no epoch to remap against, so the coordinate is taken as-is.
+    /// `Some(_)` returning `None` means the epoch is too old to map (evicted or
+    /// barriered) — the caller should skip the operation and let convergence
+    /// (`cursor_moved → refreshLines`) redo it with fresh coordinates.
+    pub fn map_plugin_coord(&self, coord: usize, epoch: Option<u64>) -> Option<usize> {
+        match epoch {
+            None => Some(coord),
+            Some(v) => self.coord_map.map(coord, v),
+        }
+    }
+
+    /// Remap both ends of a `[start, end)` range via [`Self::map_plugin_coord`].
+    /// Returns `None` if either end is unmappable (epoch evicted/barriered) so a
+    /// coordinate-bearing handler can `?`/early-return as one unit instead of
+    /// re-implementing the two-coord match. Every range-taking plugin command
+    /// goes through this, so the stale-coordinate repair can't be forgotten.
+    pub fn map_plugin_range(
+        &self,
+        start: usize,
+        end: usize,
+        epoch: Option<u64>,
+    ) -> Option<(usize, usize)> {
+        Some((
+            self.map_plugin_coord(start, epoch)?,
+            self.map_plugin_coord(end, epoch)?,
+        ))
+    }
+
     /// Handle an Insert event - adjusts markers, buffer, highlighter, cursors, and line numbers
     fn apply_insert(
         &mut self,
@@ -444,6 +508,11 @@ impl EditorState {
 
         // Insert text into buffer
         self.buffer.insert(position, text);
+
+        // Record the edit for forward coordinate mapping, keyed by the
+        // post-edit version — same shift the marker tree just applied.
+        self.coord_map
+            .record_insert(self.buffer.version(), position, text.len());
 
         // Notify highlighter of the insert (adjusts checkpoint marker positions)
         // and invalidate span cache for the edited range.
@@ -516,6 +585,11 @@ impl EditorState {
 
         // Delete from buffer
         self.buffer.delete(range.clone());
+
+        // Record the edit for forward coordinate mapping, keyed by the
+        // post-edit version — same shift the marker tree just applied.
+        self.coord_map
+            .record_delete(self.buffer.version(), range.start, len);
 
         // Notify highlighter of the delete (adjusts checkpoint marker positions)
         // and invalidate span cache for the edited range.
@@ -641,15 +715,15 @@ impl EditorState {
                 message,
                 extend_to_line_end,
                 url,
-            } => self.apply_add_overlay(
+            } => self.apply_add_overlay(AddOverlaySpec {
                 namespace,
                 range,
                 face,
-                *priority,
+                priority: *priority,
                 message,
-                *extend_to_line_end,
+                extend_to_line_end: *extend_to_line_end,
                 url,
-            ),
+            }),
 
             Event::RemoveOverlay { handle } => {
                 tracing::trace!("RemoveOverlay: handle={:?}", handle);
@@ -812,23 +886,18 @@ impl EditorState {
     }
 
     /// Materialize an `AddOverlay` event into a tracked [`Overlay`].
-    fn apply_add_overlay(
-        &mut self,
-        namespace: &Option<crate::view::overlay::OverlayNamespace>,
-        range: &Range<usize>,
-        face: &EventOverlayFace,
-        priority: i32,
-        message: &Option<String>,
-        extend_to_line_end: bool,
-        url: &Option<String>,
-    ) {
-        let overlay_face = convert_event_face_to_overlay_face(face);
-        let mut overlay =
-            Overlay::with_priority(&mut self.marker_list, range.clone(), overlay_face, priority);
-        overlay.namespace = namespace.clone();
-        overlay.message = message.clone();
-        overlay.extend_to_line_end = extend_to_line_end;
-        overlay.url = url.clone();
+    fn apply_add_overlay(&mut self, spec: AddOverlaySpec) {
+        let overlay_face = convert_event_face_to_overlay_face(spec.face);
+        let mut overlay = Overlay::with_priority(
+            &mut self.marker_list,
+            spec.range.clone(),
+            overlay_face,
+            spec.priority,
+        );
+        overlay.namespace = spec.namespace.clone();
+        overlay.message = spec.message.clone();
+        overlay.extend_to_line_end = spec.extend_to_line_end;
+        overlay.url = spec.url.clone();
         self.overlays.add(overlay);
     }
 
@@ -887,6 +956,14 @@ impl EditorState {
         // consolidate_after_save() can replace buffers between snapshot and restore.
         if let Some(snapshot) = new_snapshot {
             self.buffer.restore_buffer_state(snapshot);
+
+            // A snapshot restore with no per-edit triples (hot-exit recovery,
+            // logs loaded from disk) changes content opaquely: the ring can't
+            // replay it, so bar any map across this version. When `edits` is
+            // populated the per-tuple records below describe the delta exactly.
+            if edits.is_empty() {
+                self.coord_map.record_barrier(self.buffer.version());
+            }
         }
 
         self.replay_bulk_marker_adjustments(edits);
@@ -940,8 +1017,13 @@ impl EditorState {
     /// at the same position) are collapsed to their net delta to avoid the
     /// marker-at-boundary problem where a sequential delete+insert pushes
     /// markers incorrectly.
-    fn replay_bulk_marker_adjustments(&mut self, edits: &[(usize, usize, usize)]) {
+    pub(crate) fn replay_bulk_marker_adjustments(&mut self, edits: &[(usize, usize, usize)]) {
+        let version = self.buffer.version();
         for &(pos, del_len, ins_len) in edits {
+            // Feed the coordinate ring the same tuples, in the same
+            // descending-position order, all sharing the post-bulk version.
+            self.coord_map
+                .record_replace(version, pos, del_len, ins_len);
             match (del_len, ins_len) {
                 (d, i) if d > 0 && i > 0 => {
                     // Replacement: adjust by net delta only.
@@ -1739,6 +1821,88 @@ mod tests {
 
         assert_eq!(state.buffer.to_string().unwrap(), "hello");
         assert_eq!(cursors.primary().position, 5);
+    }
+
+    #[test]
+    fn coord_map_remaps_through_real_edits() {
+        // Verifies the marker-adjustment chokepoint actually feeds the
+        // coordinate ring: after real apply_insert / apply_delete, a coordinate
+        // captured at an older version maps forward to its current location.
+        let mut state = EditorState::new(
+            80,
+            24,
+            crate::config::LARGE_FILE_THRESHOLD_BYTES as usize,
+            test_fs(),
+        );
+        let mut cursors = Cursors::new();
+        let cursor_id = cursors.primary_id();
+
+        // Seed: "line0\nTARGET\n" — TARGET begins at byte 6.
+        state.apply(
+            &mut cursors,
+            &Event::Insert {
+                position: 0,
+                text: "line0\nTARGET\n".to_string(),
+                cursor_id,
+            },
+        );
+        let v0 = state.buffer.version();
+        let target_at_v0 = 6usize;
+
+        // No edits since v0: identity, and a None epoch is always verbatim.
+        assert_eq!(
+            state.map_plugin_coord(target_at_v0, Some(v0)),
+            Some(target_at_v0)
+        );
+        assert_eq!(
+            state.map_plugin_coord(target_at_v0, None),
+            Some(target_at_v0)
+        );
+
+        // Insert two lines above the target — it must shift right by 4 bytes.
+        let above = "X\nY\n";
+        state.apply(
+            &mut cursors,
+            &Event::Insert {
+                position: 0,
+                text: above.to_string(),
+                cursor_id,
+            },
+        );
+        let v1 = state.buffer.version();
+        assert!(v1 > v0);
+        assert_eq!(
+            state.map_plugin_coord(target_at_v0, Some(v0)),
+            Some(target_at_v0 + above.len()),
+            "a coord captured at v0 must map forward past the later insert"
+        );
+        // From the current version there is nothing newer to replay.
+        assert_eq!(
+            state.map_plugin_coord(target_at_v0 + above.len(), Some(v1)),
+            Some(target_at_v0 + above.len()),
+        );
+
+        // Delete those lines again — the target shifts back left.
+        state.apply(
+            &mut cursors,
+            &Event::Delete {
+                range: 0..above.len(),
+                deleted_text: above.to_string(),
+                cursor_id,
+            },
+        );
+        let v2 = state.buffer.version();
+        assert!(v2 > v1);
+        // Insert + delete net to zero above the target: a v0 coord is unchanged.
+        assert_eq!(
+            state.map_plugin_coord(target_at_v0, Some(v0)),
+            Some(target_at_v0)
+        );
+        // From v1, only the delete applies.
+        assert_eq!(
+            state.map_plugin_coord(target_at_v0 + above.len(), Some(v1)),
+            Some(target_at_v0),
+        );
     }
 
     #[test]

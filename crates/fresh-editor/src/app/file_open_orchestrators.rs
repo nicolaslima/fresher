@@ -252,15 +252,15 @@ impl Editor {
         self.relayout();
     }
 
-    /// If the active split leaf carries `SplitRole::UtilityDock`,
-    /// move the active leaf back to the user's last regular editor
-    /// leaf. Called from the file-open path so that opening a file
-    /// while a utility panel holds focus doesn't turn the dock into
-    /// a tab strip for ordinary files.
-    ///
-    /// Routing falls back to the first non-dock leaf in tree order
-    /// when the user has only ever interacted with the dock — a
-    /// rare boot-state path.
+    // If the active split leaf carries `SplitRole::UtilityDock`,
+    // move the active leaf back to the user's last regular editor
+    // leaf. Called from the file-open path so that opening a file
+    // while a utility panel holds focus doesn't turn the dock into
+    // a tab strip for ordinary files.
+    //
+    // Routing falls back to the first non-dock leaf in tree order
+    // when the user has only ever interacted with the dock — a
+    // rare boot-state path.
     // `redirect_active_split_away_from_dock_if_needed` lives on
     // `impl Window` — call it via
     // `self.active_window_mut().redirect_active_split_away_from_dock_if_needed()`.
@@ -406,15 +406,15 @@ impl Editor {
         {
             view_state.add_buffer(buffer_id);
             let buf_state = view_state.ensure_buffer_state(buffer_id);
-            buf_state.apply_config_defaults(
-                self.config.editor.line_numbers,
-                self.config.editor.highlight_current_line,
+            buf_state.apply_config_defaults(crate::view::split::ViewConfigDefaults {
+                line_numbers: self.config.editor.line_numbers,
+                highlight_current_line: self.config.editor.highlight_current_line,
                 line_wrap,
-                self.config.editor.wrap_indent,
+                wrap_indent: self.config.editor.wrap_indent,
                 wrap_column,
-                self.config.editor.rulers.clone(),
-                self.config.editor.scroll_offset,
-            );
+                rulers: self.config.editor.rulers.clone(),
+                scroll_offset: self.config.editor.scroll_offset,
+            });
         }
 
         self.set_active_buffer(buffer_id);
@@ -596,15 +596,15 @@ impl Editor {
         {
             view_state.add_buffer(buffer_id);
             let buf_state = view_state.ensure_buffer_state(buffer_id);
-            buf_state.apply_config_defaults(
-                self.config.editor.line_numbers,
-                self.config.editor.highlight_current_line,
+            buf_state.apply_config_defaults(crate::view::split::ViewConfigDefaults {
+                line_numbers: self.config.editor.line_numbers,
+                highlight_current_line: self.config.editor.highlight_current_line,
                 line_wrap,
-                self.config.editor.wrap_indent,
+                wrap_indent: self.config.editor.wrap_indent,
                 wrap_column,
-                self.config.editor.rulers.clone(),
-                self.config.editor.scroll_offset,
-            );
+                rulers: self.config.editor.rulers.clone(),
+                scroll_offset: self.config.editor.scroll_offset,
+            });
         }
 
         self.set_active_buffer(buffer_id);
@@ -623,10 +623,10 @@ impl Editor {
         Ok(buffer_id)
     }
 
-    /// Restore global file state (cursor and scroll position) for a newly opened file
-    ///
-    /// This looks up the file's saved state from the global file states store
-    /// and applies it to both the EditorState (cursor) and SplitViewState (viewport).
+    // Restore global file state (cursor and scroll position) for a newly opened file.
+    //
+    // This looks up the file's saved state from the global file states store
+    // and applies it to both the EditorState (cursor) and SplitViewState (viewport).
     // `restore_global_file_state` and `save_file_state_on_close` live
     // on `impl Window` — call them via
     // `self.active_window_mut().restore_global_file_state(...)` and
@@ -856,15 +856,15 @@ impl Editor {
         {
             view_state.add_buffer(buffer_id);
             let buf_state = view_state.ensure_buffer_state(buffer_id);
-            buf_state.apply_config_defaults(
-                self.config.editor.line_numbers,
-                self.config.editor.highlight_current_line,
+            buf_state.apply_config_defaults(crate::view::split::ViewConfigDefaults {
+                line_numbers: self.config.editor.line_numbers,
+                highlight_current_line: self.config.editor.highlight_current_line,
                 line_wrap,
-                self.config.editor.wrap_indent,
+                wrap_indent: self.config.editor.wrap_indent,
                 wrap_column,
-                self.config.editor.rulers.clone(),
-                self.config.editor.scroll_offset,
-            );
+                rulers: self.config.editor.rulers.clone(),
+                scroll_offset: self.config.editor.scroll_offset,
+            });
         }
 
         Ok(buffer_id)
@@ -1209,15 +1209,15 @@ impl crate::app::window::Window {
             view_state.add_buffer(buffer_id);
             // Initialize per-buffer view state for the new buffer with config defaults
             let buf_state = view_state.ensure_buffer_state(buffer_id);
-            buf_state.apply_config_defaults(
-                cfg.line_numbers,
-                cfg.highlight_current_line,
+            buf_state.apply_config_defaults(crate::view::split::ViewConfigDefaults {
+                line_numbers: cfg.line_numbers,
+                highlight_current_line: cfg.highlight_current_line,
                 line_wrap,
-                cfg.wrap_indent,
+                wrap_indent: cfg.wrap_indent,
                 wrap_column,
-                cfg.rulers,
-                cfg.scroll_offset,
-            );
+                rulers: cfg.rulers,
+                scroll_offset: cfg.scroll_offset,
+            });
             // Auto-activate page view if configured for this language
             if let Some(page_width) = page_view {
                 buf_state.activate_page_view(page_width);

@@ -1488,10 +1488,10 @@ fn collect_list(
         // scroll.
         let mut emitted = 0u32;
         let last = if end < total as usize { end + 1 } else { end };
-        'cards: for i in start..last {
+        'cards: for (offset, card) in rendered_cards[start..last].iter().enumerate() {
+            let i = start + offset;
             let is_selected = i as i32 == effective_sel;
             let item_key = item_keys.get(i).cloned().unwrap_or_default();
-            let card = &rendered_cards[i];
             for r in 0..item_height as usize {
                 if emitted >= avail_rows {
                     break 'cards;
@@ -2546,12 +2546,11 @@ fn render_completion_bottom_border(total_cols: usize) -> TextPropertyEntry {
     }
 }
 
-/// Overlay variant of `render_completion_item`. Same body
-/// (leading space + candidate text + optional scrollbar glyph
-/// + trailing pad), but wrapped with the popup's own
-/// `│ ... │` chrome since overlay rows paint at the panel
-/// width directly without going through a `LabeledSection`'s
-/// row wrapper.
+/// Overlay variant of `render_completion_item`. Same body (leading
+/// space + candidate text + optional scrollbar glyph + trailing pad),
+/// but wrapped with the popup's own `│ ... │` chrome since overlay rows
+/// paint at the panel width directly without going through a
+/// `LabeledSection`'s row wrapper.
 fn render_completion_item_overlay(
     item: &str,
     kind: Option<&str>,

@@ -417,11 +417,11 @@ fn cells_json(buf: &Buffer, r: Rect) -> Value {
         let mut cur_fg: Option<String> = None;
         let mut cur_bg: Option<String> = None;
         let mut cur_mods = Modifier::empty();
-        let mut flush = |runs: &mut Vec<Value>,
-                         text: &mut String,
-                         fg: &Option<String>,
-                         bg: &Option<String>,
-                         m: Modifier| {
+        let flush = |runs: &mut Vec<Value>,
+                     text: &mut String,
+                     fg: &Option<String>,
+                     bg: &Option<String>,
+                     m: Modifier| {
             if !text.is_empty() {
                 runs.push(json!({
                     "t": text,

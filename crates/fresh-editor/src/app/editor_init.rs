@@ -105,7 +105,7 @@ fn set_dot_path(root: &mut serde_json::Value, path: &str, value: serde_json::Val
 /// No-op when the plugin manager is inactive.
 #[allow(clippy::too_many_arguments)]
 fn load_startup_plugins(
-    plugin_manager: &Arc<RwLock<PluginManager>>,
+    plugin_manager: &std::rc::Rc<RwLock<PluginManager>>,
     dir_context: &DirectoryContext,
     bundle_plugin_dirs: &[std::path::PathBuf],
     config: &mut Config,
@@ -381,7 +381,7 @@ pub(super) struct EditorParts {
     // Registries / managers
     pub(super) command_registry: Arc<RwLock<CommandRegistry>>,
     pub(super) quick_open_registry: QuickOpenRegistry,
-    pub(super) plugin_manager: Arc<RwLock<PluginManager>>,
+    pub(super) plugin_manager: std::rc::Rc<RwLock<PluginManager>>,
     pub(super) recovery_service: Arc<std::sync::Mutex<RecoveryService>>,
     pub(super) key_translator: crate::input::key_translator::KeyTranslator,
     pub(super) update_checker: Option<crate::services::release_checker::PeriodicUpdateChecker>,
@@ -455,6 +455,7 @@ impl Editor {
             window_cycle_order: None,
             command_registry: parts.command_registry,
             quick_open_registry: parts.quick_open_registry,
+            lsp_uri_schemes: std::collections::HashSet::new(),
             plugin_manager: parts.plugin_manager,
             recovery_service: parts.recovery_service,
             time_source: parts.time_source,
@@ -927,15 +928,15 @@ impl Editor {
         let mut split_view_states = HashMap::new();
         let initial_split_id = split_manager.active_split();
         let mut initial_view_state = SplitViewState::with_buffer(width, height, buffer_id);
-        initial_view_state.apply_config_defaults(
-            config.editor.line_numbers,
-            config.editor.highlight_current_line,
-            config.editor.line_wrap,
-            config.editor.wrap_indent,
-            config.editor.wrap_column,
-            config.editor.rulers.clone(),
-            config.editor.scroll_offset,
-        );
+        initial_view_state.apply_config_defaults(crate::view::split::ViewConfigDefaults {
+            line_numbers: config.editor.line_numbers,
+            highlight_current_line: config.editor.highlight_current_line,
+            line_wrap: config.editor.line_wrap,
+            wrap_indent: config.editor.wrap_indent,
+            wrap_column: config.editor.wrap_column,
+            rulers: config.editor.rulers.clone(),
+            scroll_offset: config.editor.scroll_offset,
+        });
         split_view_states.insert(initial_split_id, initial_view_state);
 
         // Initialize filesystem manager for file explorer
@@ -975,7 +976,7 @@ impl Editor {
 
         t.phase("split_quickopen_authority");
         // Initialize plugin manager (handles both enabled and disabled cases internally)
-        let plugin_manager = Arc::new(RwLock::new(PluginManager::new(
+        let plugin_manager = std::rc::Rc::new(RwLock::new(PluginManager::new(
             enable_plugins,
             Arc::clone(&command_registry),
             dir_context.clone(),
@@ -1121,7 +1122,7 @@ impl Editor {
             dir_context: dir_context.clone(),
             tokio_runtime: tokio_runtime.clone(),
             async_bridge: Some(async_bridge.clone()),
-            plugin_manager: Arc::clone(&plugin_manager),
+            plugin_manager: std::rc::Rc::clone(&plugin_manager),
             theme: Arc::clone(&theme),
             event_broadcaster: event_broadcaster.clone(),
             recovery_service: Arc::clone(&recovery_service),
@@ -1310,7 +1311,7 @@ impl Editor {
                     dir_context: dir_context.clone(),
                     tokio_runtime: tokio_runtime.clone(),
                     async_bridge: Some(async_bridge.clone()),
-                    plugin_manager: Arc::clone(&plugin_manager),
+                    plugin_manager: std::rc::Rc::clone(&plugin_manager),
                     theme: Arc::clone(&theme),
                     event_broadcaster: event_broadcaster.clone(),
                     recovery_service: Arc::clone(&recovery_service),
@@ -1419,7 +1420,7 @@ impl Editor {
         let needs_seed: Vec<fresh_core::WindowId> = editor
             .windows
             .iter()
-            .filter(|(_, s)| s.buffers.splits().is_none() || s.buffers.len() == 0)
+            .filter(|(_, s)| s.buffers.splits().is_none() || s.buffers.is_empty())
             .map(|(id, _)| *id)
             .collect();
         for id in needs_seed {

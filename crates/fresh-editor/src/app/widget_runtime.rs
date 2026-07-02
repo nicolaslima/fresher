@@ -352,7 +352,7 @@ impl Editor {
                 out_pieces.focus_key,
                 out_pieces.tabbable,
             )
-            .is_err()
+            .is_none()
         {
             tracing::warn!("rerender_widget_panel({}) lost panel mid-call", panel_key);
             return;
@@ -581,12 +581,11 @@ impl Editor {
                 }
                 _ => {}
             },
-            "Backspace" | "Delete" | "Home" | "End" => match widget {
-                Some(fresh_core::api::WidgetSpec::Text { .. }) => {
+            "Backspace" | "Delete" | "Home" | "End" => {
+                if let Some(fresh_core::api::WidgetSpec::Text { .. }) = widget {
                     self.handle_widget_text_key(panel_key, key);
                 }
-                _ => {}
-            },
+            }
             "Enter" => match widget {
                 Some(fresh_core::api::WidgetSpec::Button { .. })
                 | Some(fresh_core::api::WidgetSpec::Toggle { .. }) => {
@@ -654,7 +653,8 @@ impl Editor {
                     // would do). Falls back to `activate` for trees
                     // that aren't checkable, or rows that don't have
                     // a checkbox glyph (`checked: None`).
-                    if !self.fire_tree_toggle_if_checkable(panel_key, &focus_key) {
+                    let toggled = self.fire_tree_toggle_if_checkable(panel_key, &focus_key);
+                    if !toggled {
                         self.fire_tree_activate(panel_key, &focus_key);
                     }
                 }
@@ -1750,12 +1750,10 @@ impl Editor {
         &self,
         buffer_id: crate::model::event::BufferId,
     ) -> Option<crate::widgets::PanelKey> {
-        for panel_key in self.widget_registry.panels_for_buffer(buffer_id) {
-            if self.panel_focused_widget_is_text(&panel_key) {
-                return Some(panel_key);
-            }
-        }
-        None
+        self.widget_registry
+            .panels_for_buffer(buffer_id)
+            .into_iter()
+            .find(|panel_key| self.panel_focused_widget_is_text(panel_key))
     }
 
     /// True when `panel_key`'s currently-focused widget is a `Text`

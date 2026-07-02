@@ -17,6 +17,18 @@ use fresh_core::WindowId;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+/// Seed state for a freshly-built window layout: the base buffer plus the
+/// editor/metadata/event-log/split scaffolding returned by
+/// [`Editor::build_fresh_layout_if_needed`].
+type FreshLayoutSeed = (
+    fresh_core::BufferId,
+    crate::state::EditorState,
+    crate::app::types::BufferMetadata,
+    crate::model::event::EventLog,
+    SplitManager,
+    HashMap<crate::model::event::LeafId, SplitViewState>,
+);
+
 impl crate::app::Editor {
     /// Snapshot the editor-global resources every new `Window` needs.
     /// All fields are cheap clones (`Arc` increments or `Clone`-by-value
@@ -50,7 +62,7 @@ impl crate::app::Editor {
             dir_context: self.dir_context.clone(),
             tokio_runtime: self.tokio_runtime.clone(),
             async_bridge: self.async_bridge.clone(),
-            plugin_manager: std::sync::Arc::clone(&self.plugin_manager),
+            plugin_manager: std::rc::Rc::clone(&self.plugin_manager),
             theme: std::sync::Arc::clone(&self.theme),
             event_broadcaster: self.event_broadcaster.clone(),
             recovery_service: std::sync::Arc::clone(&self.recovery_service),
@@ -301,15 +313,15 @@ impl crate::app::Editor {
                 .windows
                 .get_mut(&id)
                 .expect("just-inserted window must be present");
-            target.create_plugin_terminal(
-                cwd.or_else(|| Some(root.clone())),
-                None, // no split direction — let the no-layout branch seed
-                None,
-                true,  // focus — newly spawned terminal is the seed
-                false, // ephemeral by default; orchestrator owns persistence
+            target.create_plugin_terminal(crate::app::terminal::PluginTerminalSpec {
+                cwd: cwd.or_else(|| Some(root.clone())),
+                direction: None, // no split direction — let the no-layout branch seed
+                ratio: None,
+                focus: true,       // newly spawned terminal is the seed
+                persistent: false, // ephemeral by default; orchestrator owns persistence
                 command,
-                title.filter(|t| !t.is_empty()),
-            )
+                title: title.filter(|t| !t.is_empty()),
+            })
         };
 
         let (terminal_id, buffer_id, _split_id) = match spawn_result {
@@ -697,21 +709,11 @@ impl crate::app::Editor {
     /// Factored out of `set_active_window` so other call sites that
     /// need to populate an inert window shell can share the same
     /// seed-construction logic.
-    pub(crate) fn build_fresh_layout_if_needed(
-        &mut self,
-        id: WindowId,
-    ) -> Option<(
-        fresh_core::BufferId,
-        crate::state::EditorState,
-        crate::app::types::BufferMetadata,
-        crate::model::event::EventLog,
-        SplitManager,
-        HashMap<crate::model::event::LeafId, SplitViewState>,
-    )> {
+    pub(crate) fn build_fresh_layout_if_needed(&mut self, id: WindowId) -> Option<FreshLayoutSeed> {
         if !self
             .windows
             .get(&id)
-            .is_some_and(|s| s.buffers.splits().is_none() || s.buffers.len() == 0)
+            .is_some_and(|s| s.buffers.splits().is_none() || s.buffers.is_empty())
         {
             return None;
         }

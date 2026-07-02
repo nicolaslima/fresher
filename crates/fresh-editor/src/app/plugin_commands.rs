@@ -41,6 +41,18 @@ fn make_search_opts(
     }
 }
 
+/// Fields of a `PluginCommand::BeginSearch`, grouped so
+/// [`Editor::handle_begin_search`] takes one argument instead of seven.
+pub(super) struct BeginSearchArgs {
+    pub pattern: String,
+    pub fixed_string: bool,
+    pub case_sensitive: bool,
+    pub max_results: usize,
+    pub whole_words: bool,
+    pub source_buffer_id: usize,
+    pub handle_id: u64,
+}
+
 impl Editor {
     // ==================== Menu Helpers ====================
 
@@ -386,6 +398,7 @@ impl Editor {
         gutter_glyph: Option<String>,
         gutter_color_spec: Option<fresh_core::api::OverlayColorSpec>,
         text_overlays: Vec<fresh_core::api::VirtualLineTextOverlay>,
+        epoch: Option<u64>,
     ) {
         use crate::view::theme::named_color_from_str;
         use crate::view::virtual_text::{VirtualTextNamespace, VirtualTextPosition};
@@ -434,6 +447,15 @@ impl Editor {
             .expect("active window present")
             .buffer_state_mut(buffer_id)
         {
+            // Repair a stale anchor: the plugin computed `position` against the
+            // `lines_changed` epoch, but later edits may have shifted it. Map it
+            // forward; if the epoch is too old to map, skip — convergence
+            // (cursor_moved → refreshLines) re-fires with fresh coordinates.
+            let position = match state.map_plugin_coord(position, epoch) {
+                Some(p) => p,
+                None => return,
+            };
+
             let placement = if above {
                 VirtualTextPosition::LineAbove
             } else {
@@ -478,6 +500,37 @@ impl Editor {
         }
     }
 
+    /// Handle ClearVirtualLinesInRange command — per-line virtual-line clear.
+    pub(super) fn handle_clear_virtual_lines_in_range(
+        &mut self,
+        buffer_id: BufferId,
+        namespace: String,
+        start: usize,
+        end: usize,
+        epoch: Option<u64>,
+    ) {
+        if let Some(state) = self
+            .windows
+            .get_mut(&self.active_window)
+            .expect("active window present")
+            .buffer_state_mut(buffer_id)
+        {
+            use crate::view::virtual_text::VirtualTextNamespace;
+            // Repair a stale range: the plugin computed `[start, end)` against
+            // the `lines_changed` epoch. Map both ends forward so the clear hits
+            // the row's current anchors; if the epoch is too old, skip and let
+            // convergence redo it.
+            let (start, end) = match state.map_plugin_range(start, end, epoch) {
+                Some(r) => r,
+                None => return,
+            };
+            let ns = VirtualTextNamespace::from_string(namespace);
+            state
+                .virtual_texts
+                .clear_lines_in_range(&mut state.marker_list, &ns, start, end);
+        }
+    }
+
     // ==================== Conceal Commands ====================
 
     /// Handle AddConceal command - add a conceal range that hides or replaces bytes
@@ -488,6 +541,7 @@ impl Editor {
         start: usize,
         end: usize,
         replacement: Option<String>,
+        epoch: Option<u64>,
     ) {
         if let Some(state) = self
             .windows
@@ -495,6 +549,13 @@ impl Editor {
             .expect("active window present")
             .buffer_state_mut(buffer_id)
         {
+            // Repair a stale range: the plugin computed `[start, end)` against the
+            // hook epoch; map it forward so the conceal lands on the row's current
+            // bytes. Skip if the epoch is too old to map (convergence redoes it).
+            let (start, end) = match state.map_plugin_range(start, end, epoch) {
+                Some(r) => r,
+                None => return,
+            };
             state
                 .conceals
                 .add(&mut state.marker_list, namespace, start..end, replacement);
@@ -529,6 +590,7 @@ impl Editor {
         buffer_id: BufferId,
         start: usize,
         end: usize,
+        epoch: Option<u64>,
     ) {
         if let Some(state) = self
             .windows
@@ -536,6 +598,10 @@ impl Editor {
             .expect("active window present")
             .buffer_state_mut(buffer_id)
         {
+            let (start, end) = match state.map_plugin_range(start, end, epoch) {
+                Some(r) => r,
+                None => return,
+            };
             state
                 .conceals
                 .remove_in_range(&(start..end), &mut state.marker_list);
@@ -551,6 +617,7 @@ impl Editor {
         namespace: OverlayNamespace,
         start: usize,
         end: usize,
+        epoch: Option<u64>,
     ) {
         if let Some(state) = self
             .windows
@@ -558,6 +625,10 @@ impl Editor {
             .expect("active window present")
             .buffer_state_mut(buffer_id)
         {
+            let (start, end) = match state.map_plugin_range(start, end, epoch) {
+                Some(r) => r,
+                None => return,
+            };
             state.conceals.remove_in_range_for_namespace(
                 &namespace,
                 &(start..end),
@@ -627,6 +698,7 @@ impl Editor {
         namespace: OverlayNamespace,
         position: usize,
         indent: u16,
+        epoch: Option<u64>,
     ) {
         if let Some(state) = self
             .windows
@@ -634,6 +706,11 @@ impl Editor {
             .expect("active window present")
             .buffer_state_mut(buffer_id)
         {
+            // Repair a stale wrap point against the hook epoch.
+            let position = match state.map_plugin_coord(position, epoch) {
+                Some(p) => p,
+                None => return,
+            };
             state
                 .soft_breaks
                 .add(&mut state.marker_list, namespace, position, indent);
@@ -668,6 +745,7 @@ impl Editor {
         buffer_id: BufferId,
         start: usize,
         end: usize,
+        epoch: Option<u64>,
     ) {
         if let Some(state) = self
             .windows
@@ -675,6 +753,10 @@ impl Editor {
             .expect("active window present")
             .buffer_state_mut(buffer_id)
         {
+            let (start, end) = match state.map_plugin_range(start, end, epoch) {
+                Some(r) => r,
+                None => return,
+            };
             state
                 .soft_breaks
                 .remove_in_range(start, end, &mut state.marker_list);
@@ -1110,6 +1192,11 @@ impl Editor {
         }
         // Keep search-match highlights consistent with the edit (issue #2414).
         self.reevaluate_plugin_edit_search_overlays(buffer_id, position, text_len);
+        // Plugin edits bypass apply_event_to_active_buffer, so the plugin
+        // interval markers must be shifted here too — otherwise plugin-tracked
+        // decorations (e.g. markdown table borders) keep stale coordinates.
+        #[cfg(feature = "plugins")]
+        self.shift_plugin_markers_for_edit(buffer_id, position, 0, text_len);
     }
 
     /// Handle DeleteRange command
@@ -1161,6 +1248,10 @@ impl Editor {
         }
         // Keep search-match highlights consistent with the edit (issue #2414).
         self.reevaluate_plugin_edit_search_overlays(buffer_id, delete_start, 0);
+        // Plugin edits bypass apply_event_to_active_buffer; shift plugin interval
+        // markers here too so plugin-tracked decorations ride the deletion.
+        #[cfg(feature = "plugins")]
+        self.shift_plugin_markers_for_edit(buffer_id, delete_start, delete_len, 0);
     }
 
     /// Re-evaluate the active window's search-match overlays around a region a
@@ -1207,6 +1298,7 @@ impl Editor {
     pub(super) fn handle_insert_at_cursor(&mut self, text: String) {
         // Read cursor position first to avoid borrow conflicts
         let cursor_pos = self.active_cursors().primary().position;
+        let text_len = text.len();
         let event = Event::Insert {
             position: cursor_pos,
             text,
@@ -1217,6 +1309,12 @@ impl Editor {
         self.active_window_mut()
             .apply_event_to_buffer(active_buf, split_id, &event);
         self.active_event_log_mut().append(event);
+        // This path bypasses apply_event_to_active_buffer (it's how the markdown
+        // plugins insert a newline on Enter, etc.), so shift plugin interval
+        // markers here or plugin-tracked decorations (markdown table borders)
+        // keep stale coordinates and corrupt.
+        #[cfg(feature = "plugins")]
+        self.shift_plugin_markers_for_edit(active_buf, cursor_pos, 0, text_len);
     }
 
     /// Handle DeleteSelection command
@@ -1700,6 +1798,24 @@ impl Editor {
                 // Buffer not yet in this split — fall back to setting on active
                 view_state.show_line_numbers = enabled;
             }
+        }
+    }
+
+    /// Handle SetIndentationGuide command
+    ///
+    /// Records a per-buffer override for indentation-guide visibility. Unlike
+    /// line numbers (which are per-split), this lives on the buffer's
+    /// `EditorState`, so it follows the buffer wherever it's shown — including a
+    /// buffer-group detail panel that isn't the focused split, and across the
+    /// panel's per-commit buffer retargets.
+    pub(super) fn handle_set_indentation_guide(&mut self, buffer_id: BufferId, enabled: bool) {
+        if let Some(state) = self
+            .windows
+            .get_mut(&self.active_window)
+            .expect("active window present")
+            .buffer_state_mut(buffer_id)
+        {
+            state.indentation_guide_override = Some(enabled);
         }
     }
 
@@ -2506,16 +2622,16 @@ impl Editor {
     /// dispatches. Aborts when the handle's `cancel` flag flips (set by
     /// `_searchHandleCancel` or by the next `BeginSearch` superseding this
     /// one).
-    pub(super) fn handle_begin_search(
-        &mut self,
-        pattern: String,
-        fixed_string: bool,
-        case_sensitive: bool,
-        max_results: usize,
-        whole_words: bool,
-        source_buffer_id: usize,
-        handle_id: u64,
-    ) {
+    pub(super) fn handle_begin_search(&mut self, args: BeginSearchArgs) {
+        let BeginSearchArgs {
+            pattern,
+            fixed_string,
+            case_sensitive,
+            max_results,
+            whole_words,
+            source_buffer_id,
+            handle_id,
+        } = args;
         // Look up the handle the plugin pre-registered. If it's missing
         // (registry races with a unit test), drop the request — there's no
         // observer to deliver results to.

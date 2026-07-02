@@ -589,6 +589,9 @@ interface HookEventMap {
   lines_changed: {
     buffer_id: number;
     lines: { line_number: number; byte_start: number; byte_end: number; content: string }[];
+    /** Buffer version these byte ranges were captured at. Pass back to
+     * coordinate-mapping APIs to repair stale offsets from this batch. */
+    epoch: number;
   };
   view_transform_request: {
     buffer_id: number;
@@ -1377,6 +1380,7 @@ mod tests {
             "removeVirtualTextsByPrefix",
             "clearVirtualTexts",
             "clearVirtualTextNamespace",
+            "clearVirtualLinesInRange",
             "addVirtualLine",
             "prompt",
             "startPrompt",
@@ -1400,9 +1404,15 @@ mod tests {
             "setLineIndicator",
             "clearLineIndicators",
             "setLineNumbers",
+            "setIndentationGuide",
             "setViewMode",
             "setViewState",
             "getViewState",
+            "createMarker",
+            "updateMarker",
+            "deleteMarker",
+            "queryMarkers",
+            "getMarker",
             "setGlobalState",
             "getGlobalState",
             "setLineWrap",

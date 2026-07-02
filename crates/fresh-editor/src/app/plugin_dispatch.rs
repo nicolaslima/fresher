@@ -123,6 +123,76 @@ impl Editor {
     /// owns (clipboard, the full `windows` list, the memoized config
     /// JSON cache, `user_config_raw`, and `plugin_global_state`).
     #[cfg(feature = "plugins")]
+    /// Shift plugin interval markers for one buffer to track an edit at `pos`
+    /// that removed `removed` bytes and inserted `inserted` bytes. Called from
+    /// the edit-apply path *before* the post-edit snapshot refresh + hook, so a
+    /// plugin querying markers in after_insert/after_delete sees current
+    /// coordinates. Insert gives `start` right-gravity / `end` left-gravity at
+    /// the boundary; delete clamps into the deletion. Markers whose interior is
+    /// touched keep shifting here (the plugin deletes + re-discovers them).
+    ///
+    /// Also a `#[doc(hidden)]` test hook: integration tests call this to
+    /// deterministically reproduce the cross-thread marker/event desync (shift a
+    /// plugin marker without editing the buffer) that the async `lines_changed`
+    /// pipeline otherwise only produces as a timing race.
+    #[doc(hidden)]
+    pub fn shift_plugin_markers_for_edit(
+        &self,
+        buffer_id: BufferId,
+        pos: usize,
+        removed: usize,
+        inserted: usize,
+    ) {
+        let Some(handle) = self.plugin_manager.read().unwrap().state_snapshot_handle() else {
+            return;
+        };
+        let Ok(mut snapshot) = handle.write() else {
+            return;
+        };
+        let Some(markers) = snapshot.plugin_markers.get_mut(&buffer_id) else {
+            return;
+        };
+        // Reduce a same-position replacement (both lengths non-zero, as the bulk
+        // path passes for type-over-selection / paste-over / query-replace / LSP
+        // code actions) to its NET delta, mirroring `marker_list` and
+        // `coord_map::record_replace`. The old code applied only the deletion
+        // clamp and dropped `inserted`, so every plugin marker past such an edit
+        // landed off by `inserted` bytes (the wrong direction when ins > del).
+        let (eff_removed, eff_inserted) = if removed > 0 && inserted > 0 {
+            if inserted >= removed {
+                (0, inserted - removed)
+            } else {
+                (removed - inserted, 0)
+            }
+        } else {
+            (removed, inserted)
+        };
+        for m in markers.values_mut() {
+            if eff_removed == 0 {
+                if m.start >= pos {
+                    m.start += eff_inserted;
+                }
+                if m.end > pos {
+                    m.end += eff_inserted;
+                }
+            } else {
+                let d0 = pos;
+                let d1 = pos + eff_removed;
+                let clamp = |x: usize| {
+                    if x <= d0 {
+                        x
+                    } else if x >= d1 {
+                        x - eff_removed
+                    } else {
+                        d0
+                    }
+                };
+                m.start = clamp(m.start);
+                m.end = clamp(m.end);
+            }
+        }
+    }
+
     pub fn update_plugin_state_snapshot(&mut self) {
         let Some(snapshot_handle) = self.plugin_manager.read().unwrap().state_snapshot_handle()
         else {
@@ -394,6 +464,7 @@ impl Editor {
                 gutter_glyph,
                 gutter_color,
                 text_overlays,
+                epoch,
             } => {
                 self.handle_add_virtual_line(
                     buffer_id,
@@ -407,6 +478,7 @@ impl Editor {
                     gutter_glyph,
                     gutter_color,
                     text_overlays,
+                    epoch,
                 );
             }
             PluginCommand::ClearVirtualTextNamespace {
@@ -414,6 +486,15 @@ impl Editor {
                 namespace,
             } => {
                 self.handle_clear_virtual_text_namespace(buffer_id, namespace);
+            }
+            PluginCommand::ClearVirtualLinesInRange {
+                buffer_id,
+                namespace,
+                start,
+                end,
+                epoch,
+            } => {
+                self.handle_clear_virtual_lines_in_range(buffer_id, namespace, start, end, epoch);
             }
 
             // ==================== Conceal Commands ====================
@@ -423,8 +504,9 @@ impl Editor {
                 start,
                 end,
                 replacement,
+                epoch,
             } => {
-                self.handle_add_conceal(buffer_id, namespace, start, end, replacement);
+                self.handle_add_conceal(buffer_id, namespace, start, end, replacement, epoch);
             }
             PluginCommand::ClearConcealNamespace {
                 buffer_id,
@@ -436,16 +518,20 @@ impl Editor {
                 buffer_id,
                 start,
                 end,
+                epoch,
             } => {
-                self.handle_clear_conceals_in_range(buffer_id, start, end);
+                self.handle_clear_conceals_in_range(buffer_id, start, end, epoch);
             }
             PluginCommand::ClearConcealsInRangeForNamespace {
                 buffer_id,
                 namespace,
                 start,
                 end,
+                epoch,
             } => {
-                self.handle_clear_conceals_in_range_for_namespace(buffer_id, namespace, start, end);
+                self.handle_clear_conceals_in_range_for_namespace(
+                    buffer_id, namespace, start, end, epoch,
+                );
             }
 
             PluginCommand::AddFold {
@@ -469,8 +555,9 @@ impl Editor {
                 namespace,
                 position,
                 indent,
+                epoch,
             } => {
-                self.handle_add_soft_break(buffer_id, namespace, position, indent);
+                self.handle_add_soft_break(buffer_id, namespace, position, indent, epoch);
             }
             PluginCommand::ClearSoftBreakNamespace {
                 buffer_id,
@@ -482,8 +569,9 @@ impl Editor {
                 buffer_id,
                 start,
                 end,
+                epoch,
             } => {
-                self.handle_clear_soft_breaks_in_range(buffer_id, start, end);
+                self.handle_clear_soft_breaks_in_range(buffer_id, start, end, epoch);
             }
 
             // ==================== Menu Commands ====================
@@ -566,6 +654,9 @@ impl Editor {
             }
             PluginCommand::SetLineNumbers { buffer_id, enabled } => {
                 self.handle_set_line_numbers(buffer_id, enabled);
+            }
+            PluginCommand::SetIndentationGuide { buffer_id, enabled } => {
+                self.handle_set_indentation_guide(buffer_id, enabled);
             }
             PluginCommand::SetViewMode { buffer_id, mode } => {
                 self.handle_set_view_mode(buffer_id, &mode);
@@ -1067,6 +1158,7 @@ impl Editor {
                 editing_disabled,
                 hidden_from_tabs,
                 initial_cursor_line,
+                indentation_guide,
                 request_id,
             } => {
                 self.handle_create_virtual_buffer_with_content(
@@ -1079,6 +1171,7 @@ impl Editor {
                     editing_disabled,
                     hidden_from_tabs,
                     initial_cursor_line,
+                    indentation_guide,
                     request_id,
                 );
             }
@@ -1265,6 +1358,15 @@ impl Editor {
                 self.handle_restart_lsp_for_language(language);
             }
 
+            PluginCommand::RegisterLspUriScheme { scheme } => {
+                tracing::debug!("Plugin registered LSP URI scheme: {}", scheme);
+                self.lsp_uri_schemes.insert(scheme);
+            }
+
+            PluginCommand::MarkBufferReadOnly { path } => {
+                self.handle_mark_buffer_read_only(path);
+            }
+
             PluginCommand::SetLspRootUri { language, uri } => {
                 self.handle_set_lsp_root_uri(language, uri);
             }
@@ -1295,13 +1397,15 @@ impl Editor {
                 request_id,
             } => {
                 self.handle_create_composite_buffer(
-                    name,
-                    mode,
-                    layout,
-                    sources,
-                    hunks,
-                    initial_focus_hunk,
-                    request_id,
+                    crate::app::composite_buffer_actions::CreateCompositeBufferArgs {
+                        name,
+                        mode,
+                        layout_config: layout,
+                        source_configs: sources,
+                        hunks,
+                        initial_focus_hunk,
+                        request_id,
+                    },
                 );
             }
             PluginCommand::UpdateCompositeAlignment { buffer_id, hunks } => {
@@ -1433,7 +1537,7 @@ impl Editor {
                 source_buffer_id,
                 handle_id,
             } => {
-                self.handle_begin_search(
+                self.handle_begin_search(crate::app::plugin_commands::BeginSearchArgs {
                     pattern,
                     fixed_string,
                     case_sensitive,
@@ -1441,7 +1545,7 @@ impl Editor {
                     whole_words,
                     source_buffer_id,
                     handle_id,
-                );
+                });
             }
 
             PluginCommand::ReplaceInBuffer {
@@ -1806,6 +1910,7 @@ impl Editor {
         show_line_numbers: bool,
         show_cursors: bool,
         editing_disabled: bool,
+        indentation_guide: Option<bool>,
     ) {
         if let Some(state) = self
             .windows
@@ -1817,6 +1922,12 @@ impl Editor {
             state.margins.configure_for_line_numbers(show_line_numbers);
             state.show_cursors = show_cursors;
             state.editing_disabled = editing_disabled;
+            // `None` leaves the default (virtual buffers get no guides); a
+            // plugin that shows real source in a virtual buffer (e.g. git log's
+            // file-at-commit view) passes `Some(true)` to keep them.
+            if let Some(enabled) = indentation_guide {
+                state.indentation_guide_override = Some(enabled);
+            }
         }
     }
 
@@ -1844,7 +1955,13 @@ impl Editor {
         let buffer_id =
             self.active_window_mut()
                 .create_virtual_buffer(name.clone(), mode, read_only);
-        self.configure_vbuf_display(buffer_id, show_line_numbers, show_cursors, editing_disabled);
+        self.configure_vbuf_display(
+            buffer_id,
+            show_line_numbers,
+            show_cursors,
+            editing_disabled,
+            None,
+        );
         if let Some(pid) = panel_id {
             self.panel_ids_mut().insert(pid.to_string(), buffer_id);
         }
@@ -2864,6 +2981,7 @@ impl Editor {
         editing_disabled: bool,
         hidden_from_tabs: bool,
         initial_cursor_line: Option<u32>,
+        indentation_guide: Option<bool>,
         request_id: Option<u64>,
     ) {
         // Hidden-from-tabs buffers (e.g. composite source panes) must NOT be
@@ -2893,7 +3011,13 @@ impl Editor {
         // margins each frame via configure_for_line_numbers(), making the margin
         // setting here effectively write-only. Consider removing the margin call
         // and only setting BufferViewState.show_line_numbers.
-        self.configure_vbuf_display(buffer_id, show_line_numbers, show_cursors, editing_disabled);
+        self.configure_vbuf_display(
+            buffer_id,
+            show_line_numbers,
+            show_cursors,
+            editing_disabled,
+            indentation_guide,
+        );
         if !hidden_from_tabs {
             let active_split = self.split_manager().active_split();
             if let Some(view_state) = self
@@ -3080,7 +3204,13 @@ impl Editor {
             buffer_id
         );
 
-        self.configure_vbuf_display(buffer_id, show_line_numbers, show_cursors, editing_disabled);
+        self.configure_vbuf_display(
+            buffer_id,
+            show_line_numbers,
+            show_cursors,
+            editing_disabled,
+            None,
+        );
 
         if let Some(pid) = panel_id {
             self.panel_ids_mut().insert(pid, buffer_id);
@@ -3130,18 +3260,19 @@ impl Editor {
                     self.terminal_height,
                     buffer_id,
                 );
-                view_state.apply_config_defaults(
-                    self.config.editor.line_numbers,
-                    self.config.editor.highlight_current_line,
-                    line_wrap.unwrap_or_else(|| {
+                view_state.apply_config_defaults(crate::view::split::ViewConfigDefaults {
+                    line_numbers: self.config.editor.line_numbers,
+                    highlight_current_line: self.config.editor.highlight_current_line,
+                    line_wrap: line_wrap.unwrap_or_else(|| {
                         self.active_window().resolve_line_wrap_for_buffer(buffer_id)
                     }),
-                    self.config.editor.wrap_indent,
-                    self.active_window()
+                    wrap_indent: self.config.editor.wrap_indent,
+                    wrap_column: self
+                        .active_window()
                         .resolve_wrap_column_for_buffer(buffer_id),
-                    self.config.editor.rulers.clone(),
-                    self.config.editor.scroll_offset,
-                );
+                    rulers: self.config.editor.rulers.clone(),
+                    scroll_offset: self.config.editor.scroll_offset,
+                });
                 view_state.ensure_buffer_state(buffer_id).show_line_numbers = show_line_numbers;
                 self.windows
                     .get_mut(&self.active_window)
@@ -3225,7 +3356,13 @@ impl Editor {
             buffer_id
         );
 
-        self.configure_vbuf_display(buffer_id, show_line_numbers, show_cursors, editing_disabled);
+        self.configure_vbuf_display(
+            buffer_id,
+            show_line_numbers,
+            show_cursors,
+            editing_disabled,
+            None,
+        );
 
         if let Err(e) = self.set_virtual_buffer_content(buffer_id, entries) {
             tracing::error!("Failed to set virtual buffer content: {}", e);
@@ -3643,15 +3780,15 @@ impl Editor {
                 .windows
                 .get_mut(&target_id)
                 .expect("target window present (existence checked above)");
-            target.create_plugin_terminal(
-                cwd_buf,
-                split_direction,
+            target.create_plugin_terminal(crate::app::terminal::PluginTerminalSpec {
+                cwd: cwd_buf,
+                direction: split_direction,
                 ratio,
-                focus.unwrap_or(true),
+                focus: focus.unwrap_or(true),
                 persistent,
                 command,
-                title.filter(|t| !t.is_empty()),
-            )
+                title: title.filter(|t| !t.is_empty()),
+            })
         };
         match result {
             Ok((terminal_id, buffer_id, created_split_id)) => {
@@ -3926,7 +4063,7 @@ impl Editor {
                 // Synthetic, window-derived request id (well clear of the
                 // low-numbered JS callback ids) so the in-flight/cancel
                 // tracking works and a repeated switch doesn't double-connect.
-                let request_id = u64::MAX - window_id.0 as u64;
+                let request_id = u64::MAX - window_id.0;
                 if self.remote_attach_inflight.contains(&request_id) {
                     return;
                 }
@@ -5036,6 +5173,30 @@ impl Editor {
         }
     }
 
+    /// Mark the buffer backing `path` read-only (plugin `markFileReadOnly`).
+    /// Resolved by path so it composes race-free with a preceding `openFile`
+    /// command: both are processed in order, so the buffer exists here.
+    fn handle_mark_buffer_read_only(&mut self, path: std::path::PathBuf) {
+        let buffer_id = self
+            .active_window()
+            .buffer_metadata
+            .iter()
+            .find(|(_, m)| m.file_path().map(|p| p == &path).unwrap_or(false))
+            .map(|(id, _)| *id);
+        match buffer_id {
+            Some(id) => {
+                self.active_window_mut().mark_buffer_read_only(id, true);
+                tracing::debug!("Marked buffer {:?} read-only ({})", id, path.display());
+            }
+            None => {
+                tracing::warn!(
+                    "markFileReadOnly: no open buffer for path {}",
+                    path.display()
+                );
+            }
+        }
+    }
+
     fn handle_set_lsp_root_uri(&mut self, language: String, uri: String) {
         tracing::info!("Plugin setting LSP root URI for {}: {}", language, uri);
         match uri.parse::<lsp_types::Uri>() {
@@ -5737,6 +5898,10 @@ impl Window {
             let open_bids: Vec<_> = snapshot.buffers.keys().copied().collect();
             snapshot
                 .plugin_view_states
+                .retain(|bid, _| open_bids.contains(bid));
+            // Plugin markers live only in the snapshot; drop closed buffers'.
+            snapshot
+                .plugin_markers
                 .retain(|bid, _| open_bids.contains(bid));
         }
 

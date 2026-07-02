@@ -32,18 +32,6 @@ function setGlobalComposeEnabled(value: boolean): void {
   editor.setGlobalState("globalComposeEnabled", value);
 }
 
-// Table column widths stored per-buffer-per-split via setViewState/getViewState.
-// Persisted across sessions and independent per split.
-interface TableWidthInfo {
-  maxW: number[];
-  allocated: number[];
-  // True iff this row is the markdown source separator (`|---|---|---|`) — the
-  // border code uses this to avoid drawing a duplicate `├─┼─┤` next to it.
-  // Optional for backwards-compat with persisted view states from older
-  // sessions.
-  isSourceSep?: boolean;
-}
-
 // Helper: check whether the active split has compose mode for this buffer
 function isComposing(bufferId: number): boolean {
   const info = editor.getBufferInfo(bufferId);
@@ -58,29 +46,113 @@ function isComposingInAnySplit(bufferId: number): boolean {
   return info != null && info.is_composing_in_any_split;
 }
 
-// Helper: get cached table column widths from per-buffer-per-split view state
-function getTableWidths(bufferId: number): Map<number, TableWidthInfo> | undefined {
-  const obj = editor.getViewState(bufferId, "table-widths") as Record<string, { maxW: number[]; allocated: number[] }> | undefined;
-  if (!obj || typeof obj !== "object") return undefined;
-  const map = new Map<number, TableWidthInfo>();
-  for (const [k, v] of Object.entries(obj)) {
-    map.set(parseInt(k, 10), v);
-  }
-  return map;
+// =============================================================================
+// Table borders: per-line, like conceals (NO stored table model, NO byte state)
+// =============================================================================
+//
+// Table border virtual lines (the `┌─┬─┐` / `├─┼─┤` / `└─┴─┘` frame) are emitted
+// PER LINE, in lockstep with the per-line conceal pass, and that is the whole
+// design:
+//
+//   * For every line in a `lines_changed` batch we `clearVirtualLinesInRange`
+//     the single byte at that row's start (removing its old frame) and re-add
+//     the frame for its role. Role — first / last / source-separator-adjacent —
+//     is local: it comes from the row plus its immediate neighbours in the same
+//     batch (see the `lines_changed` handler + `emitRowBorders`).
+//   * All borders live in ONE namespace (`md-tb`); the clears are byte-range
+//     scoped, so adjacent rows and distinct tables never collide.
+//   * Column widths are computed per render from the batch's table groups
+//     (`computeRowWidths`) and shared by the border and conceal passes, so they
+//     always line up. There is no cross-frame width memory.
+//
+// Why per-line instead of a stored table model: the previous design held each
+// table as a core interval marker with a stored row array and rebuilt the whole
+// frame from it. But `lines_changed` is fired fire-and-forget to the plugin
+// thread, which reads markers off a snapshot the editor mutates concurrently —
+// so a batch for edit N could be processed after the marker was shifted for edit
+// N+1, leaving the stored rows a few bytes off the event and doubling the
+// separators. The fix removes the stored model entirely: positions come only
+// from the live event each frame (the conceals are rendered from them, so they
+// are always correct), and the marker-backed border virtual lines auto-shift
+// between frames, so nothing the plugin persists can desync. Edits need no
+// special handling — the affected lines re-fire `lines_changed` and are
+// cleared+rebuilt; unaffected rows' borders just ride. See
+// docs/internal/MARKDOWN_COMPOSE_TABLE_POSITION_OWNERSHIP.md.
+
+type LineInfoLike = {
+  line_number: number;
+  byte_start: number;
+  byte_end: number;
+  content: string;
+};
+
+// Table borders are emitted PER LINE, exactly like conceals: for each table row
+// in a `lines_changed` batch we clear the virtual lines anchored at that row and
+// re-add its frame, reading column widths from a per-render map. There is no
+// stored table model — row positions come straight from the live event each
+// frame, and the marker-backed border virtual lines auto-shift between frames,
+// so nothing the plugin persists can desync. This replaced an interval-marker
+// "block" model whose stored byte positions desynced across the async
+// `lines_changed` thread boundary and doubled separators
+// (see docs/internal/MARKDOWN_COMPOSE_TABLE_POSITION_OWNERSHIP.md).
+
+// All table borders share one namespace; per-line clears are byte-range scoped
+// via `clearVirtualLinesInRange`, so adjacent rows / distinct tables never
+// collide and a tall table needs no whole-table rebuild.
+const TABLE_BORDER_NS = "md-tb";
+
+// Per-render column widths, keyed by a row's byte_start. Rebuilt at the top of
+// every `lines_changed` pass (computeRowWidths) and read synchronously in the
+// same pass by the conceal and border code.
+let currentRowWidths: Map<number, number[]> = new Map();
+
+// Width memo: each table carries a marker whose payload is its accumulated
+// per-column max content widths — NUMBERS ONLY, no positions. The marker's byte
+// range is editor-owned and auto-shifts; it is used only to associate a later
+// `lines_changed` batch with the same table (a race-tolerant overlap query),
+// never for rendering — rows/borders are still positioned from the live event.
+//
+// Why a memo at all: the plugin only ever sees the rows in the current batch
+// (off-screen rows aren't readable synchronously), so column widths computed
+// from a single partial batch (e.g. a mouse-wheel scroll that misses the widest
+// row) come out narrower than a batch that includes it — and the two render at
+// different widths side by side. Accumulating GROW-ONLY across batches makes
+// the widths converge upward and stay consistent as a table scrolls into view.
+// Widths are numbers, so the memo is immune to the marker/event desync that the
+// per-line border model removed. The marker is reset on edits that touch the
+// table (see after_insert/after_delete) so a narrowed cell isn't stuck wide.
+const TABLE_WIDTH_NS_PREFIX = "tw"; // marker id prefix
+let nextTableWidthId = 1;
+
+// Allocated column widths for the table row starting at `byte`, for the current
+// render pass. Undefined if it isn't a width-resolved table row this pass.
+function widthsForRow(byte: number): number[] | undefined {
+  const w = currentRowWidths.get(byte);
+  return w && w.length ? w : undefined;
 }
 
-// Helper: store cached table column widths in per-buffer-per-split view state
-function setTableWidths(bufferId: number, widthMap: Map<number, TableWidthInfo>): void {
-  const obj: Record<string, TableWidthInfo> = {};
-  for (const [k, v] of widthMap) {
-    obj[String(k)] = v;
-  }
-  editor.setViewState(bufferId, "table-widths", obj);
+function isTableRowContent(content: string): boolean {
+  const t = content.trim();
+  return t.startsWith("|") || t.endsWith("|");
 }
 
-// Helper: clear cached table column widths
-function clearTableWidths(bufferId: number): void {
-  editor.setViewState(bufferId, "table-widths", null);
+function isSepRowContent(content: string): boolean {
+  return /^\|[-:\s|]+\|$/.test(content.trim());
+}
+
+function tableCells(content: string): string[] {
+  let inner = content.trim();
+  if (inner.startsWith("|")) inner = inner.slice(1);
+  if (inner.endsWith("|")) inner = inner.slice(0, -1);
+  return inner.split("|");
+}
+
+// Viewport-constrained per-column widths from accumulated max raw widths.
+function allocatedFor(maxW: number[]): number[] {
+  const viewport = editor.getViewport();
+  const composeW = effectiveComposeWidth(viewport ? viewport.width : 80);
+  const available = composeW - (maxW.length + 1);
+  return distributeColumnWidths(maxW, available);
 }
 
 // Static map of named HTML entities to their Unicode replacements
@@ -108,15 +180,14 @@ const HTML_ENTITY_MAP: Record<string, string> = {
 //
 // Implementation:
 //
-//   * Borders are virtual lines (no source bytes), keyed per-line via a
-//     unique namespace `md-tb-${lineNumber}`.  The namespace lets us
-//     clear+rebuild borders for one row without disturbing other tables.
-//   * "First/last/source-separator" classification is derived from the
-//     cached widthMap (a row is "known" iff it has a TableWidthInfo entry).
-//     This is cheap and stable across scrolls because widthMap accumulates.
-//   * Border column widths come from the same `allocated` widths used by
-//     processLineConceals, so the borders line up exactly with the cell
-//     conceals.
+//   * Borders are virtual lines (no source bytes) anchored at a row's
+//     byte_start, emitted PER LINE in the shared namespace `md-tb`. Each row's
+//     frame is cleared (byte-range scoped) and re-added every time that line is
+//     in a `lines_changed` batch — exactly like the per-line conceal pass.
+//   * First/last/source-separator classification is local: it comes from the
+//     row plus its immediate neighbours in the same batch (see emitRowBorders).
+//   * Border column widths are this render's `widthsForRow`, the same widths the
+//     conceal pass uses, so borders line up with the cell conceals.
 
 /** Build a horizontal table border line of the given style for a row. */
 function buildTableBorderLine(
@@ -136,117 +207,74 @@ function buildTableBorderLine(
   return left + parts.join(mid) + right;
 }
 
-/** True if `lineContent` looks like a markdown table separator row. */
-function isTableSeparatorContent(lineContent: string): boolean {
-  return /^\|[-:\s|]+\|$/.test(lineContent.trim());
+// Theme keys (resolved at render time so borders follow theme changes — same
+// pattern as addOverlay's fg/bg). fg → editor.fg matches the concealed
+// `│`/`─` glyphs inside rows so the frame has no seam; bg → editor.bg blends
+// with the page rather than carving an opaque slab.
+const tableBorderOptions = { fg: "editor.fg", bg: "editor.bg" };
+
+/** Remove table border virtual lines for this row, clearing its *whole content
+ * range* `[byteStart, byteEnd)` — exactly like the per-line conceal clear.
+ *
+ * The frame is anchored at `byteStart`, but the clear must be range-wide, not a
+ * single byte: under the async `lines_changed` lag a previously-emitted frame
+ * rides a few bytes ahead of the event's `byteStart`, so a one-byte clear would
+ * miss it and leave a stale doubled separator. A line-wide range tolerates that
+ * lag the same way `clearConcealsInRange` does. The next row's frame (anchored
+ * at this row's `byte_end`) is excluded by the half-open range, and re-emitted
+ * by its own line. Called for *every* line in a batch — table or not — so a row
+ * that stops being a table row loses its frame. */
+function clearRowBorders(bufferId: number, byteStart: number, byteEnd: number): void {
+  editor.clearVirtualLinesInRange(
+    bufferId, TABLE_BORDER_NS, byteStart, Math.max(byteEnd, byteStart + 1),
+  );
 }
 
-/** Re-emit the table border virtual lines for the given table-row group.
- *
- * Detects the group's first/last visible rows by consulting `widthMap`
- * (which is updated by `processTableAlignment` before this runs).  A row at
- * `lineNumber - 1` or `lineNumber + 1` that is *not* in `widthMap` is treated
- * as the boundary of the table's visible extent.
- */
-function processTableBorders(
+/** Emit this row's border frame, anchored at `byteStart`, for the current
+ * render. Role is local: `isFirst`/`isLast` come from the row's immediate
+ * neighbours in the same batch; `isSep`/`prevIsSep` skip the virtual separator
+ * adjacent to the source `|---|` row (the conceals already render it). Pairs
+ * with `clearRowBorders` (called first) so the clear+add land in one
+ * `process_commands` batch — no one-frame strobe. */
+function emitRowBorders(
   bufferId: number,
-  lines: Array<{
-    line_number: number;
-    byte_start: number;
-    byte_end: number;
-    content: string;
-  }>,
-  widthMap: Map<number, TableWidthInfo>,
+  byteStart: number,
+  widths: number[],
+  isFirst: boolean,
+  isSep: boolean,
+  prevIsSep: boolean,
+  isLast: boolean,
 ): void {
-  // Use theme keys (resolved at render time so the borders follow theme
-  // changes — same pattern as addOverlay's fg/bg options).
-  //
-  //   * fg → editor.fg (the default document foreground, matching the
-  //     concealed `│` / `─` glyphs inside row text so the virtual
-  //     `┌─┬─┐` / `├─┼─┤` / `└─┴─┘` frame doesn't create a visible seam
-  //     where it meets the in-text borders)
-  //   * bg → editor.bg (matches the document background so the borders
-  //     blend in rather than carving an opaque slab through the page)
-  const borderOptions = { fg: "editor.fg", bg: "editor.bg" };
+  if (widths.length === 0) return;
 
-  for (const line of lines) {
-    const ns = `md-tb-${line.line_number}`;
-    // Always start by clearing this row's previous borders (handles
-    // edits that removed/widened the row, scrolls that change the
-    // first/last classification, etc.).
-    editor.clearVirtualTextNamespace(bufferId, ns);
+  // The editor auto-stamps the lines_changed epoch onto each addVirtualLine and
+  // remaps the anchor forward before placing it (see CoordMap) — the plugin
+  // passes no epoch.
+  const opts = tableBorderOptions;
 
-    const trimmed = line.content.trim();
-    const isTableRow = trimmed.startsWith("|") || trimmed.endsWith("|");
-    if (!isTableRow) continue;
+  if (isFirst) {
+    // Top border above the first row. ┌─┬─┐
+    editor.addVirtualLine(
+      bufferId, byteStart,
+      buildTableBorderLine(widths, "┌", "┬", "┐"),
+      opts, true, TABLE_BORDER_NS, 0,
+    );
+  } else if (!isSep && !prevIsSep) {
+    // Inter-row separator above this row. ├─┼─┤
+    editor.addVirtualLine(
+      bufferId, byteStart,
+      buildTableBorderLine(widths, "├", "┼", "┤"),
+      opts, true, TABLE_BORDER_NS, 1,
+    );
+  }
 
-    const widthInfo = widthMap.get(line.line_number);
-    if (!widthInfo || widthInfo.allocated.length === 0) continue;
-
-    const allocated = widthInfo.allocated;
-    // Prefer the cached flag (set by processTableAlignment from the source
-    // text of this exact row); fall back to a regex check in case this row
-    // was loaded from a persisted view state without the flag.
-    const isSourceSep = widthInfo.isSourceSep === true
-      || isTableSeparatorContent(line.content);
-
-    const prevIsTable = widthMap.has(line.line_number - 1);
-    const nextIsTable = widthMap.has(line.line_number + 1);
-
-    // Top border: only above the very first known row of the table.
-    // ┌─┬─┐ — opens the frame above the header.
-    if (!prevIsTable) {
-      editor.addVirtualLine(
-        bufferId,
-        line.byte_start,
-        buildTableBorderLine(allocated, "┌", "┬", "┐"),
-        borderOptions,
-        true, // above
-        ns,
-        0,
-      );
-    }
-
-    // Inter-row separator: between consecutive *data* rows.
-    //
-    // Skip if either side is the source separator row (`|---|---|---|`)
-    // because the source already provides `├─┼─┤` there via conceals —
-    // adding another above/below would draw two adjacent separator lines.
-    //
-    // Drawn ABOVE the current row when its predecessor is also a (non-
-    // source-separator) table row, so each row owns the separator that
-    // appears above it.
-    const prevInfo = widthMap.get(line.line_number - 1);
-    const prevIsSourceSep = prevInfo?.isSourceSep === true;
-    if (prevIsTable && !isSourceSep && !prevIsSourceSep) {
-      editor.addVirtualLine(
-        bufferId,
-        line.byte_start,
-        buildTableBorderLine(allocated, "├", "┼", "┤"),
-        borderOptions,
-        true, // above
-        ns,
-        1,
-      );
-    }
-
-    // Bottom border: only below the last known row of the table.
-    // └─┴─┘ — closes the frame.  Anchor at the END of the row's bytes
-    // (one before the trailing newline) and place "below".
-    if (!nextIsTable) {
-      // byte_end points just past the newline; anchor at last byte of
-      // the row content so the virtual line renders directly under it.
-      const anchor = Math.max(line.byte_start, line.byte_end - 1);
-      editor.addVirtualLine(
-        bufferId,
-        anchor,
-        buildTableBorderLine(allocated, "└", "┴", "┘"),
-        borderOptions,
-        false, // below
-        ns,
-        0,
-      );
-    }
+  if (isLast) {
+    // Bottom border below the last row. └─┴─┘
+    editor.addVirtualLine(
+      bufferId, byteStart,
+      buildTableBorderLine(widths, "└", "┴", "┘"),
+      opts, false, TABLE_BORDER_NS, 0,
+    );
   }
 }
 
@@ -571,21 +599,14 @@ function enableMarkdownCompose(bufferId: number): void {
 function disableMarkdownCompose(bufferId: number): void {
   if (isComposing(bufferId)) {
     editor.setViewState(bufferId, "last-cursor-line", null);
-
-    // Clear table border virtual lines BEFORE discarding the cached widths.
-    // Each table row owns the namespace `md-tb-${lineNumber}`, and the width
-    // map is keyed by those same line numbers — so its keys enumerate exactly
-    // the rows that may carry a `┌─┬─┐` / `├─┼─┤` / `└─┴─┘` border.  Unlike the
-    // conceal/overlay/soft-break namespaces (cleared in bulk below), there is
-    // no single namespace covering every border, so without this the frame
-    // lingers as orphaned virtual lines after compose mode is toggled off.
-    const widthMap = getTableWidths(bufferId);
-    if (widthMap) {
-      for (const lineNumber of widthMap.keys()) {
-        editor.clearVirtualTextNamespace(bufferId, `md-tb-${lineNumber}`);
-      }
+    // Clear all table border virtual lines (one shared namespace) so the frame
+    // can't linger as orphaned virtual lines after compose is toggled off, and
+    // drop the per-table width memos.
+    editor.clearVirtualTextNamespace(bufferId, TABLE_BORDER_NS);
+    const memos = (editor.queryMarkers(bufferId, 0, 0x7fffffff) as Array<{ id: string }>) || [];
+    for (const m of memos) {
+      if (m.id.startsWith(TABLE_WIDTH_NS_PREFIX)) editor.deleteMarker(bufferId, m.id);
     }
-    clearTableWidths(bufferId);
 
     // Tell Rust side this buffer is back in source mode
     editor.setViewMode(bufferId, "source");
@@ -1092,10 +1113,9 @@ function processLineConceals(
     isTableRow = true;
     const isSeparator = /^\|[-:\s|]+\|$/.test(trimmed);
 
-    // Look up stored column widths for alignment padding
-    const bufWidths = lineNumber !== undefined ? getTableWidths(bufferId) : undefined;
-    const widthInfo = bufWidths && lineNumber !== undefined ? bufWidths.get(lineNumber) : undefined;
-    const colWidths = widthInfo ? widthInfo.allocated : undefined;
+    // Column widths come from this render's per-row width map (computed from the
+    // batch's table groups at the top of the lines_changed pass).
+    const colWidths = widthsForRow(byteStart);
 
     // Split the line into cells to compute per-cell padding
     let inner = trimmed;
@@ -1207,29 +1227,43 @@ function processLineConceals(
           const pipeByte = charToByte(lineContent, i, byteStart);
           const pipeByteEnd = charToByte(lineContent, i + 1, byteStart);
 
-          // Compute padding or truncation for the cell that just ended.
-          // When the cursor is on this row, skip truncation/padding entirely
-          // so that only pipe→│ conceals exist. This ensures cursor positioning
-          // works correctly (segment conceals break cursor mapping).
+          // Compute padding (and, off the cursor row, truncation) for the cell
+          // that just ended.
+          //
+          // Columns are sized to the widest *raw* cell, so a row only aligns
+          // when its rendered cell is padded out to that width. The row the
+          // cursor is on renders raw (emphasis markers revealed), so it must be
+          // padded too — otherwise that row's cell collapses to its natural
+          // width and its borders fall out of the frame as the cursor passes
+          // through it (a very visible "the table breaks under the cursor"
+          // glitch). Trailing padding never hides content, so it is safe on the
+          // cursor row; we still skip *truncation* there so a too-wide cell
+          // stays fully visible for editing.
           let padding = "";
           const cellIdx = pipeIdx - 1;
-          if (!cursorStrictlyOnLine && colWidths && pipeIdx > 0 && cellIdx < cells.length && cellIdx < colWidths.length) {
-            const cellText = concealedText(cells[cellIdx]);
+          if (colWidths && pipeIdx > 0 && cellIdx < cells.length && cellIdx < colWidths.length) {
+            // The cursor row shows raw text (markers revealed), so measure its
+            // raw width; every other row shows concealed text.
+            const cellText = cursorStrictlyOnLine ? cells[cellIdx] : concealedText(cells[cellIdx]);
             const cellWidth = displayWidth(cellText);
             const allocatedWidth = colWidths[cellIdx];
 
             if (cellWidth > allocatedWidth) {
-              // Truncate: conceal entire cell content and replace with truncated text.
-              // Separator rows use box-drawing ─ to match the non-truncated path
-              // (per-char conceals replace source `-` with ─ and pad via pipe replacement).
-              const prevPipeCharPos = pipePositions[pipeIdx - 1];
-              const cellByteStart = charToByte(lineContent, prevPipeCharPos + 1, byteStart);
-              const cellByteEnd = pipeByte;
-              const truncated = isSeparator
-                ? '─'.repeat(allocatedWidth)
-                : cellText.slice(0, allocatedWidth - 1) + '-';
-              editor.addConceal(bufferId, "md-syntax", cellByteStart, cellByteEnd, truncated);
-              truncatedByteRanges.push({start: cellByteStart, end: cellByteEnd});
+              if (!cursorStrictlyOnLine) {
+                // Truncate: conceal entire cell content and replace with truncated text.
+                // Separator rows use box-drawing ─ to match the non-truncated path
+                // (per-char conceals replace source `-` with ─ and pad via pipe replacement).
+                const prevPipeCharPos = pipePositions[pipeIdx - 1];
+                const cellByteStart = charToByte(lineContent, prevPipeCharPos + 1, byteStart);
+                const cellByteEnd = pipeByte;
+                const truncated = isSeparator
+                  ? '─'.repeat(allocatedWidth)
+                  : cellText.slice(0, allocatedWidth - 1) + '-';
+                editor.addConceal(bufferId, "md-syntax", cellByteStart, cellByteEnd, truncated);
+                truncatedByteRanges.push({start: cellByteStart, end: cellByteEnd});
+              }
+              // On the cursor row a too-wide cell is left raw (no padding, no
+              // truncation) so its full content stays editable.
             } else {
               const padCount = allocatedWidth - cellWidth;
               if (padCount > 0) {
@@ -1381,13 +1415,11 @@ function processLineSoftBreaks(
   }
 
   // Table row wrapping: add soft breaks for multi-line cells
-  if (block.type === 'table-row' && lineNumber !== undefined) {
+  if (block.type === 'table-row') {
     const trimmedLine = lineContent.trim();
     const isSep = /^\|[-:\s|]+\|$/.test(trimmedLine);
     if (!isSep) {
-      const bufWidths = getTableWidths(bufferId);
-      const widthInfo = bufWidths ? bufWidths.get(lineNumber) : undefined;
-      const colWidths = widthInfo ? widthInfo.allocated : undefined;
+      const colWidths = widthsForRow(byteStart);
       if (colWidths) {
         let innerLine = trimmedLine;
         if (innerLine.startsWith('|')) innerLine = innerLine.slice(1);
@@ -1491,158 +1523,105 @@ function processLineSoftBreaks(
   }
 }
 
-/**
- * Pre-compute column widths for table groups in a batch of lines.
- * Groups consecutive table rows and computes max visible width per column.
- *
- * Uses an accumulate-and-grow strategy: widths are merged with previously
- * cached values (taking the max per column) so that as the user scrolls
- * through a large table, column widths converge to the true maximum and
- * never shrink.
- */
-function processTableAlignment(
-  bufferId: number,
-  lines: Array<{ line_number: number; byte_start: number; byte_end: number; content: string }>,
-): boolean {
-  // Get existing cache (accumulate-and-grow — don't discard previous widths)
-  const widthMap = getTableWidths(bufferId) ?? new Map<number, TableWidthInfo>();
-  let needsRefresh = false;
-
-  // Group consecutive table rows
-  const groups: Array<typeof lines> = [];
-  let currentGroup: typeof lines = [];
-  let lastLineNum = -2;
-
+/** Group consecutive table rows in a `lines_changed` batch (adjacency by
+ * line_number). Each group is one table's currently-visible run; column widths
+ * are uniform within a group. */
+function groupTableRows(lines: LineInfoLike[]): LineInfoLike[][] {
+  const groups: LineInfoLike[][] = [];
+  let cur: LineInfoLike[] = [];
+  let lastLn = -2;
   for (const line of lines) {
-    const trimmed = line.content.trim();
-    const isTableRow = trimmed.startsWith('|') || trimmed.endsWith('|');
-    if (isTableRow && line.line_number === lastLineNum + 1) {
-      currentGroup.push(line);
-    } else if (isTableRow) {
-      if (currentGroup.length > 0) groups.push(currentGroup);
-      currentGroup = [line];
+    if (isTableRowContent(line.content) && line.line_number === lastLn + 1) {
+      cur.push(line);
+    } else if (isTableRowContent(line.content)) {
+      if (cur.length) groups.push(cur);
+      cur = [line];
     } else {
-      if (currentGroup.length > 0) groups.push(currentGroup);
-      currentGroup = [];
+      if (cur.length) groups.push(cur);
+      cur = [];
     }
-    lastLineNum = line.line_number;
+    lastLn = line.line_number;
   }
-  if (currentGroup.length > 0) groups.push(currentGroup);
-
-  // For each group, compute max column widths and merge with cache
-  for (const group of groups) {
-    const allCells: string[][] = [];
-
-    for (const line of group) {
-      const trimmed = line.content.trim();
-      // Strip outer pipes and split on inner pipes
-      let inner = trimmed;
-      if (inner.startsWith('|')) inner = inner.slice(1);
-      if (inner.endsWith('|')) inner = inner.slice(0, -1);
-      const cells = inner.split('|');
-      allCells.push(cells);
-    }
-
-    // Find max column count
-    const maxCols = allCells.reduce((max, row) => Math.max(max, row.length), 0);
-
-    // Compute max visible width per column from the currently visible rows
-    const newWidths: number[] = [];
-    for (let col = 0; col < maxCols; col++) {
-      let maxW = 0;
-      for (const row of allCells) {
-        if (col < row.length) {
-          // For separator rows, use 0 width (they adapt to data rows).
-          // Use RAW text width (not concealedText) so that columns are always
-          // sized to accommodate revealed emphasis markers when cursor enters
-          // a row. Concealed rows simply get extra padding.
-          const isSep = /^[-:\s]+$/.test(row[col]);
-          if (!isSep) {
-            maxW = Math.max(maxW, displayWidth(row[col]));
-          }
-        }
-      }
-      newWidths.push(maxW);
-    }
-
-    // Merge with any previously cached maxW arrays for lines in this group
-    // (they may have been computed from a different visible slice of the
-    // same table). Take the max per column — widths only grow.
-    let merged = newWidths;
-    const mergeWith = (cached: number[]) => {
-      const cols = Math.max(merged.length, cached.length);
-      const wider: number[] = [];
-      for (let c = 0; c < cols; c++) {
-        wider.push(Math.max(merged[c] ?? 0, cached[c] ?? 0));
-      }
-      merged = wider;
-    };
-
-    for (const line of group) {
-      const cached = widthMap.get(line.line_number);
-      if (cached) mergeWith(cached.maxW);
-    }
-
-    // Also merge with adjacent cached lines above/below the group.
-    // When mouse-scrolling, lines_changed only delivers NEW lines (not
-    // previously seen), so the group may not overlap with earlier cached
-    // rows of the same table. Scanning adjacently bridges the gap.
-    const firstLine = group[0].line_number;
-    const lastLine = group[group.length - 1].line_number;
-    for (let ln = firstLine - 1; widthMap.has(ln); ln--) {
-      mergeWith(widthMap.get(ln)!.maxW);
-    }
-    for (let ln = lastLine + 1; widthMap.has(ln); ln++) {
-      mergeWith(widthMap.get(ln)!.maxW);
-    }
-
-    // Compute allocated widths constrained to viewport. Clamp the
-    // configured compose width to the actual viewport — otherwise a
-    // large configured width overflows when the editor area shrinks
-    // (e.g. when the File Explorer sidebar opens).
-    const viewport = editor.getViewport();
-    const composeW = effectiveComposeWidth(viewport ? viewport.width : 80);
-    const numCols = merged.length;
-    const available = composeW - (numCols + 1); // subtract pipe/box-drawing characters
-    const allocated = distributeColumnWidths(merged, available);
-
-    // Check if adjacent cached lines had narrower allocated widths — if so,
-    // they need their conceals recomputed (they were already rendered with
-    // old widths and won't be re-delivered by lines_changed).
-    const allocGrew = (old: TableWidthInfo) =>
-      allocated.some((w, i) => w > (old.allocated[i] ?? 0));
-    for (let ln = firstLine - 1; widthMap.has(ln); ln--) {
-      if (allocGrew(widthMap.get(ln)!)) { needsRefresh = true; break; }
-    }
-    for (let ln = lastLine + 1; widthMap.has(ln); ln++) {
-      if (allocGrew(widthMap.get(ln)!)) { needsRefresh = true; break; }
-    }
-
-    // Store merged widths for each line in the group.  We tag the source
-    // separator row (`|---|---|---|`) so the border renderer can skip
-    // drawing a duplicate `├─┼─┤` adjacent to it (the source separator is
-    // already concealed into one).  Each line gets its own info object so
-    // the per-row `isSourceSep` flag is independent.
-    for (const line of group) {
-      const isSep = /^\|[-:\s|]+\|$/.test(line.content.trim());
-      widthMap.set(line.line_number, { maxW: merged, allocated, isSourceSep: isSep });
-    }
-    // Adjacent cached lines (already-processed neighbours of this group)
-    // need their `allocated` updated but should keep their existing
-    // `isSourceSep` flag — they were classified when they were processed.
-    for (let ln = firstLine - 1; widthMap.has(ln); ln--) {
-      const prev = widthMap.get(ln)!;
-      widthMap.set(ln, { maxW: merged, allocated, isSourceSep: prev.isSourceSep });
-    }
-    for (let ln = lastLine + 1; widthMap.has(ln); ln++) {
-      const prev = widthMap.get(ln)!;
-      widthMap.set(ln, { maxW: merged, allocated, isSourceSep: prev.isSourceSep });
-    }
-  }
-
-  setTableWidths(bufferId, widthMap);
-  return needsRefresh;
+  if (cur.length) groups.push(cur);
+  return groups;
 }
+
+/** Populate `currentRowWidths` for this render: one allocated-width array per
+ * table row in the batch, uniform within each table.
+ *
+ * Column widths are accumulated GROW-ONLY in the table's width memo (a
+ * widths-only marker, see TABLE_WIDTH_NS_PREFIX) so a partial batch that misses
+ * the table's widest row doesn't lay its rows out narrower than a batch that
+ * includes it. The marker's coordinates are only ever used to find the same
+ * table's memo across batches (overlap query) and to extend its span as more of
+ * a tall table scrolls into view; rows and borders are still positioned from the
+ * live event, so an offset memo marker can at worst contribute stale *numbers*
+ * (recovered on the next batch), never a misplaced border.
+ *
+ * Returns true if any table's accumulated widths grew this batch — the caller
+ * then forces one `refreshLines` so already-visible rows (which were laid out at
+ * the old, narrower width before the wider row scrolled in) re-render at the new
+ * width. The follow-up pass finds the memo unchanged, so it does not loop. */
+function computeRowWidths(bufferId: number, lines: LineInfoLike[]): boolean {
+  currentRowWidths = new Map();
+  let grew = false;
+  for (const group of groupTableRows(lines)) {
+    const gStart = group[0].byte_start;
+    const gEnd = group[group.length - 1].byte_end;
+
+    // This batch's per-column max content width.
+    const batchMaxW: number[] = [];
+    for (const line of group) {
+      const isSep = isSepRowContent(line.content);
+      const cells = tableCells(line.content);
+      for (let c = 0; c < cells.length; c++) {
+        // Separator-row cells (`---`) adapt to data rows: width 0. Use RAW
+        // display width (not concealed) so columns fit revealed emphasis markers
+        // and wide/CJK/emoji cells.
+        const w = isSep || /^[-:\s]+$/.test(cells[c]) ? 0 : displayWidth(cells[c]);
+        batchMaxW[c] = Math.max(batchMaxW[c] ?? 0, w);
+      }
+    }
+
+    // Find this table's width memo (overlap query; write-through means two
+    // groups of one table in the same batch share it). Consolidate duplicates.
+    // Clamp the low end at 0: `queryMarkers`'s binding takes a u32, so a table
+    // at byte 0 (`gStart - 1 === -1`) would throw an underflow out of the whole
+    // handler and leave the file rendering raw `|`.
+    const near = (editor.queryMarkers(bufferId, Math.max(0, gStart - 1), gEnd + 1) as Array<{
+      id: string; start: number; end: number; payload: unknown;
+    }>) || [];
+    const memo = near.filter((m) => m.id.startsWith(TABLE_WIDTH_NS_PREFIX));
+    const existing = memo.length ? memo[0] : undefined;
+    for (let k = 1; k < memo.length; k++) editor.deleteMarker(bufferId, memo[k].id);
+
+    // Accumulate (grow-only).
+    const acc: number[] = [];
+    if (existing) {
+      const p = (existing.payload || {}) as { maxW?: number[] };
+      for (const w of p.maxW ?? []) acc.push(w);
+    }
+    const prevLen = acc.length;
+    for (let c = 0; c < batchMaxW.length; c++) {
+      const before = acc[c] ?? 0;
+      acc[c] = Math.max(before, batchMaxW[c]);
+      if (acc[c] > before || c >= prevLen) grew = true;
+    }
+
+    // Upsert. Extend the marker's span to cover every row seen so far, so the
+    // next batch (further down a tall table) still overlaps and finds this memo
+    // instead of starting a second one.
+    const id = existing ? existing.id : `${TABLE_WIDTH_NS_PREFIX}${nextTableWidthId++}`;
+    const start = existing ? Math.min(existing.start, gStart) : gStart;
+    const end = existing ? Math.max(existing.end, gEnd) : gEnd;
+    editor.createMarker(bufferId, id, start, end, { maxW: acc });
+
+    const widths = allocatedFor(acc);
+    for (const line of group) currentRowWidths.set(line.byte_start, widths);
+  }
+  return grew;
+}
+
 
 // lines_changed: called for newly visible or invalidated lines
 
@@ -1689,38 +1668,80 @@ editor.on("lines_changed", (data) => {
   // shared across splits.
   const cursors = isComposing(data.buffer_id) ? [editor.getCursorPosition()] : [];
 
-  // Pre-compute table column widths for alignment.
-  // If widths grew from merging with adjacent cached rows (e.g. after a
-  // mouse-scroll jump), force a full re-render so already-visible lines
-  // pick up the wider columns. The second pass will be a no-op (widths
-  // already converged) so this doesn't loop.
-  const tableWidthsGrew = processTableAlignment(data.buffer_id, data.lines);
+  // Column widths for every table row in this batch (uniform per table, via the
+  // grow-only memo). If a wider row scrolled into view and grew a table's
+  // columns, force a refresh so already-visible rows re-render at the new width.
+  const tableWidthsGrew = computeRowWidths(data.buffer_id, data.lines);
 
+  // Line-number → line, for local first/last-row classification of borders.
+  const byLineNum = new Map<number, LineInfoLike>();
+  for (const line of data.lines) byLineNum.set(line.line_number, line);
+
+  // Buffer end byte, so a table whose last row is the final line of the buffer
+  // (no following line in the batch, ever) still closes its frame. Without this
+  // `isLast` can never be true at end-of-buffer and the bottom border is missing.
+  const bufEnd = editor.getBufferLength(data.buffer_id);
+
+  // Per line: clear+rebuild conceals, soft-breaks, and the table border frame —
+  // all anchored to this one line. No whole-table rebuild, no stored row model;
+  // borders for lines not in this batch keep riding their auto-shift markers.
   for (const line of data.lines) {
+    // Clear this row's border range first (covers a row that stopped being a
+    // table row, e.g. its pipes were deleted, and stale frames left a few bytes
+    // off by the async lag).
+    clearRowBorders(data.buffer_id, line.byte_start, line.byte_end);
+
     processLineConceals(data.buffer_id, line.content, line.byte_start, line.byte_end, cursors, line.line_number);
     processLineSoftBreaks(data.buffer_id, line.content, line.byte_start, line.byte_end, cursors, line.line_number);
-  }
 
-  // Add/refresh table border virtual lines (top/bottom + inter-row separators).
-  // Runs AFTER processTableAlignment so the widthMap reflects the latest
-  // allocated widths, and AFTER processLineConceals so the borders we draw
-  // line up with the cell pipes the conceals produce.
-  const widthMapForBorders = getTableWidths(data.buffer_id);
-  if (widthMapForBorders) {
-    processTableBorders(data.buffer_id, data.lines, widthMapForBorders);
+    if (isTableRowContent(line.content)) {
+      const widths = currentRowWidths.get(line.byte_start) ?? [];
+      const prev = byLineNum.get(line.line_number - 1);
+      const next = byLineNum.get(line.line_number + 1);
+      // First/last is local. A row is first if it's the buffer's line 0 or its
+      // previous line is present in this batch and is NOT a table row; last if
+      // its next line is present and not a table row. When a neighbour is
+      // off-screen (absent from the batch) we conservatively treat the row as
+      // mid-table, so a tall table scrolled past its top/bottom never draws a
+      // spurious frame edge — it redraws when that neighbour re-enters a batch.
+      const isFirst = line.line_number === 0 || (prev !== undefined && !isTableRowContent(prev.content));
+      // Last if the next line is present and not a table row, OR this row is the
+      // final line of the buffer (no next line exists at all — distinct from a
+      // next line merely off-screen, which we treat as mid-table).
+      const isLast =
+        (next !== undefined && !isTableRowContent(next.content)) ||
+        (next === undefined && line.byte_end >= bufEnd);
+      const isSep = isSepRowContent(line.content);
+      const prevIsSep = prev !== undefined && isSepRowContent(prev.content);
+      emitRowBorders(data.buffer_id, line.byte_start, widths, isFirst, isSep, prevIsSep, isLast);
+    }
   }
 
   if (tableWidthsGrew) {
     editor.refreshLines(data.buffer_id);
   }
 });
+// after_insert / after_delete: conceals and borders need no work — an edit
+// invalidates `seen_byte_ranges`, so `lines_changed` re-fires for the affected
+// lines and the per-line pass clears+rebuilds them; unaffected rows' borders
+// auto-shift. We only reset the *width memo* of a table the edit touched, so a
+// cell that just got narrower (or a row removed) isn't stuck at the old wide
+// column. The memo re-accumulates from scratch on the following render.
+function resetEditedTableWidths(bufferId: number, affStart: number, affEnd: number): void {
+  const near = (editor.queryMarkers(bufferId, affStart, affEnd) as Array<{
+    id: string; start: number; end: number; payload: unknown;
+  }>) || [];
+  for (const m of near) {
+    if (m.id.startsWith(TABLE_WIDTH_NS_PREFIX)) editor.deleteMarker(bufferId, m.id);
+  }
+}
 editor.on("after_insert", (data) => {
   if (!isComposingInAnySplit(data.buffer_id)) return;
-  editor.debug(`[mc] after_insert: pos=${data.position} text="${data.text.replace(/\n/g,'\\n')}" affected=${data.affected_start}..${data.affected_end}`);
+  resetEditedTableWidths(data.buffer_id, data.affected_start, data.affected_end);
 });
 editor.on("after_delete", (data) => {
   if (!isComposingInAnySplit(data.buffer_id)) return;
-  editor.debug(`[mc] after_delete: start=${data.start} end=${data.end} deleted="${data.deleted_text.replace(/\n/g,'\\n')}" affected_start=${data.affected_start} deleted_len=${data.deleted_len}`);
+  resetEditedTableWidths(data.buffer_id, data.affected_start, data.affected_start);
 });
 editor.on("cursor_moved", (data) => {
   if (!isComposingInAnySplit(data.buffer_id)) return;
@@ -1730,9 +1751,14 @@ editor.on("cursor_moved", (data) => {
 
   editor.debug(`[mc] cursor_moved: old_pos=${data.old_position} new_pos=${data.new_position} line=${data.line} prevLine=${prevLine}`);
 
-  // Always refresh: even intra-line movements need conceal updates because
-  // auto-expose is span-level (cursor entering/leaving an emphasis or link
-  // span within the same line must toggle its syntax markers).
+  // Refresh all visible lines so span-level auto-expose (revealing the markup
+  // the cursor sits on) and table-row un/re-wrap stay consistent across the
+  // whole viewport, including intra-line moves.
+  //
+  // This re-fires `lines_changed` for the viewport. Tables are emitted per line
+  // (clear+rebuild each row's conceals and border frame from the live event),
+  // so repeated refreshes are idempotent and the frame stays correct no matter
+  // how often the cursor moves.
   editor.refreshLines(data.buffer_id);
 });
 // view_transform_request hook no longer needed — wrapping is handled by soft breaks
@@ -1744,21 +1770,9 @@ editor.on("viewport_changed", (data) => {
   if (data.width === lastViewportWidth) return;
   lastViewportWidth = data.width;
 
-  // Recompute allocated table column widths for new viewport width
-  const bufWidths = getTableWidths(data.buffer_id);
-  if (bufWidths) {
-    const composeW = effectiveComposeWidth(data.width);
-    const seen = new Set<string>(); // Track by JSON key to deduplicate shared TableWidthInfo
-    for (const [lineNum, info] of bufWidths) {
-      const key = info.maxW.join(",");
-      if (seen.has(key)) continue;
-      seen.add(key);
-      const numCols = info.maxW.length;
-      const available = composeW - (numCols + 1);
-      info.allocated = distributeColumnWidths(info.maxW, available);
-    }
-    setTableWidths(data.buffer_id, bufWidths);
-  }
+  // Refresh all visible lines: the per-line pass recomputes column widths for
+  // the new viewport width (allocatedFor reads the live viewport) and re-emits
+  // each row's border frame to match.
   editor.refreshLines(data.buffer_id);
 });
 editor.on("prompt_confirmed", (args) => {

@@ -659,11 +659,11 @@ impl super::Editor {
         // this, retargeting only updates focus state and the panel
         // keeps drawing the prior (now-empty) buffer.
         for node in self.active_window_mut().grouped_subtrees.values_mut() {
-            if let Some(found) = node.find_mut(panel_leaf.into()) {
-                if let crate::view::split::SplitNode::Leaf { buffer_id, .. } = found {
-                    *buffer_id = new_buffer_id;
-                    break;
-                }
+            if let Some(crate::view::split::SplitNode::Leaf { buffer_id, .. }) =
+                node.find_mut(panel_leaf.into())
+            {
+                *buffer_id = new_buffer_id;
+                break;
             }
         }
 
@@ -691,15 +691,15 @@ impl super::Editor {
             //    still the prior id is safe.
             {
                 let buf_state = vs.ensure_buffer_state(new_buffer_id);
-                buf_state.apply_config_defaults(
-                    cfg.line_numbers,
-                    cfg.highlight_current_line,
+                buf_state.apply_config_defaults(crate::view::split::ViewConfigDefaults {
+                    line_numbers: cfg.line_numbers,
+                    highlight_current_line: cfg.highlight_current_line,
                     line_wrap,
-                    cfg.wrap_indent,
+                    wrap_indent: cfg.wrap_indent,
                     wrap_column,
-                    cfg.rulers,
-                    cfg.scroll_offset,
-                );
+                    rulers: cfg.rulers,
+                    scroll_offset: cfg.scroll_offset,
+                });
                 // Match the panel-buffer presentation set in
                 // `build_group_layout` (no line numbers, no current-
                 // line highlight inside grouped panels).

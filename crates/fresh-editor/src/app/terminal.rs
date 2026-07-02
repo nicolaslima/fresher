@@ -85,6 +85,19 @@ fn combine_terminal_title(pty: Option<&str>, osc: Option<&str>) -> Option<String
     }
 }
 
+/// Spawn options for [`Window::create_plugin_terminal`], grouped so the
+/// call takes one argument instead of seven.
+pub struct PluginTerminalSpec {
+    pub cwd: Option<PathBuf>,
+    pub direction: Option<crate::model::event::SplitDirection>,
+    pub ratio: Option<f32>,
+    /// Split focus: whether the new terminal becomes the active leaf.
+    pub focus: bool,
+    pub persistent: bool,
+    pub command: Option<Vec<String>>,
+    pub title: Option<String>,
+}
+
 impl Window {
     /// Resolve the terminal wrapper used to spawn a new integrated
     /// terminal in this window, applying the `terminal.shell` config
@@ -366,14 +379,17 @@ impl Window {
     /// seeding a fresh layout in a never-activated window).
     pub fn create_plugin_terminal(
         &mut self,
-        cwd: Option<PathBuf>,
-        direction: Option<crate::model::event::SplitDirection>,
-        ratio: Option<f32>,
-        focus: bool,
-        persistent: bool,
-        command: Option<Vec<String>>,
-        title: Option<String>,
+        spec: PluginTerminalSpec,
     ) -> Result<(TerminalId, BufferId, Option<LeafId>), String> {
+        let PluginTerminalSpec {
+            cwd,
+            direction,
+            ratio,
+            focus,
+            persistent,
+            command,
+            title,
+        } = spec;
         // Derive the auto-title from the command's executable name
         // (basename of argv[0]). The host writes this into the
         // terminal buffer's `BufferMetadata::name` so the tab reads
@@ -442,8 +458,17 @@ impl Window {
                             // is independent.
                             let _ = line_numbers;
                             let _ = highlight_current_line;
-                            view_state
-                                .apply_config_defaults(false, false, false, false, None, rulers, 0);
+                            view_state.apply_config_defaults(
+                                crate::view::split::ViewConfigDefaults {
+                                    line_numbers: false,
+                                    highlight_current_line: false,
+                                    line_wrap: false,
+                                    wrap_indent: false,
+                                    wrap_column: None,
+                                    rulers,
+                                    scroll_offset: 0,
+                                },
+                            );
                             // Terminal output is ANSI-sequenced and
                             // assumes a fixed column count; wrapping
                             // would mangle cursor positioning.
@@ -1041,16 +1066,17 @@ impl Editor {
             SplitViewState::with_buffer(self.terminal_width, self.terminal_height, buffer_id);
         // Terminal-dedicated splits never show line numbers or current-line
         // highlight (mirrors the dock + plugin-terminal split setup).
-        view_state.apply_config_defaults(
-            false,
-            false,
-            self.active_window().resolve_line_wrap_for_buffer(buffer_id),
-            self.config.editor.wrap_indent,
-            self.active_window()
+        view_state.apply_config_defaults(crate::view::split::ViewConfigDefaults {
+            line_numbers: false,
+            highlight_current_line: false,
+            line_wrap: self.active_window().resolve_line_wrap_for_buffer(buffer_id),
+            wrap_indent: self.config.editor.wrap_indent,
+            wrap_column: self
+                .active_window()
                 .resolve_wrap_column_for_buffer(buffer_id),
-            self.config.editor.rulers.clone(),
-            0,
-        );
+            rulers: self.config.editor.rulers.clone(),
+            scroll_offset: 0,
+        });
         // Terminals don't wrap — keep escape sequences intact.
         view_state.viewport.line_wrap_enabled = false;
 

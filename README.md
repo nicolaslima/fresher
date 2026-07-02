@@ -12,6 +12,10 @@
   Familiar keybindings, mouse support, and IDE-level features — no learning curve required.
 </p>
 
+<p align="center">
+  <em>Active work in progress — built on a stable fork of Fresh, with quality-of-life improvements in development.</em>
+</p>
+
 ---
 
 ## About

@@ -117,5 +117,5 @@ This project is licensed under the GNU General Public License v2.0 (GPL-2.0).
 ---
 
 <p align="center">
-  <img src="art/ink-and-glitch.png" alt="Fresher — ink-and-glitch" width="600">
+  <img src="art/existential-tree.png" alt="Fresher — existential-tree" width="600">
 </p>

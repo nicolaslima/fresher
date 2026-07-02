@@ -496,7 +496,7 @@ impl Editor {
         let populated = self
             .windows
             .get(&id)
-            .map(|w| w.buffers.splits().is_some() && w.buffers.len() > 0)
+            .map(|w| w.buffers.splits().is_some() && !w.buffers.is_empty())
             .unwrap_or(false);
 
         let session = self.session_name.clone();
@@ -1114,15 +1114,19 @@ impl crate::app::window::Window {
                             self.terminal_height,
                             second_buffer_id,
                         );
-                        view_state.apply_config_defaults(
-                            self.resources.config.editor.line_numbers,
-                            self.resources.config.editor.highlight_current_line,
-                            self.resolve_line_wrap_for_buffer(second_buffer_id),
-                            self.resources.config.editor.wrap_indent,
-                            self.resolve_wrap_column_for_buffer(second_buffer_id),
-                            self.resources.config.editor.rulers.clone(),
-                            self.resources.config.editor.scroll_offset,
-                        );
+                        view_state.apply_config_defaults(crate::view::split::ViewConfigDefaults {
+                            line_numbers: self.resources.config.editor.line_numbers,
+                            highlight_current_line: self
+                                .resources
+                                .config
+                                .editor
+                                .highlight_current_line,
+                            line_wrap: self.resolve_line_wrap_for_buffer(second_buffer_id),
+                            wrap_indent: self.resources.config.editor.wrap_indent,
+                            wrap_column: self.resolve_wrap_column_for_buffer(second_buffer_id),
+                            rulers: self.resources.config.editor.rulers.clone(),
+                            scroll_offset: self.resources.config.editor.scroll_offset,
+                        });
                         self.buffers
                             .split_view_states_mut()
                             .expect("active window must have a populated split layout")
@@ -1176,9 +1180,7 @@ impl crate::app::window::Window {
         let active_buffer_id = self
             .buffers
             .with_all_mut(|__buffers_mut, _mgr, vs_map| {
-                let Some(view_state) = vs_map.get_mut(&current_split_id) else {
-                    return None;
-                };
+                let view_state = vs_map.get_mut(&current_split_id)?;
                 let mut active_buffer_id: Option<BufferId> = None;
                 if !split_state.open_tabs.is_empty() {
                     // Clear pre-existing open_buffers (e.g. the initial empty buffer
@@ -1816,7 +1818,7 @@ impl crate::app::window::Window {
     /// layout, if it doesn't already have a populated layout. Mirrors
     /// `Editor::build_fresh_layout_if_needed`, rooted on `self`.
     pub(crate) fn seed_initial_layout(&mut self) {
-        if self.buffers.splits().is_some() && self.buffers.len() > 0 {
+        if self.buffers.splits().is_some() && !self.buffers.is_empty() {
             return;
         }
         let buf = self.alloc_buffer_id();

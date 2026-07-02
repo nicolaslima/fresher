@@ -78,6 +78,7 @@ mod split_actions;
 mod stdin_stream;
 mod tab_drag;
 mod terminal;
+pub use terminal::PluginTerminalSpec;
 mod terminal_input;
 mod terminal_link;
 mod terminal_mouse;
@@ -766,6 +767,15 @@ pub struct Editor {
     /// Quick Open registry for unified prompt providers
     quick_open_registry: QuickOpenRegistry,
 
+    /// URI schemes a plugin has claimed via `registerLspUriScheme`. When an
+    /// LSP navigation (e.g. go-to-definition) resolves to a non-`file://`
+    /// URI whose scheme is in this set, the core fires the
+    /// `lsp_open_external_uri` hook and lets the plugin fetch/open the
+    /// target instead of showing the "external location" fallback message.
+    /// Keeps synthetic-document handling (slangd's `slang-synth://`, jdtls's
+    /// `jdt://`, …) out of the core: the core only dispatches by scheme.
+    pub(crate) lsp_uri_schemes: std::collections::HashSet<String>,
+
     /// Plugin manager (handles both enabled and disabled cases)
     /// Plugin manager, wrapped in `Arc<RwLock<>>` so windows can fire
     /// hooks (`run_hook`) via WindowResources without holding an
@@ -773,7 +783,7 @@ pub struct Editor {
     /// deliver_response, has_hook_handlers, …) take a read lock; the
     /// few `&mut self` methods (process_commands, check_thread_health,
     /// test_inject_command) take a write lock.
-    plugin_manager: Arc<RwLock<PluginManager>>,
+    plugin_manager: std::rc::Rc<RwLock<PluginManager>>,
 
     // `plugin_dev_workspaces` moved onto `Window` — keyed by `BufferId`,
     // and buffers are per-window, so the workspace map follows.
@@ -1471,14 +1481,6 @@ impl Editor {
             })
             .unwrap_or_else(|| "[No Name]".to_string())
     }
-
-    /// Apply an event to the active buffer with all cross-cutting concerns.
-    /// This is the centralized method that automatically handles:
-    /// - Event application to buffer
-    /// - Plugin hooks (after-insert, after-delete, etc.)
-    /// - LSP notifications
-    /// - Any other cross-cutting concerns
-    ///
 
     /// Get the event log for the active buffer
     pub fn active_event_log(&self) -> &EventLog {

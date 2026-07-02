@@ -1589,6 +1589,12 @@ type CreateVirtualBufferOptions = {
 	* plugin would otherwise have to navigate.
 	*/
 	initialCursorLine?: number;
+	/**
+	* Override indentation-guide visibility for this buffer (default: follows
+	* the global setting, but virtual buffers show none). Set `true` when the
+	* buffer displays real source — e.g. a file opened at a past commit.
+	*/
+	indentationGuide?: boolean;
 };
 type GrepMatch = {
 	/**
@@ -2701,6 +2707,12 @@ interface EditorAPI {
 	*/
 	clearVirtualTextNamespace(bufferId: number, namespace: string): boolean;
 	/**
+	* Clear virtual lines in a namespace whose anchor byte falls in
+	* `[start, end)`. The per-line analogue of `clearConcealsInRange`, so a
+	* plugin can rebuild one line's virtual lines without nuking the namespace.
+	*/
+	clearVirtualLinesInRange(bufferId: number, namespace: string, start: number, end: number): boolean;
+	/**
 	* Add a virtual line (full line above/below a position)
 	* 
 	* The `options` object accepts:
@@ -2990,6 +3002,12 @@ interface EditorAPI {
 	*/
 	setLineNumbers(bufferId: number, enabled: boolean): boolean;
 	/**
+	* Enable or disable indentation guides for a buffer, overriding the global
+	* `editor.indentation_guide` setting. Tool views that render non-editable
+	* content (e.g. the Git Log commit-detail diff) disable them.
+	*/
+	setIndentationGuide(bufferId: number, enabled: boolean): boolean;
+	/**
 	* Set the view mode for a buffer ("source" or "compose")
 	*/
 	setViewMode(bufferId: number, mode: string): boolean;
@@ -3005,6 +3023,32 @@ interface EditorAPI {
 	* Get plugin-managed per-buffer view state (reads from snapshot)
 	*/
 	getViewState(bufferId: number, key: string): unknown;
+	/**
+	* Create or replace an interval marker `[start, end)` with `payload`,
+	* keyed by `key`, on the given buffer. The editor keeps `start`/`end`
+	* shifted across edits; an edit inside the range is the plugin's signal
+	* (via after_insert/after_delete) to re-parse and update or delete it.
+	*/
+	createMarker(bufferId: number, key: string, start: number, end: number, payload: unknown): boolean;
+	/**
+	* Update an existing marker's payload (keeping its current byte range).
+	* Returns false if no marker with `key` exists on the buffer.
+	*/
+	updateMarker(bufferId: number, key: string, payload: unknown): boolean;
+	/**
+	* Delete a marker by key. Returns false if it did not exist.
+	*/
+	deleteMarker(bufferId: number, key: string): boolean;
+	/**
+	* Return all markers on the buffer whose range overlaps `[start, end)`,
+	* as an array of `{ id, start, end, payload }`. O(n) over the buffer's
+	* markers (a handful for typical documents).
+	*/
+	queryMarkers(bufferId: number, start: number, end: number): unknown;
+	/**
+	* Return a single marker by key as `{ id, start, end, payload }`, or null.
+	*/
+	getMarker(bufferId: number, key: string): unknown;
 	/**
 	* Set plugin-managed global state (write-through to snapshot + command for persistence).
 	* State is automatically isolated per plugin using the plugin's name.
@@ -3071,6 +3115,27 @@ interface EditorAPI {
 	* Restart LSP server for a specific language
 	*/
 	restartLspForLanguage(language: string): boolean;
+	/**
+	* Claim an LSP URI scheme (e.g. "slang-synth"), without the "://".
+	*
+	* When an LSP navigation (go-to-definition, …) resolves to a non-file
+	* URI whose scheme was registered here, the editor fires the
+	* `lsp_open_external_uri` hook — carrying `{ uri, scheme, line,
+	* character, language, server_name }` — instead of showing its
+	* "external location, no local source file" fallback. The plugin then
+	* fetches the synthetic document and opens it (e.g. slangd builtin
+	* modules via `slangd --print-builtin-module`).
+	*/
+	registerLspUriScheme(scheme: string): boolean;
+	/**
+	* Mark the buffer backing `path` read-only.
+	*
+	* Resolved by path rather than buffer id, so it is race-free when
+	* called immediately after `openFile(path, …)`: both are FIFO commands,
+	* so the buffer exists when this runs, whereas `getActiveBufferId()`
+	* reads a snapshot that may not yet reflect the open.
+	*/
+	markFileReadOnly(path: string): boolean;
 	/**
 	* Set the workspace root URI for a specific language's LSP server
 	* This allows plugins to specify project roots (e.g., directory containing .csproj)
@@ -3568,6 +3633,9 @@ interface HookEventMap {
 			byte_end: number;
 			content: string;
 		}[];
+		/** Buffer version these byte ranges were captured at. Pass back to
+		* coordinate-mapping APIs to repair stale offsets from this batch. */
+		epoch: number;
 	};
 	view_transform_request: {
 		buffer_id: number;
@@ -3643,6 +3711,14 @@ interface HookEventMap {
 			line: number;
 			column: number;
 		}[];
+	};
+	lsp_open_external_uri: {
+		uri: string;
+		scheme: string;
+		line: number;
+		character: number;
+		language: string;
+		server_name: string;
 	};
 	lsp_server_request: {
 		language: string;

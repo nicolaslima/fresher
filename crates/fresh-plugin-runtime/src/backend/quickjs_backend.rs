@@ -90,7 +90,8 @@ use anyhow::{anyhow, Result};
 use fresh_core::api::{
     ActionSpec, BufferInfo, CompositeHunk, CreateCompositeBufferOptions, EditorStateSnapshot,
     GrammarInfoSnapshot, JsCallbackId, LanguagePackConfig, LspServerPackConfig, OverlayOptions,
-    PluginCommand, PluginResponse, SearchHandleRegistry, SearchHandleState, SearchTakeResult,
+    PluginCommand, PluginMarker, PluginResponse, SearchHandleRegistry, SearchHandleState,
+    SearchTakeResult,
 };
 use fresh_core::command::Command;
 use fresh_core::overlay::OverlayNamespace;
@@ -789,6 +790,17 @@ pub struct JsEditorApi {
     services: Arc<dyn fresh_core::services::PluginServiceBridge>,
     #[qjs(skip_trace)]
     plugin_tracked_state: Rc<RefCell<HashMap<String, PluginTrackedState>>>,
+    /// `(buffer_id, version)` of the hook currently being dispatched: the buffer
+    /// the `lines_changed` epoch belongs to, and that buffer's version. `None`
+    /// when no epoch-bearing hook is on the stack. Set by `emit_to` around
+    /// handler invocation and read by the coordinate-bearing command senders
+    /// (conceals, soft-breaks, virtual lines) via [`Self::hook_epoch_for`], which
+    /// returns the epoch only for commands targeting that same buffer — versions
+    /// are per-buffer, so stamping buffer A's version on a command for buffer B
+    /// would remap against unrelated deltas. The plugin never threads the epoch
+    /// by hand and can't forget it.
+    #[qjs(skip_trace)]
+    current_hook_epoch: Rc<std::cell::Cell<Option<(u32, u64)>>>,
     #[qjs(skip_trace)]
     async_resource_owners: AsyncResourceOwners,
     /// Tracks command name → owning plugin name (first-writer-wins collision detection)
@@ -1008,6 +1020,18 @@ impl JsEditorApi {
                 field_name: field_name.to_string(),
                 field_schema,
             });
+    }
+
+    /// The active hook's epoch (buffer version) to stamp onto a coordinate
+    /// command targeting `buffer_id` — but only if it's the same buffer the hook
+    /// fired for, since versions are per-buffer. Returns `None` otherwise (the
+    /// command is applied verbatim). Auto-stamping here is what lets the plugin
+    /// emit coordinate commands without threading the epoch by hand.
+    fn hook_epoch_for(&self, buffer_id: u32) -> Option<u64> {
+        self.current_hook_epoch
+            .get()
+            .filter(|(b, _)| *b == buffer_id)
+            .map(|(_, epoch)| epoch)
     }
 
     /// Look up the current value of one of this plugin's settings
@@ -1478,8 +1502,7 @@ impl JsEditorApi {
         } else {
             HashMap::new()
         };
-        let res = self.services.translate(&plugin_name, &key, &args_map);
-        res
+        self.services.translate(&plugin_name, &key, &args_map)
     }
 
     // === Buffer Queries (additional) ===
@@ -3563,6 +3586,7 @@ impl JsEditorApi {
                 start: start as usize,
                 end: end as usize,
                 replacement,
+                epoch: self.hook_epoch_for(buffer_id),
             })
             .is_ok()
     }
@@ -3584,6 +3608,7 @@ impl JsEditorApi {
                 buffer_id: BufferId(buffer_id as usize),
                 start: start as usize,
                 end: end as usize,
+                epoch: self.hook_epoch_for(buffer_id),
             })
             .is_ok()
     }
@@ -3624,6 +3649,7 @@ impl JsEditorApi {
                 namespace: OverlayNamespace::from_string(namespace),
                 start: start as usize,
                 end: end as usize,
+                epoch: self.hook_epoch_for(buffer_id),
             })
             .is_ok()
     }
@@ -3733,6 +3759,7 @@ impl JsEditorApi {
                 namespace: OverlayNamespace::from_string(namespace),
                 position: position as usize,
                 indent: indent as u16,
+                epoch: self.hook_epoch_for(buffer_id),
             })
             .is_ok()
     }
@@ -3754,6 +3781,7 @@ impl JsEditorApi {
                 buffer_id: BufferId(buffer_id as usize),
                 start: start as usize,
                 end: end as usize,
+                epoch: self.hook_epoch_for(buffer_id),
             })
             .is_ok()
     }
@@ -4116,6 +4144,27 @@ impl JsEditorApi {
             .is_ok()
     }
 
+    /// Clear virtual lines in a namespace whose anchor byte falls in
+    /// `[start, end)`. The per-line analogue of `clearConcealsInRange`, so a
+    /// plugin can rebuild one line's virtual lines without nuking the namespace.
+    pub fn clear_virtual_lines_in_range(
+        &self,
+        buffer_id: u32,
+        namespace: String,
+        start: u32,
+        end: u32,
+    ) -> bool {
+        self.command_sender
+            .send(PluginCommand::ClearVirtualLinesInRange {
+                buffer_id: BufferId(buffer_id as usize),
+                namespace,
+                start: start as usize,
+                end: end as usize,
+                epoch: self.hook_epoch_for(buffer_id),
+            })
+            .is_ok()
+    }
+
     /// Add a virtual line (full line above/below a position)
     ///
     /// The `options` object accepts:
@@ -4167,6 +4216,10 @@ impl JsEditorApi {
             .ok()
             .filter(|s| !s.is_empty());
         let gutter_color = parse_color_spec("gutterColor", &options);
+        // The buffer version `position` was computed against: the epoch of the
+        // hook this handler is running in, auto-stamped by the runtime. Lets the
+        // editor remap a stale anchor forward before placing the line.
+        let epoch = self.hook_epoch_for(buffer_id);
 
         // Deserialize the array via the same serde-over-rquickjs path the
         // rest of the runtime uses (cf. `set_setting`), so the plugin-facing
@@ -4205,6 +4258,7 @@ impl JsEditorApi {
                 gutter_glyph,
                 gutter_color,
                 text_overlays,
+                epoch,
             })
             .is_ok())
     }
@@ -4906,6 +4960,18 @@ impl JsEditorApi {
             .is_ok()
     }
 
+    /// Enable or disable indentation guides for a buffer, overriding the global
+    /// `editor.indentation_guide` setting. Tool views that render non-editable
+    /// content (e.g. the Git Log commit-detail diff) disable them.
+    pub fn set_indentation_guide(&self, buffer_id: u32, enabled: bool) -> bool {
+        self.command_sender
+            .send(PluginCommand::SetIndentationGuide {
+                buffer_id: BufferId(buffer_id as usize),
+                enabled,
+            })
+            .is_ok()
+    }
+
     /// Set the view mode for a buffer ("source" or "compose")
     pub fn set_view_mode(&self, buffer_id: u32, mode: String) -> bool {
         self.command_sender
@@ -4991,6 +5057,157 @@ impl JsEditorApi {
             }
         }
         Ok(Value::new_undefined(ctx.clone()))
+    }
+
+    // === Plugin interval markers ===
+    //
+    // Byte-range markers `[start, end)` + an opaque payload, keyed by a
+    // plugin-chosen string id, stored per buffer in the shared state snapshot.
+    // The editor shifts `start`/`end` on every edit (so plugins never track
+    // byte offsets), and refreshes the snapshot before each hook — so a
+    // `queryMarkers` in an edit/cursor hook sees current coordinates. CRUD
+    // writes through to the snapshot for immediate same-thread read-back.
+
+    /// Create or replace an interval marker `[start, end)` with `payload`,
+    /// keyed by `key`, on the given buffer. The editor keeps `start`/`end`
+    /// shifted across edits; an edit inside the range is the plugin's signal
+    /// (via after_insert/after_delete) to re-parse and update or delete it.
+    pub fn create_marker<'js>(
+        &self,
+        ctx: rquickjs::Ctx<'js>,
+        buffer_id: u32,
+        key: String,
+        start: u32,
+        end: u32,
+        payload: Value<'js>,
+    ) -> bool {
+        let bid = BufferId(buffer_id as usize);
+        let payload_json = js_to_json(&ctx, payload);
+        let marker = PluginMarker {
+            start: start as usize,
+            end: end as usize,
+            payload: payload_json,
+        };
+        if let Ok(mut snapshot) = self.state_snapshot.write() {
+            snapshot
+                .plugin_markers
+                .entry(bid)
+                .or_default()
+                .insert(key, marker);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Update an existing marker's payload (keeping its current byte range).
+    /// Returns false if no marker with `key` exists on the buffer.
+    pub fn update_marker<'js>(
+        &self,
+        ctx: rquickjs::Ctx<'js>,
+        buffer_id: u32,
+        key: String,
+        payload: Value<'js>,
+    ) -> bool {
+        let bid = BufferId(buffer_id as usize);
+        let payload_json = js_to_json(&ctx, payload);
+        if let Ok(mut snapshot) = self.state_snapshot.write() {
+            if let Some(m) = snapshot
+                .plugin_markers
+                .get_mut(&bid)
+                .and_then(|m| m.get_mut(&key))
+            {
+                m.payload = payload_json;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Delete a marker by key. Returns false if it did not exist.
+    pub fn delete_marker(&self, buffer_id: u32, key: String) -> bool {
+        let bid = BufferId(buffer_id as usize);
+        if let Ok(mut snapshot) = self.state_snapshot.write() {
+            if let Some(map) = snapshot.plugin_markers.get_mut(&bid) {
+                let removed = map.remove(&key).is_some();
+                if map.is_empty() {
+                    snapshot.plugin_markers.remove(&bid);
+                }
+                return removed;
+            }
+        }
+        false
+    }
+
+    /// Return all markers on the buffer whose range overlaps `[start, end)`,
+    /// as an array of `{ id, start, end, payload }`. O(n) over the buffer's
+    /// markers (a handful for typical documents).
+    pub fn query_markers<'js>(
+        &self,
+        ctx: rquickjs::Ctx<'js>,
+        buffer_id: u32,
+        start: u32,
+        end: u32,
+    ) -> rquickjs::Result<Value<'js>> {
+        let bid = BufferId(buffer_id as usize);
+        let qs = start as usize;
+        let qe = end as usize;
+        let arr = rquickjs::Array::new(ctx.clone())?;
+        if let Ok(snapshot) = self.state_snapshot.read() {
+            if let Some(map) = snapshot.plugin_markers.get(&bid) {
+                let mut idx = 0usize;
+                for (key, m) in map.iter() {
+                    // overlap test: not (m.end <= qs || m.start >= qe), with
+                    // inclusive end so a zero-length query at a boundary hits.
+                    //
+                    // The inclusive end is intentional and load-bearing: a tall
+                    // table's next scroll batch starts exactly one byte (the
+                    // newline) after the previous batch's width-memo end, so its
+                    // `[gStart-1, gEnd+1]` query's start equals the memo's end —
+                    // the inclusive boundary is what lets the batch find and grow
+                    // the shared memo instead of starting a second one (see
+                    // markdown_compose `computeRowWidths`). Two *different* tables
+                    // are always separated by a blank line (a ≥2-byte gap), so
+                    // they never collide on this boundary.
+                    if m.end < qs || m.start > qe {
+                        continue;
+                    }
+                    let obj = rquickjs::Object::new(ctx.clone())?;
+                    obj.set("id", key.clone())?;
+                    obj.set("start", m.start as u32)?;
+                    obj.set("end", m.end as u32)?;
+                    obj.set("payload", json_to_js_value(&ctx, &m.payload)?)?;
+                    arr.set(idx, obj)?;
+                    idx += 1;
+                }
+            }
+        }
+        Ok(arr.into_value())
+    }
+
+    /// Return a single marker by key as `{ id, start, end, payload }`, or null.
+    pub fn get_marker<'js>(
+        &self,
+        ctx: rquickjs::Ctx<'js>,
+        buffer_id: u32,
+        key: String,
+    ) -> rquickjs::Result<Value<'js>> {
+        let bid = BufferId(buffer_id as usize);
+        if let Ok(snapshot) = self.state_snapshot.read() {
+            if let Some(m) = snapshot
+                .plugin_markers
+                .get(&bid)
+                .and_then(|map| map.get(&key))
+            {
+                let obj = rquickjs::Object::new(ctx.clone())?;
+                obj.set("id", key)?;
+                obj.set("start", m.start as u32)?;
+                obj.set("end", m.end as u32)?;
+                obj.set("payload", json_to_js_value(&ctx, &m.payload)?)?;
+                return Ok(obj.into_value());
+            }
+        }
+        Ok(Value::new_null(ctx.clone()))
     }
 
     // === Plugin Global State ===
@@ -5242,6 +5459,25 @@ impl JsEditorApi {
             .is_ok()
     }
 
+    /// Claim an LSP URI scheme (e.g. "slang-synth"). LSP navigations that
+    /// resolve to a non-file URI with this scheme are routed to the
+    /// `lsp_open_external_uri` hook instead of the core's fallback message.
+    pub fn register_lsp_uri_scheme(&self, scheme: String) -> bool {
+        self.command_sender
+            .send(PluginCommand::RegisterLspUriScheme { scheme })
+            .is_ok()
+    }
+
+    /// Mark the buffer backing `path` read-only. Race-free right after
+    /// `openFile` because both are FIFO commands.
+    pub fn mark_file_read_only(&self, path: String) -> bool {
+        self.command_sender
+            .send(PluginCommand::MarkBufferReadOnly {
+                path: std::path::PathBuf::from(path),
+            })
+            .is_ok()
+    }
+
     /// Set the workspace root URI for a specific language's LSP server
     /// This allows plugins to specify project roots (e.g., directory containing .csproj)
     pub fn set_lsp_root_uri(&self, language: String, uri: String) -> bool {
@@ -5360,6 +5596,7 @@ impl JsEditorApi {
                 editing_disabled: opts.editing_disabled.unwrap_or(false),
                 hidden_from_tabs: opts.hidden_from_tabs.unwrap_or(false),
                 initial_cursor_line: opts.initial_cursor_line,
+                indentation_guide: opts.indentation_guide,
                 request_id: Some(id),
             });
         Ok(id)
@@ -5739,6 +5976,11 @@ impl JsEditorApi {
 
     /// Mount a declarative widget panel as a centered floating
     /// overlay (not bound to any virtual buffer).
+    // The argument list is the JS-facing binding: rquickjs maps each
+    // parameter positionally to a `mountFloatingWidget(...)` call argument,
+    // so it can't be collapsed into a params struct without changing the
+    // plugin API.
+    #[allow(clippy::too_many_arguments)]
     #[qjs(rename = "mountFloatingWidget")]
     pub fn mount_floating_widget<'js>(
         &self,
@@ -6167,6 +6409,11 @@ impl JsEditorApi {
         js_name = "beginSearch",
         ts_raw = "beginSearch(pattern: string, opts?: { fixedString?: boolean; caseSensitive?: boolean; maxResults?: number; wholeWords?: boolean; sourceBufferId?: number }): SearchHandle"
     )]
+    // The argument list is the JS-facing binding (see the `ts_raw`
+    // signature above): rquickjs maps each parameter positionally to the
+    // `beginSearch(...)` call, so it can't be collapsed into a params
+    // struct without changing the plugin API.
+    #[allow(clippy::too_many_arguments)]
     #[qjs(rename = "_beginSearch")]
     pub fn begin_search(
         &self,
@@ -6741,6 +6988,10 @@ pub struct QuickJsBackend {
     pub services: Arc<dyn fresh_core::services::PluginServiceBridge>,
     /// Per-plugin tracking of created state (namespaces, IDs) for cleanup on unload
     pub(crate) plugin_tracked_state: Rc<RefCell<HashMap<String, PluginTrackedState>>>,
+    /// `(buffer_id, version)` of the hook currently being dispatched (see
+    /// `JsEditorApi`). Shared with every `JsEditorApi` handle so command senders
+    /// can stamp it.
+    current_hook_epoch: Rc<std::cell::Cell<Option<(u32, u64)>>>,
     /// Shared map of request_id → plugin_name for async resource creations.
     /// Used by PluginThreadHandle to track buffer/terminal IDs when responses arrive.
     async_resource_owners: AsyncResourceOwners,
@@ -7212,6 +7463,7 @@ impl QuickJsBackend {
             callback_contexts,
             services,
             plugin_tracked_state,
+            current_hook_epoch: Rc::new(std::cell::Cell::new(None)),
             async_resource_owners,
             registered_command_names,
             registered_grammar_languages,
@@ -7241,6 +7493,7 @@ impl QuickJsBackend {
             callback_contexts: Rc::clone(&self.callback_contexts),
             services: self.services.clone(),
             plugin_tracked_state: Rc::clone(&self.plugin_tracked_state),
+            current_hook_epoch: Rc::clone(&self.current_hook_epoch),
             async_resource_owners: Arc::clone(&self.async_resource_owners),
             registered_command_names: Rc::clone(&self.registered_command_names),
             registered_grammar_languages: Rc::clone(&self.registered_grammar_languages),
@@ -7665,6 +7918,21 @@ impl QuickJsBackend {
         self.services
             .set_js_execution_state(format!("hook '{}'", event_name));
 
+        // Stamp the hook's `(buffer_id, epoch)` (carried by `lines_changed` etc.)
+        // so every coordinate-bearing command the handlers emit *for that buffer*
+        // is auto-tagged with the buffer version it was computed against — the
+        // editor remaps stale coordinates on apply. Saved/restored to nest
+        // correctly if a handler emits another event. Both fields must be
+        // present; an event without an `epoch` (or `buffer_id`) clears it to
+        // `None`, which is correct: its commands carry no stale coordinate.
+        let prev_epoch = self.current_hook_epoch.get();
+        let hook_epoch = event_data
+            .get("epoch")
+            .and_then(|v| v.as_u64())
+            .zip(event_data.get("buffer_id").and_then(|v| v.as_u64()))
+            .map(|(epoch, buffer_id)| (buffer_id as u32, epoch));
+        self.current_hook_epoch.set(hook_epoch);
+
         let handlers = self
             .event_handlers
             .read()
@@ -7686,6 +7954,7 @@ impl QuickJsBackend {
             }
         }
 
+        self.current_hook_epoch.set(prev_epoch);
         self.services.clear_js_execution_state();
         Ok(true)
     }

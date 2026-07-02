@@ -500,7 +500,7 @@ impl Editor {
                     crate::services::lsp::diagnostics::apply_diagnostics_to_state_cached(
                         state,
                         &diagnostics,
-                        &*self.theme.read().unwrap(),
+                        &self.theme.read().unwrap(),
                     );
                 }
             }
@@ -530,7 +530,7 @@ impl Editor {
                     crate::services::lsp::semantic_tokens::apply_semantic_tokens_to_state(
                         state,
                         &tokens,
-                        &*self.theme.read().unwrap(),
+                        &self.theme.read().unwrap(),
                     );
                 }
             }
@@ -625,7 +625,7 @@ impl Editor {
         // Find the index of the current keybinding map
         let current_index = all_maps
             .iter()
-            .position(|name| name.to_string() == current_map)
+            .position(|name| *name == current_map)
             .unwrap_or(0);
 
         let suggestions: Vec<crate::input::commands::Suggestion> = all_maps

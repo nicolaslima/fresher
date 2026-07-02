@@ -174,6 +174,13 @@ pub enum HookArgs {
     LinesChanged {
         buffer_id: BufferId,
         lines: Vec<LineInfo>,
+        /// Buffer version (`buffer.version()`) at which these line byte ranges
+        /// were captured. Because this hook fires fire-and-forget, the plugin
+        /// processes it after later edits may have landed; passing the epoch
+        /// lets the editor remap any stale coordinate the plugin echoes back
+        /// (see `coordMap`-backed decoration commands). Surfaced to JS as
+        /// `data.epoch`.
+        epoch: u64,
     },
 
     /// Prompt input changed (user typed/edited)
@@ -212,6 +219,28 @@ pub enum HookArgs {
         symbol: String,
         /// The locations where the symbol is implemented
         locations: Vec<LspLocation>,
+    },
+
+    /// An LSP navigation (go-to-definition, …) resolved to a non-`file://`
+    /// URI whose scheme a plugin claimed via `registerLspUriScheme`. The
+    /// plugin is expected to fetch the synthetic document and open it (e.g.
+    /// slangd's `slang-synth://` builtin modules via
+    /// `slangd --print-builtin-module`). Fired only when the scheme is
+    /// registered, so the core never shows its "external location" fallback
+    /// for a URI a plugin is handling.
+    LspOpenExternalUri {
+        /// The full target URI (e.g. `slang-synth://core/core.builtin`).
+        uri: String,
+        /// The URI scheme (e.g. `slang-synth`), matched against the registry.
+        scheme: String,
+        /// Target line, 0-indexed as it came from the server (LSP convention).
+        line: u32,
+        /// Target character, 0-indexed (LSP convention).
+        character: u32,
+        /// The language of the buffer the navigation started from.
+        language: String,
+        /// The server that produced the target (e.g. `slangd`).
+        server_name: String,
     },
 
     /// View transform request

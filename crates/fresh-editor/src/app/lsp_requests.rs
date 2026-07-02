@@ -268,6 +268,63 @@ impl Editor {
         // For now, just jump to the first location
         let location = &locations[0];
 
+        // Some servers point definitions at documents that have no
+        // on-disk source: slangd sends `slang-synth://core/core.builtin`
+        // for a builtin like `float3`, jdtls sends `jdt://…` for
+        // class-file contents, and so on. `open_lsp_uri_target` would
+        // decode those to nothing and surface the opaque "URI is not a
+        // file path" error with no log trail.
+        if let Some(scheme) = location
+            .uri
+            .scheme()
+            .map(|s| s.as_str().to_string())
+            .filter(|s| s != "file")
+        {
+            let uri = location.uri.as_str().to_string();
+            let line = location.range.start.line;
+            let character = location.range.start.character;
+
+            // If a plugin claimed this scheme (via `registerLspUriScheme`),
+            // hand the target off through the `lsp_open_external_uri` hook so
+            // it can fetch and open the synthetic document itself — e.g. the
+            // slang plugin dumps the builtin module with
+            // `slangd --print-builtin-module`. The core stays scheme-agnostic.
+            if self.lsp_uri_schemes.contains(&scheme) {
+                let language = self.active_state().language.clone();
+                let server_name = self
+                    .lsp()
+                    .and_then(|lsp| lsp.server_names_for_language(&language).into_iter().next())
+                    .unwrap_or_default();
+                tracing::info!(
+                    "Go-to-definition target '{}' handled by plugin for scheme '{}'",
+                    uri,
+                    scheme
+                );
+                self.plugin_manager.read().unwrap().run_hook(
+                    "lsp_open_external_uri",
+                    crate::services::plugins::hooks::HookArgs::LspOpenExternalUri {
+                        uri,
+                        scheme,
+                        line,
+                        character,
+                        language,
+                        server_name,
+                    },
+                );
+                return Ok(());
+            }
+
+            // No provider: log a warning and show a message that names the
+            // target so the outcome is understandable rather than looking
+            // like a bug.
+            tracing::warn!(
+                "Go-to-definition target is a non-file URI '{}'; no local source to open",
+                uri
+            );
+            self.set_status_message(t!("lsp.definition_external_uri", uri = &uri).to_string());
+            return Ok(());
+        }
+
         // Resolve the URI to a buffer. `open_lsp_uri_target` handles
         // all three cases: host file under the workspace mount,
         // container-only file fetched via `docker exec cat`, and
@@ -1081,7 +1138,7 @@ impl Editor {
         } else if is_markdown {
             parse_markdown(
                 &contents,
-                &*self.theme.read().unwrap(),
+                &self.theme.read().unwrap(),
                 Some(&self.grammar_registry),
             )
         } else {
@@ -1141,7 +1198,7 @@ impl Editor {
         let dynamic_height = (self.terminal_height * 60 / 100).clamp(15, 40);
 
         // Construct the popup with the fused content.
-        let mut popup = Popup::text(Vec::new(), &*self.theme.read().unwrap());
+        let mut popup = Popup::text(Vec::new(), &self.theme.read().unwrap());
         popup.content = PopupContent::Markdown(all_lines);
         popup.title = Some(t!("lsp.popup_hover").to_string());
         popup.transient = true;
@@ -1619,7 +1676,7 @@ impl Editor {
 
         let mut popup = Popup::markdown(
             &content,
-            &*self.theme.read().unwrap(),
+            &self.theme.read().unwrap(),
             Some(&self.grammar_registry),
         );
         popup.title = Some(t!("lsp.popup_signature").to_string());
@@ -1888,7 +1945,7 @@ impl Editor {
                 .collect()
         };
 
-        let mut popup = Popup::list(items, &*self.theme.read().unwrap());
+        let mut popup = Popup::list(items, &self.theme.read().unwrap());
         popup.kind = crate::view::popup::PopupKind::Action;
         popup.title = Some(t!("lsp.popup_code_actions").to_string());
         popup.position = PopupPosition::BelowCursor;
@@ -2833,7 +2890,7 @@ impl Editor {
                 }
 
                 // Sort edits by position descending (required by apply_bulk_edits)
-                edits.sort_by(|a, b| b.0.cmp(&a.0));
+                edits.sort_by_key(|b| std::cmp::Reverse(b.0));
 
                 // Convert to references for apply_bulk_edits
                 let edit_refs: Vec<(usize, usize, &str)> = edits

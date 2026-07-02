@@ -43,6 +43,12 @@ impl Editor {
         self.apply_event_to_active_buffer(event);
     }
 
+    /// Apply an event to the active buffer with all cross-cutting concerns.
+    /// This is the centralized method that automatically handles:
+    /// - Event application to buffer
+    /// - Plugin hooks (after-insert, after-delete, etc.)
+    /// - LSP notifications
+    /// - Any other cross-cutting concerns
     pub fn apply_event_to_active_buffer(&mut self, event: &Event) {
         // Handle View events at Editor level - View events go to SplitViewState, not EditorState
         // This properly separates Buffer state from View state
@@ -323,7 +329,7 @@ impl Editor {
         }
 
         // Sort edits by position descending (required by apply_bulk_edits)
-        edits.sort_by(|a, b| b.0.cmp(&a.0));
+        edits.sort_by_key(|b| std::cmp::Reverse(b.0));
 
         // Convert to references for apply_bulk_edits
         let edit_refs: Vec<(usize, usize, &str)> = edits
@@ -358,29 +364,16 @@ impl Editor {
             lengths
         };
 
-        // Adjust markers and margins using the merged edit lengths.
-        // Using merged edits (net delta for same-position replacements) avoids
-        // the marker-at-boundary problem where sequential delete+insert at the
-        // same position pushes markers incorrectly.
-        for &(pos, del_len, ins_len) in &edit_lengths {
-            if del_len > 0 && ins_len > 0 {
-                // Replacement: adjust by net delta only
-                if ins_len > del_len {
-                    state.marker_list.adjust_for_insert(pos, ins_len - del_len);
-                    state.margins.adjust_for_insert(pos, ins_len - del_len);
-                } else if del_len > ins_len {
-                    state.marker_list.adjust_for_delete(pos, del_len - ins_len);
-                    state.margins.adjust_for_delete(pos, del_len - ins_len);
-                }
-                // Equal: net delta 0, no adjustment needed
-            } else if del_len > 0 {
-                state.marker_list.adjust_for_delete(pos, del_len);
-                state.margins.adjust_for_delete(pos, del_len);
-            } else if ins_len > 0 {
-                state.marker_list.adjust_for_insert(pos, ins_len);
-                state.margins.adjust_for_insert(pos, ins_len);
-            }
-        }
+        // Adjust markers and margins using the merged edit lengths, AND record
+        // them into the coordinate-map ring. Routing through the same method the
+        // undo/redo bulk path uses (`replay_bulk_marker_adjustments`) keeps this
+        // forward path's ring coverage equal to its marker coverage — without it
+        // a paste / multi-cursor / query-replace / code-action bumped the buffer
+        // version with no ring delta, so `map_plugin_coord` under-shifted stale
+        // plugin coordinates (the exact corruption coord_map exists to prevent).
+        // Merged edits give the net delta for same-position replacements, which
+        // also avoids the marker-at-boundary problem.
+        state.replay_bulk_marker_adjustments(&edit_lengths);
 
         // Snapshot buffer state after edits (for redo)
         let new_snapshot = state.buffer.snapshot_buffer_state();
@@ -526,6 +519,15 @@ impl Editor {
             .highlighter
             .notify_edits(&edit_lengths);
 
+        // Bulk edits (multi-cursor typing, paste, code-action rewrites) apply
+        // here instead of through the Insert/Delete hook arms, so shift plugin
+        // interval markers for each edit too — mirroring the `marker_list`
+        // adjustments above — or plugin-tracked decorations keep stale coords.
+        #[cfg(feature = "plugins")]
+        for &(pos, del_len, ins_len) in &edit_lengths {
+            self.shift_plugin_markers_for_edit(active_buf, pos, del_len, ins_len);
+        }
+
         // Create BulkEdit event with both buffer snapshots
         let bulk_edit = Event::BulkEdit {
             old_snapshot: Some(old_snapshot),
@@ -609,6 +611,11 @@ impl Editor {
                     *seen = adjusted;
                 }
 
+                // Shift plugin interval markers so they ride the inserted text
+                // (the editor owns shifting; plugins never track byte offsets).
+                #[cfg(feature = "plugins")]
+                self.shift_plugin_markers_for_edit(buffer_id, insert_position, 0, insert_len);
+
                 Some((
                     "after_insert",
                     crate::services::plugins::hooks::HookArgs::AfterInsert {
@@ -661,6 +668,11 @@ impl Editor {
                         .collect();
                     *seen = adjusted;
                 }
+
+                // Shift plugin interval markers for the deletion (editor owns
+                // shifting; the plugin re-discovers markers whose interior was hit).
+                #[cfg(feature = "plugins")]
+                self.shift_plugin_markers_for_edit(buffer_id, delete_start, delete_len, 0);
 
                 Some((
                     "after_delete",
@@ -747,7 +759,25 @@ impl Editor {
         // Only refresh on inter-line movement: intra-line moves (e.g.
         // Left/Right within a row) don't change which row is auto-exposed,
         // and the plugin's async refreshLines() handles span-level changes.
-        if cursor_changed_lines {
+        //
+        // A structure-changing edit (a newline inserted or deleted) needs the
+        // same full refresh, for a subtler reason: it renumbers every row below
+        // it, but the per-edit `seen_byte_ranges` invalidation only drops the
+        // single line containing the edit point — every other row merely shifts
+        // and stays "seen", so it never re-fires `lines_changed`. A per-line
+        // decoration plugin (markdown_compose's table borders / conceals) then
+        // leaves the prior frame's decorations in place, scattered across the
+        // buffer versions they were last emitted at. During an Insert/Delete
+        // storm (which emits no MoveCursor events at all) nothing ever forces a
+        // complete re-fire, so the stale decorations pile up and persist until
+        // the user happens to make an explicit cursor move. Clearing seen here
+        // gives every such edit one consistent, whole-viewport re-fire — the
+        // same convergence an inter-line cursor move already gets. Intra-line
+        // edits (no line-count change) stay on the cheap path: the edited
+        // line's own invalidation re-fires it, which is sufficient.
+        let edit_changed_line_count = matches!(event, Event::Insert { .. } | Event::Delete { .. })
+            && line_info.line_delta != 0;
+        if cursor_changed_lines || edit_changed_line_count {
             self.handle_refresh_lines(buffer_id);
         }
     }

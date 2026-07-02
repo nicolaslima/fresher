@@ -345,6 +345,7 @@ impl Editor {
                                 crate::services::plugins::hooks::HookArgs::LinesChanged {
                                     buffer_id,
                                     lines: new_lines,
+                                    epoch: state.buffer.version(),
                                 },
                             );
                         }
@@ -1406,14 +1407,16 @@ impl Editor {
             Some(
                 crate::view::workspace_trust_dialog::render_workspace_trust_dialog(
                     frame,
-                    size,
-                    selected,
-                    &path,
-                    &triggers,
-                    &secondary_label,
-                    self.workspace_trust_scroll,
-                    theme_clone,
-                    draw_trust,
+                    crate::view::workspace_trust_dialog::TrustDialogParams {
+                        area: size,
+                        selected,
+                        path: &path,
+                        triggers: &triggers,
+                        secondary_label: &secondary_label,
+                        scroll: self.workspace_trust_scroll,
+                        theme: theme_clone,
+                        draw: draw_trust,
+                    },
                 ),
             )
         } else {
@@ -1552,7 +1555,7 @@ impl Editor {
                 &files_with_unsaved_changes,
                 &keybindings,
                 key_context_clone,
-                &*self.theme.read().unwrap(),
+                &self.theme.read().unwrap(),
                 close_button_hovered,
                 remote_connection.as_deref(),
                 cut_paths,
@@ -1676,10 +1679,10 @@ impl Editor {
                                         level = WarningLevel::Error;
                                         break;
                                     }
-                                    LspServerStatus::Starting | LspServerStatus::Initializing => {
-                                        if level != WarningLevel::Error {
-                                            level = WarningLevel::Warning;
-                                        }
+                                    LspServerStatus::Starting | LspServerStatus::Initializing
+                                        if level != WarningLevel::Error =>
+                                    {
+                                        level = WarningLevel::Warning;
                                     }
                                     _ => {}
                                 }
@@ -1835,7 +1838,7 @@ impl Editor {
                     frame,
                     chrome_area,
                     settings_state,
-                    &*self.theme.read().unwrap(),
+                    &self.theme.read().unwrap(),
                 );
                 self.active_chrome_mut().settings_layout = Some(settings_layout);
             }
@@ -1851,7 +1854,7 @@ impl Editor {
                     frame,
                     chrome_area,
                     wizard,
-                    &*self.theme.read().unwrap(),
+                    &self.theme.read().unwrap(),
                 );
             }
         }
@@ -1869,7 +1872,7 @@ impl Editor {
                     frame,
                     chrome_area,
                     kb_editor,
-                    &*self.theme.read().unwrap(),
+                    &self.theme.read().unwrap(),
                 );
             }
         }
@@ -1883,7 +1886,7 @@ impl Editor {
                     frame,
                     chrome_area,
                     debug,
-                    &*self.theme.read().unwrap(),
+                    &self.theme.read().unwrap(),
                 );
             }
         }
@@ -1916,7 +1919,7 @@ impl Editor {
                 &all_menus,
                 &self.menu_state,
                 &keybindings,
-                &*self.theme.read().unwrap(),
+                &self.theme.read().unwrap(),
                 hover_target.as_ref(),
                 menu_bar_mnemonics,
                 Some(&mut crate::app::types::CellThemeRecorder::new(
@@ -2356,7 +2359,7 @@ impl Editor {
             frame,
             suggestions_area,
             prompt,
-            &*self.theme.read().unwrap(),
+            &self.theme.read().unwrap(),
             self.active_window().mouse_state.hover_target.as_ref(),
             true,
             !self.suppress_chrome_cells,
@@ -2381,7 +2384,7 @@ impl Editor {
                 height: hints_height,
             };
             frame.render_widget(ratatui::widgets::Clear, hints_area);
-            Self::render_quick_open_hints(frame, hints_area, &*self.theme.read().unwrap());
+            Self::render_quick_open_hints(frame, hints_area, &self.theme.read().unwrap());
         }
     }
 
@@ -2779,16 +2782,17 @@ impl Editor {
                 self.terminal_height,
                 buffer_id,
             );
-            view_state.apply_config_defaults(
-                self.config.editor.line_numbers,
-                self.config.editor.highlight_current_line,
-                self.active_window().resolve_line_wrap_for_buffer(buffer_id),
-                self.config.editor.wrap_indent,
-                self.active_window()
+            view_state.apply_config_defaults(crate::view::split::ViewConfigDefaults {
+                line_numbers: self.config.editor.line_numbers,
+                highlight_current_line: self.config.editor.highlight_current_line,
+                line_wrap: self.active_window().resolve_line_wrap_for_buffer(buffer_id),
+                wrap_indent: self.config.editor.wrap_indent,
+                wrap_column: self
+                    .active_window()
                     .resolve_wrap_column_for_buffer(buffer_id),
-                self.config.editor.rulers.clone(),
-                self.config.editor.scroll_offset,
-            );
+                rulers: self.config.editor.rulers.clone(),
+                scroll_offset: self.config.editor.scroll_offset,
+            });
             let mut loaded_buffers = std::collections::HashSet::new();
             // Whether this *first* preview buffer was newly loaded.
             // The pre-existing case skips the `was_open` branch so
@@ -5018,7 +5022,7 @@ fn paint_text_property_entry(
         let span_w = crate::primitives::display_width::str_width(&slice) as u16;
         if let Some((map, sw, region)) = recorder.as_mut() {
             record_entry_span_cells(
-                map, *sw, *region, y, col_cursor, span_w, x, width, &fg_key, &bg_key,
+                map, *sw, region, y, col_cursor, span_w, x, width, &fg_key, &bg_key,
             );
         }
         col_cursor = col_cursor.saturating_add(span_w);
@@ -5033,7 +5037,7 @@ fn paint_text_property_entry(
             record_entry_span_cells(
                 map,
                 *sw,
-                *region,
+                region,
                 y,
                 col_cursor,
                 row_end - col_cursor,

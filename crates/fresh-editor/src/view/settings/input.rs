@@ -137,20 +137,17 @@ impl SettingsState {
             .map(|d| d.is_editing_json())
             .unwrap_or(false);
 
-        // Check validation first before borrowing dialog mutably
-        let can_exit = self.entry_dialog_can_exit_text_editing();
-
         let Some(dialog) = self.entry_dialog_mut() else {
             return InputResult::Consumed;
         };
 
         match event.code {
             KeyCode::Esc => {
-                // Escape accepts changes (same as Tab) - exit editing mode
-                if !can_exit {
-                    // If validation fails, just stop editing anyway (accept whatever is there)
-                }
-                dialog.stop_editing();
+                // Escape cancels the in-progress field edit and restores the
+                // pre-edit value — the platform convention (Enter/Tab commit,
+                // Esc reverts). JSON validity doesn't matter here: we're
+                // throwing the edit away regardless.
+                dialog.revert_editing();
             }
             KeyCode::Enter => {
                 if is_editing_json {
@@ -702,15 +699,11 @@ impl SettingsState {
     /// Buttons: 0 = Keep editing (default), 1 = Discard.
     fn handle_entry_discard_confirm_input(&mut self, event: &KeyEvent) -> InputResult {
         match event.code {
-            KeyCode::Left | KeyCode::BackTab => {
-                if self.entry_discard_confirm_selection > 0 {
-                    self.entry_discard_confirm_selection -= 1;
-                }
+            KeyCode::Left | KeyCode::BackTab if self.entry_discard_confirm_selection > 0 => {
+                self.entry_discard_confirm_selection -= 1;
             }
-            KeyCode::Right | KeyCode::Tab => {
-                if self.entry_discard_confirm_selection < 1 {
-                    self.entry_discard_confirm_selection += 1;
-                }
+            KeyCode::Right | KeyCode::Tab if self.entry_discard_confirm_selection < 1 => {
+                self.entry_discard_confirm_selection += 1;
             }
             KeyCode::Enter => {
                 match self.entry_discard_confirm_selection {
@@ -743,15 +736,11 @@ impl SettingsState {
     /// Buttons: 0 = Cancel (default), 1 = Delete.
     fn handle_entry_delete_confirm_input(&mut self, event: &KeyEvent) -> InputResult {
         match event.code {
-            KeyCode::Left | KeyCode::BackTab => {
-                if self.entry_delete_confirm_selection > 0 {
-                    self.entry_delete_confirm_selection -= 1;
-                }
+            KeyCode::Left | KeyCode::BackTab if self.entry_delete_confirm_selection > 0 => {
+                self.entry_delete_confirm_selection -= 1;
             }
-            KeyCode::Right | KeyCode::Tab => {
-                if self.entry_delete_confirm_selection < 1 {
-                    self.entry_delete_confirm_selection += 1;
-                }
+            KeyCode::Right | KeyCode::Tab if self.entry_delete_confirm_selection < 1 => {
+                self.entry_delete_confirm_selection += 1;
             }
             KeyCode::Enter => match self.entry_delete_confirm_selection {
                 0 => {
@@ -1072,7 +1061,16 @@ impl SettingsState {
 
         match event.code {
             KeyCode::Esc => {
-                // Check if current text field requires JSON validation
+                // A plain Text field: Esc cancels the in-progress edit and
+                // restores the pre-edit value (platform convention: Enter/Tab
+                // commit, Esc reverts). Previously Esc called stop_editing(),
+                // which *accepted* the edit, so there was no way to back out.
+                if self.is_editing_plain_text() {
+                    self.revert_editing();
+                    return InputResult::Consumed;
+                }
+                // Other editable controls (TextList/Map) keep their prior
+                // dismiss semantics; the JSON-validity gate only matters here.
                 if !self.can_exit_text_editing() {
                     return InputResult::Consumed;
                 }
@@ -1080,7 +1078,21 @@ impl SettingsState {
                 InputResult::Consumed
             }
             KeyCode::Enter => {
-                self.text_add_item();
+                // A plain Text field: Enter accepts the typed value and exits
+                // edit mode (platform convention, matching the footer's "Enter"
+                // hint). Previously Enter ran text_add_item — a no-op for Text —
+                // so the user was trapped in edit mode with the following
+                // Tab/Esc/arrows appearing dead. TextList/Map keep Enter = add
+                // a row and stay in edit mode so the user can keep adding.
+                if self.is_editing_plain_text() {
+                    if self.can_exit_text_editing() {
+                        self.commit_text_edit();
+                        self.stop_editing();
+                    }
+                    // Invalid text stays in edit mode until fixed or Esc.
+                } else {
+                    self.text_add_item();
+                }
                 InputResult::Consumed
             }
             KeyCode::Char(c) => {

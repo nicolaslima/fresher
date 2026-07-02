@@ -1048,6 +1048,19 @@ pub struct ViewTransformPayload {
     pub layout_hints: Option<LayoutHints>,
 }
 
+/// A plugin-owned interval marker: a byte range `[start, end)` carrying an
+/// opaque JSON payload. The editor shifts `start`/`end` on edits so the marker
+/// rides the text; the payload is maintained by the plugin (e.g. table column
+/// widths). See `EditorStateSnapshot::plugin_markers`.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PluginMarker {
+    pub start: usize,
+    pub end: usize,
+    #[ts(type = "any")]
+    pub payload: serde_json::Value,
+}
+
 /// Snapshot of editor state for plugin queries
 /// This is updated by the editor on each loop iteration
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -1199,6 +1212,15 @@ pub struct EditorStateSnapshot {
     #[ts(skip)]
     pub plugin_view_states_split: usize,
 
+    /// Plugin-owned interval markers, per buffer, keyed by a plugin-chosen
+    /// string id. Each marker is a byte range `[start, end)` plus an opaque
+    /// JSON payload. The editor shifts `start`/`end` on every edit (so the
+    /// plugin never tracks byte offsets itself); plugins create/update/delete
+    /// and spatially query them via the marker API, which writes through to
+    /// this map for immediate same-thread read-back (like setViewState).
+    #[ts(type = "any")]
+    pub plugin_markers: HashMap<BufferId, HashMap<String, PluginMarker>>,
+
     /// Keybinding labels for plugin modes, keyed by "action\0mode" for fast lookup.
     /// Updated when modes are registered via defineMode().
     #[serde(skip)]
@@ -1303,6 +1325,7 @@ impl EditorStateSnapshot {
             editor_mode: None,
             plugin_view_states: HashMap::new(),
             plugin_view_states_split: 0,
+            plugin_markers: HashMap::new(),
             keybinding_labels: HashMap::new(),
             plugin_global_states: HashMap::new(),
             active_session_plugin_states: HashMap::new(),
@@ -2463,6 +2486,12 @@ pub enum PluginCommand {
     /// Enable/disable line numbers for a buffer
     SetLineNumbers { buffer_id: BufferId, enabled: bool },
 
+    /// Enable/disable indentation guides for a buffer, overriding the global
+    /// `editor.indentation_guide` default. Used by tool views (e.g. the Git Log
+    /// commit-detail diff) that show non-editable content where the guides are
+    /// noise.
+    SetIndentationGuide { buffer_id: BufferId, enabled: bool },
+
     /// Set the view mode for a buffer ("source" or "compose")
     SetViewMode { buffer_id: BufferId, mode: String },
 
@@ -2621,6 +2650,13 @@ pub enum PluginCommand {
         /// a deletion virtual line.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         text_overlays: Vec<VirtualLineTextOverlay>,
+        /// Buffer version `position` was computed against (from the
+        /// `lines_changed` epoch). When set, the editor remaps `position`
+        /// forward to the current buffer state before anchoring, repairing the
+        /// stale offset a fire-and-forget hook handler echoes back. `None`
+        /// anchors at `position` verbatim (legacy callers).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        epoch: Option<u64>,
     },
 
     /// Clear all virtual texts in a namespace
@@ -2628,6 +2664,28 @@ pub enum PluginCommand {
     ClearVirtualTextNamespace {
         buffer_id: BufferId,
         namespace: String,
+    },
+
+    /// Remove virtual lines whose anchor byte falls in `[start, end)`, restricted
+    /// to a single namespace. The per-line analogue of `ClearConcealsInRange`
+    /// (which virtual lines previously lacked) — lets a plugin rebuild one line's
+    /// virtual lines without nuking the whole namespace, so per-line decorations
+    /// (e.g. markdown table borders) need no stored block model. Anchors are
+    /// resolved live from the marker list, so a shifted line is matched at its
+    /// current position.
+    ClearVirtualLinesInRange {
+        buffer_id: BufferId,
+        namespace: String,
+        start: usize,
+        end: usize,
+        /// Buffer version `start`/`end` were computed against (from the
+        /// `lines_changed` epoch). When set, the editor remaps the range
+        /// forward to the current buffer state before clearing, so a stale
+        /// range from a fire-and-forget hook handler clears the row's current
+        /// anchors rather than a drifted byte window. `None` clears
+        /// `[start, end)` verbatim (legacy callers).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        epoch: Option<u64>,
     },
 
     /// Add a conceal range that hides or replaces a byte range during rendering.
@@ -2641,6 +2699,15 @@ pub enum PluginCommand {
         end: usize,
         /// Optional replacement text to show instead. None = hide completely.
         replacement: Option<String>,
+        /// Buffer version `start`/`end` were computed against — the epoch of the
+        /// hook the emitting handler ran in, auto-stamped by the plugin runtime
+        /// (see `current_hook_epoch`). The editor remaps the range forward to the
+        /// current buffer before concealing, so a stale range from a lagged
+        /// fire-and-forget hook lands on the row's current bytes instead of
+        /// leaking the concealed markup. `None` = no hook epoch in scope; apply
+        /// verbatim.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        epoch: Option<u64>,
     },
 
     /// Clear all conceal ranges in a namespace
@@ -2655,6 +2722,10 @@ pub enum PluginCommand {
         buffer_id: BufferId,
         start: usize,
         end: usize,
+        /// Hook epoch the range was computed against (auto-stamped); the editor
+        /// remaps it forward before clearing. `None` = verbatim.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        epoch: Option<u64>,
     },
 
     /// Remove conceal ranges overlapping a byte range, restricted to a single
@@ -2666,6 +2737,10 @@ pub enum PluginCommand {
         namespace: OverlayNamespace,
         start: usize,
         end: usize,
+        /// Hook epoch the range was computed against (auto-stamped); the editor
+        /// remaps it forward before clearing. `None` = verbatim.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        epoch: Option<u64>,
     },
 
     /// Add a collapsed fold range. Hides the byte range
@@ -2711,6 +2786,11 @@ pub enum PluginCommand {
         position: usize,
         /// Number of hanging indent spaces after the break
         indent: u16,
+        /// Hook epoch `position` was computed against (auto-stamped); the editor
+        /// remaps it forward before injecting the break, so a stale wrap point
+        /// from a lagged hook lands at the row's current bytes. `None` = verbatim.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        epoch: Option<u64>,
     },
 
     /// Clear all soft breaks in a namespace
@@ -2724,6 +2804,10 @@ pub enum PluginCommand {
         buffer_id: BufferId,
         start: usize,
         end: usize,
+        /// Hook epoch the range was computed against (auto-stamped); the editor
+        /// remaps it forward before clearing. `None` = verbatim.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        epoch: Option<u64>,
     },
 
     /// Refresh lines for a buffer (clear seen_lines cache to re-trigger lines_changed hook)
@@ -3012,6 +3096,11 @@ pub enum PluginCommand {
         /// it has just set, which keeps the UTF-8 byte math on the host
         /// side.
         initial_cursor_line: Option<u32>,
+        /// Optional per-buffer indentation-guide override. `None` keeps the
+        /// default (virtual buffers show no guides); `Some(true)` forces guides
+        /// on for a virtual buffer that shows real source (e.g. git log's
+        /// file-at-commit view).
+        indentation_guide: Option<bool>,
         /// Optional request ID for async response
         request_id: Option<u64>,
     },
@@ -3527,6 +3616,24 @@ pub enum PluginCommand {
     RestartLspForLanguage {
         /// The language to restart LSP for (e.g., "python", "rust")
         language: String,
+    },
+
+    /// Claim an LSP URI scheme (e.g. `slang-synth`). When an LSP navigation
+    /// resolves to a non-`file://` URI with this scheme, the core fires the
+    /// `lsp_open_external_uri` hook instead of showing its fallback message,
+    /// so the plugin can fetch and open the synthetic document itself.
+    RegisterLspUriScheme {
+        /// The scheme to claim, without the `://` (e.g. `slang-synth`).
+        scheme: String,
+    },
+
+    /// Mark the buffer backing `path` read-only. Resolved by path (not
+    /// buffer id) so it is race-free when issued right after `openFile`:
+    /// both are FIFO commands, so the buffer exists by the time this runs,
+    /// whereas a buffer id read from the state snapshot could still be stale.
+    MarkBufferReadOnly {
+        /// Filesystem path of the buffer to mark read-only.
+        path: std::path::PathBuf,
     },
 
     /// Set the workspace root URI for a specific language's LSP server
@@ -4460,6 +4567,12 @@ pub struct CreateVirtualBufferOptions {
     #[serde(default, rename = "initialCursorLine")]
     #[ts(optional, rename = "initialCursorLine")]
     pub initial_cursor_line: Option<u32>,
+    /// Override indentation-guide visibility for this buffer (default: follows
+    /// the global setting, but virtual buffers show none). Set `true` when the
+    /// buffer displays real source — e.g. a file opened at a past commit.
+    #[serde(default, rename = "indentationGuide")]
+    #[ts(optional, rename = "indentationGuide")]
+    pub indentation_guide: Option<bool>,
 }
 
 /// Options for createVirtualBufferInSplit
@@ -5300,6 +5413,7 @@ impl PluginApi {
             editing_disabled: false,
             hidden_from_tabs: false,
             initial_cursor_line: None,
+            indentation_guide: None,
             request_id: None,
         })
     }

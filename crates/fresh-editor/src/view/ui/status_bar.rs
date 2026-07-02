@@ -219,10 +219,9 @@ struct RenderedElement {
 /// - `On`            — at least one server for this language is running
 /// - `Off`           — configured servers exist for this language, none are running
 /// - `OffDismissed`  — like `Off`, but the user clicked "Disable" from the
-///                     popup; rendered with a muted style so it stops
-///                     shouting for attention while remaining clickable
-///                     (so the user can still open the popup to re-enable
-///                     or see install help).
+///   popup; rendered with a muted style so it stops shouting for
+///   attention while remaining clickable (so the user can still open the
+///   popup to re-enable or see install help).
 /// - `Error`         — at least one server for this language is in the Error state
 /// - `None`          — no LSP configured or running for this language
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1242,15 +1241,13 @@ impl StatusBarRenderer {
                 })
             }
             StatusBarElement::CustomToken(key) => {
-                if let Some(value) = ctx.dynamic_status_bar_elements.get(key) {
-                    Some(RenderedElement {
+                ctx.dynamic_status_bar_elements
+                    .get(key)
+                    .map(|value| RenderedElement {
                         text: value.clone(),
                         kind: ElementKind::Custom,
                         token_key: Some(key.clone()),
                     })
-                } else {
-                    None // Skip rendering if no value set
-                }
             }
         }
     }
@@ -1491,10 +1488,10 @@ impl StatusBarRenderer {
     }
 
     /// The clickable identity of an element kind, or `None` for static
-    /// (non-interactive) elements. This single mapping is what makes the click
-    /// + hover rail generic: it's the *only* place that decides whether a
-    /// built-in element is clickable. Plugin tokens are handled separately
-    /// (they dispatch a hook, not a core `Action`).
+    /// (non-interactive) elements. This single mapping is what makes the
+    /// click + hover rail generic: it's the *only* place that decides
+    /// whether a built-in element is clickable. Plugin tokens are handled
+    /// separately (they dispatch a hook, not a core `Action`).
     fn clickable_for_kind(kind: ElementKind) -> Option<StatusBarClickable> {
         match kind {
             ElementKind::LineEnding => Some(StatusBarClickable::LineEnding),

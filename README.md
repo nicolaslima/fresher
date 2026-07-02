@@ -1,7 +1,7 @@
 # Fresher
 
 <p align="center">
-  <img src="docs/fresher-logo.png" alt="Fresher Logo" width="200">
+  <img src="art/ink-and-glitch.png" alt="Fresher — ink-and-glitch" width="600">
 </p>
 
 <p align="center">
